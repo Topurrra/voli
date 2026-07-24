@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo-forest.jpg" width="300" alt="voli — the bear that delivers">
+  <img src="assets/logo-forest-git.png" width="420" alt="voli — the bear that delivers">
 </p>
 
 <h1 align="center">voli</h1>
