@@ -1,0 +1,121 @@
+//! Index builder (spec §5): parsed manifests → `index.sqlite`.
+//!
+//! One row per (name, version, arch) in `packages`, plus an FTS5 virtual table
+//! over (name, description, bin_names) with one row per package name (latest
+//! version) so `search` can match by name, description word, or bin name.
+//!
+//! This is a library function so the registry CI compiler reuses it verbatim.
+
+use std::path::Path;
+
+use rusqlite::Connection;
+
+use super::{IndexError, cmp_version};
+use crate::manifest::Manifest;
+
+const SCHEMA: &str = "\
+CREATE TABLE packages (
+    name          TEXT NOT NULL,
+    version       TEXT NOT NULL,
+    arch          TEXT NOT NULL,
+    description   TEXT,
+    homepage      TEXT,
+    license       TEXT,
+    kind          TEXT NOT NULL,
+    manifest_toml TEXT NOT NULL,
+    PRIMARY KEY (name, version, arch)
+);
+CREATE VIRTUAL TABLE packages_fts USING fts5(name, description, bin_names);";
+
+/// Build an `index.sqlite` at `out` from the given manifests (overwrites `out`).
+///
+/// Errors out if FTS5 is unavailable in the linked sqlite, or on any duplicate
+/// (name, version, arch).
+pub fn build(manifests: &[Manifest], out: &Path) -> Result<(), IndexError> {
+    if out.exists() {
+        std::fs::remove_file(out)?;
+    }
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut conn = Connection::open(out)?;
+    conn.execute_batch(SCHEMA)?;
+
+    let tx = conn.transaction()?;
+    for m in manifests {
+        let manifest_toml = toml::to_string(m)?;
+        for (arch, present) in [
+            ("x64", m.source.x64.is_some()),
+            ("arm64", m.source.arm64.is_some()),
+        ] {
+            if !present {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO packages
+                   (name, version, arch, description, homepage, license, kind, manifest_toml)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    m.name,
+                    m.version,
+                    arch,
+                    m.description,
+                    m.homepage,
+                    m.license,
+                    kind_str(m),
+                    manifest_toml,
+                ],
+            )?;
+        }
+    }
+
+    // FTS: one row per package name, using the newest version's manifest.
+    for m in latest_per_name(manifests) {
+        let bin_names = bin_search_terms(m);
+        tx.execute(
+            "INSERT INTO packages_fts (name, description, bin_names) VALUES (?1, ?2, ?3)",
+            rusqlite::params![m.name, m.description, bin_names],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// One manifest per distinct name — the one with the newest version.
+fn latest_per_name(manifests: &[Manifest]) -> Vec<&Manifest> {
+    let mut best: std::collections::BTreeMap<&str, &Manifest> = std::collections::BTreeMap::new();
+    for m in manifests {
+        best.entry(&m.name)
+            .and_modify(|cur| {
+                if cmp_version(&m.version, &cur.version).is_gt() {
+                    *cur = m;
+                }
+            })
+            .or_insert(m);
+    }
+    best.into_values().collect()
+}
+
+/// Space-joined searchable bin terms: each bin's shim name and its path stem,
+/// so `search rg` finds ripgrep whose only bin is `rg.exe`.
+fn bin_search_terms(m: &Manifest) -> String {
+    let mut terms = Vec::new();
+    for b in &m.bin {
+        terms.push(b.shim_name());
+        if let Some(stem) = Path::new(b.path()).file_stem().and_then(|s| s.to_str())
+            && !terms.iter().any(|t| t == stem)
+        {
+            terms.push(stem.to_string());
+        }
+    }
+    terms.join(" ")
+}
+
+fn kind_str(m: &Manifest) -> &'static str {
+    match m.kind {
+        crate::manifest::Kind::App => "app",
+        crate::manifest::Kind::Mcp => "mcp",
+        crate::manifest::Kind::Skill => "skill",
+    }
+}
