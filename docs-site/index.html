@@ -4,29 +4,92 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>voli - a fast, honest package manager for Windows</title>
+  <title>voli — a fast, no-admin package manager for Windows</title>
   <meta name="description"
-    content="A single fast binary. No admin, no scripts, clean uninstalls. Install with one line.">
+    content="The bear that delivers. A fast, no-admin package manager for Windows. One binary, no scripts, clean uninstalls. Install with one line.">
+  <meta name="theme-color" content="#0e1330" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#fbf7ef" media="(prefers-color-scheme: light)">
+
+  <!-- No flash of wrong theme: apply stored choice before first paint. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('voli-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) { }
+    })();
+  </script>
+
   <style>
     :root {
-      --bg: #0e1116;
-      --panel: #161b22;
-      --border: #2a313c;
-      --fg: #e6edf3;
-      --muted: #9aa7b4;
-      --accent: #f0883e;
-      --code-bg: #010409;
+      /* dark = deep navy/slate (the bear) — default tokens */
+      --bg: #0d1230;
+      --bg-2: #10173a;
+      --panel: #151d45;
+      --panel-2: #1b2454;
+      --border: #29325f;
+      --border-soft: #222a52;
+      --fg: #eef1fb;
+      --muted: #a3adcf;
+      --link: #ffd94a;
+      /* gold bolt, readable on dark */
+      --bolt: #ffd21e;
+      --salmon: #ff8a5c;
+      --pink: #ff5fa2;
+      --forest: #7cc16a;
+      --code-bg: #0a0f26;
+      --code-fg: #e9ecf8;
+      --shadow: 0 22px 60px -24px rgba(0, 0, 0, .75);
+      --glow: 0 0 0 1px rgba(255, 210, 30, .10), 0 30px 80px -30px rgba(6, 10, 30, .9);
+      --sel: rgba(255, 210, 30, .28);
+      --grain-opacity: .035;
+    }
+
+    :root[data-theme="light"] {
+      /* light = warm paper white, same accent family */
+      --bg: #fbf7ef;
+      --bg-2: #f4eee1;
+      --panel: #fffdf8;
+      --panel-2: #f7f1e6;
+      --border: #e4dccb;
+      --border-soft: #ece5d6;
+      --fg: #241f2e;
+      --muted: #6b6478;
+      --link: #216e39;
+      /* forest green — AA on paper */
+      --bolt: #e6a700;
+      --salmon: #d5643a;
+      --pink: #c63f80;
+      --forest: #2f7a3f;
+      --code-bg: #171a3a;
+      --code-fg: #eef1fb;
+      --shadow: 0 20px 50px -26px rgba(60, 50, 20, .35);
+      --glow: 0 0 0 1px rgba(230, 167, 0, .18), 0 26px 70px -32px rgba(70, 55, 20, .35);
+      --sel: rgba(230, 167, 0, .22);
+      --grain-opacity: .05;
     }
 
     @media (prefers-color-scheme: light) {
-      :root {
-        --bg: #ffffff;
-        --panel: #f6f8fa;
-        --border: #d0d7de;
-        --fg: #1f2328;
-        --muted: #59636e;
-        --accent: #bc4c00;
-        --code-bg: #0e1116;
+      :root:not([data-theme]) {
+        --bg: #fbf7ef;
+        --bg-2: #f4eee1;
+        --panel: #fffdf8;
+        --panel-2: #f7f1e6;
+        --border: #e4dccb;
+        --border-soft: #ece5d6;
+        --fg: #241f2e;
+        --muted: #6b6478;
+        --link: #216e39;
+        --bolt: #e6a700;
+        --salmon: #d5643a;
+        --pink: #c63f80;
+        --forest: #2f7a3f;
+        --code-bg: #171a3a;
+        --code-fg: #eef1fb;
+        --shadow: 0 20px 50px -26px rgba(60, 50, 20, .35);
+        --glow: 0 0 0 1px rgba(230, 167, 0, .18), 0 26px 70px -32px rgba(70, 55, 20, .35);
+        --sel: rgba(230, 167, 0, .22);
+        --grain-opacity: .05;
       }
     }
 
@@ -34,186 +97,1422 @@
       box-sizing: border-box;
     }
 
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 84px;
+    }
+
     body {
       margin: 0;
       background: var(--bg);
       color: var(--fg);
-      font: 16px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font: 16px/1.65 "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
       -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
     }
 
-    .wrap {
-      max-width: 720px;
+    /* Layered background: soft radial washes + faint grain, per theme. */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      background:
+        radial-gradient(60% 45% at 82% -5%, rgba(255, 95, 162, .10), transparent 60%),
+        radial-gradient(55% 40% at 8% 4%, rgba(124, 193, 106, .12), transparent 60%),
+        radial-gradient(70% 55% at 50% 108%, rgba(255, 210, 30, .07), transparent 60%),
+        linear-gradient(180deg, var(--bg), var(--bg-2));
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      opacity: var(--grain-opacity);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+
+    ::selection {
+      background: var(--sel);
+    }
+
+    a {
+      color: var(--link);
+      text-decoration-color: color-mix(in srgb, var(--link) 45%, transparent);
+      text-underline-offset: 3px;
+    }
+
+    a:hover {
+      text-decoration-color: var(--link);
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--link);
+      outline-offset: 3px;
+      border-radius: 6px;
+    }
+
+    .skip {
+      position: absolute;
+      left: -9999px;
+      top: 0;
+      background: var(--panel);
+      color: var(--fg);
+      padding: .6rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      z-index: 100;
+    }
+
+    .skip:focus {
+      left: 12px;
+      top: 12px;
+    }
+
+    /* ---------- header / nav ---------- */
+    header.site {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: saturate(140%) blur(12px);
+      background: color-mix(in srgb, var(--bg) 78%, transparent);
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    .nav {
+      max-width: 1000px;
       margin: 0 auto;
-      padding: 4rem 1.25rem 5rem;
+      padding: .6rem 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
     }
 
-    header {
-      text-align: center;
-      margin-bottom: 2.5rem;
-    }
-
-    header img {
-      width: 260px;
-      height: auto;
-      border-radius: 120px;
-    }
-
-    h1 {
-      font-size: 2.4rem;
-      margin: 1rem 0 .25rem;
-      letter-spacing: -0.02em;
-    }
-
-    .tag {
-      color: var(--muted);
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: .55rem;
+      font-weight: 700;
+      letter-spacing: -.01em;
+      color: var(--fg);
+      text-decoration: none;
       font-size: 1.1rem;
-      margin: 0;
+    }
+
+    .brand img {
+      width: 30px;
+      height: 30px;
+      border-radius: 9px;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: .35rem;
+      margin-left: auto;
+      align-items: center;
+    }
+
+    .nav-links a.navlink {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: .92rem;
+      padding: .4rem .7rem;
+      border-radius: 8px;
+      white-space: nowrap;
+    }
+
+    .nav-links a.navlink:hover {
+      color: var(--fg);
+      background: var(--panel);
+    }
+
+    .icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 9px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--fg);
+      cursor: pointer;
+      text-decoration: none;
+      transition: border-color .15s, transform .15s;
+    }
+
+    .icon-btn:hover {
+      border-color: var(--link);
+      transform: translateY(-1px);
+    }
+
+    .icon-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    /* the moon shows in dark, sun in light — toggled by JS via class */
+    .theme-toggle .sun {
+      display: none;
+    }
+
+    :root[data-theme="light"] .theme-toggle .sun,
+    .theme-toggle.is-light .sun {
+      display: block;
+    }
+
+    :root[data-theme="light"] .theme-toggle .moon,
+    .theme-toggle.is-light .moon {
+      display: none;
+    }
+
+    /* ---------- layout ---------- */
+    main {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 0 1.25rem 5rem;
+    }
+
+    section {
+      scroll-margin-top: 84px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      font-size: .72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .14em;
+      color: var(--muted);
+      margin: 0 0 1rem;
+    }
+
+    .eyebrow .bolt {
+      color: var(--bolt);
+    }
+
+    h2.section-title {
+      font-size: clamp(1.5rem, 3.5vw, 2rem);
+      letter-spacing: -.02em;
+      margin: 0 0 .5rem;
+    }
+
+    .section-sub {
+      color: var(--muted);
+      margin: 0 0 2rem;
+      max-width: 56ch;
+    }
+
+    .section-head {
+      margin: 4.5rem 0 2rem;
+    }
+
+    /* ---------- hero ---------- */
+    .hero {
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      gap: 2.75rem;
+      align-items: center;
+      padding: 3.5rem 0 1.5rem;
+    }
+
+    .hero-copy h1 {
+      font-size: clamp(2.4rem, 6vw, 3.6rem);
+      line-height: 1.04;
+      letter-spacing: -.03em;
+      margin: .4rem 0 1rem;
+    }
+
+    .hero-copy h1 .wordmark {
+      background: linear-gradient(120deg, var(--salmon), var(--pink) 55%, var(--bolt));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .lead {
+      font-size: 1.18rem;
+      color: var(--muted);
+      margin: 0 0 1.6rem;
+      max-width: 46ch;
+    }
+
+    .lead b {
+      color: var(--fg);
+      font-weight: 600;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      font-size: .78rem;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: .3rem .8rem;
+    }
+
+    .pill .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--forest);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--forest) 25%, transparent);
+    }
+
+    .hero-art {
+      position: relative;
+    }
+
+    .hero-art img {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 22px;
+      border: 1px solid var(--border);
+      box-shadow: var(--glow);
+    }
+
+    .hero-art::before {
+      content: "";
+      position: absolute;
+      inset: -14px;
+      z-index: -1;
+      border-radius: 30px;
+      background: radial-gradient(60% 60% at 60% 30%, rgba(255, 95, 162, .28), transparent 70%),
+        radial-gradient(60% 60% at 20% 80%, rgba(124, 193, 106, .28), transparent 70%);
+      filter: blur(26px);
+      opacity: .8;
+    }
+
+    /* ---------- install code block ---------- */
+    .install {
+      margin: 1.9rem 0 .4rem;
     }
 
     .install-label {
-      color: var(--muted);
-      font-size: .85rem;
+      font-size: .72rem;
       text-transform: uppercase;
-      letter-spacing: .08em;
-      margin: 0 0 .5rem;
+      letter-spacing: .12em;
+      color: var(--muted);
+      margin: 0 0 .55rem;
     }
 
     .code {
       position: relative;
       background: var(--code-bg);
-      color: #e6edf3;
+      color: var(--code-fg);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1rem 1.1rem;
-      font-family: "Cascadia Code", "SF Mono", Consolas, monospace;
-      font-size: .95rem;
+      border-radius: 14px;
+      padding: 1.15rem 3.4rem 1.15rem 1.2rem;
+      font-family: "Cascadia Code", "Cascadia Mono", "SF Mono", ui-monospace, Consolas, monospace;
+      font-size: 1rem;
       overflow-x: auto;
       white-space: nowrap;
+      box-shadow: var(--shadow);
+    }
+
+    .code.big {
+      font-size: 1.08rem;
     }
 
     .code .prompt {
-      color: var(--accent);
+      color: var(--bolt);
       user-select: none;
+    }
+
+    .code .cmd {
+      color: var(--code-fg);
     }
 
     .copy {
       position: absolute;
-      top: .5rem;
-      right: .5rem;
-      background: var(--panel);
-      color: var(--fg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      font-size: .75rem;
-      padding: .25rem .55rem;
+      top: 50%;
+      right: .6rem;
+      transform: translateY(-50%);
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+      background: rgba(255, 255, 255, .06);
+      color: #e9ecf8;
+      border: 1px solid rgba(255, 255, 255, .16);
+      border-radius: 9px;
+      font: inherit;
+      font-size: .78rem;
+      font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+      padding: .4rem .6rem;
       cursor: pointer;
+      transition: border-color .15s, background .15s;
     }
 
     .copy:hover {
-      border-color: var(--accent);
+      border-color: var(--bolt);
+      background: rgba(255, 255, 255, .12);
     }
 
-    .fallback {
+    .copy.copied {
+      border-color: var(--forest);
+      color: #d6f5cf;
+    }
+
+    .copy svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .copy .check {
+      display: none;
+    }
+
+    .copy.copied .check {
+      display: block;
+    }
+
+    .copy.copied .clip {
+      display: none;
+    }
+
+    .install-note {
       color: var(--muted);
-      font-size: .85rem;
-      margin: .75rem 0 0;
+      font-size: .86rem;
+      margin: .8rem 0 0;
     }
 
-    .fallback code {
+    .install-note code {
       background: var(--panel);
-      padding: .1rem .35rem;
-      border-radius: 4px;
-      word-break: break-all;
+      border: 1px solid var(--border-soft);
+      padding: .08rem .38rem;
+      border-radius: 5px;
+      font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+      font-size: .82em;
     }
 
-    h2 {
-      font-size: 1rem;
-      text-transform: uppercase;
-      letter-spacing: .08em;
-      color: var(--muted);
-      margin: 3rem 0 1rem;
-    }
-
-    ul.guarantees {
-      list-style: none;
-      padding: 0;
-      margin: 0;
+    /* ---------- cards / guarantees ---------- */
+    .cards {
       display: grid;
-      gap: .75rem;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1rem;
     }
 
-    ul.guarantees li {
+    .card {
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: .9rem 1.1rem;
+      border-radius: 16px;
+      padding: 1.4rem 1.4rem 1.5rem;
+      transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
     }
 
-    ul.guarantees strong {
-      color: var(--accent);
+    .card:hover {
+      transform: translateY(-4px);
+      border-color: color-mix(in srgb, var(--link) 55%, var(--border));
+      box-shadow: var(--shadow);
     }
 
-    footer {
-      margin-top: 3.5rem;
-      text-align: center;
+    .card .ic {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      margin-bottom: .9rem;
+      background: color-mix(in srgb, var(--accent-c) 16%, transparent);
+      color: var(--accent-c);
+      border: 1px solid color-mix(in srgb, var(--accent-c) 30%, transparent);
+    }
+
+    .card .ic svg {
+      width: 21px;
+      height: 21px;
+    }
+
+    .card h3 {
+      margin: 0 0 .4rem;
+      font-size: 1.08rem;
+      letter-spacing: -.01em;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: .94rem;
+    }
+
+    .card code {
+      background: var(--panel-2);
+      padding: .05rem .32rem;
+      border-radius: 5px;
+      font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+      font-size: .82em;
+      color: var(--fg);
+    }
+
+    /* ---------- commands reference ---------- */
+    .cmd-table {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      background: var(--panel);
+    }
+
+    .cmd-row {
+      display: grid;
+      grid-template-columns: minmax(200px, 300px) 1fr;
+      gap: 1rem;
+      padding: .85rem 1.25rem;
+      border-top: 1px solid var(--border-soft);
+      align-items: baseline;
+    }
+
+    .cmd-row:first-child {
+      border-top: none;
+    }
+
+    .cmd-row:hover {
+      background: var(--panel-2);
+    }
+
+    .cmd-row code {
+      font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+      font-size: .9rem;
+      color: var(--fg);
+      white-space: nowrap;
+    }
+
+    .cmd-row code .tok {
+      color: var(--link);
+    }
+
+    .cmd-row code .arg {
+      color: var(--muted);
+    }
+
+    .cmd-row .desc {
+      color: var(--muted);
+      font-size: .92rem;
+    }
+
+    .cmd-group {
+      font-size: .68rem;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 1.1rem 1.25rem .3rem;
+      background: var(--panel-2);
+      border-top: 1px solid var(--border-soft);
+    }
+
+    .cmd-group:first-child {
+      border-top: none;
+    }
+
+    /* ---------- how it works ---------- */
+    .how {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2rem;
+      align-items: center;
+    }
+
+    .how ol {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 1rem;
+    }
+
+    .how ol li {
+      position: relative;
+      padding-left: 2.6rem;
+      color: var(--muted);
+      font-size: .96rem;
+    }
+
+    .how ol li strong {
+      color: var(--fg);
+      font-weight: 600;
+    }
+
+    .how ol li .n {
+      position: absolute;
+      left: 0;
+      top: -.1rem;
+      width: 1.9rem;
+      height: 1.9rem;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--link);
+      font-size: .82rem;
+      font-weight: 700;
+      font-family: "Cascadia Code", ui-monospace, monospace;
+    }
+
+    .diagram {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.25rem;
+    }
+
+    .diagram svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .diagram .d-label {
+      fill: var(--fg);
+      font: 600 13px "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    }
+
+    .diagram .d-sub {
+      fill: var(--muted);
+      font: 11px "Cascadia Code", ui-monospace, Consolas, monospace;
+    }
+
+    .diagram .d-box {
+      fill: var(--panel-2);
+      stroke: var(--border);
+    }
+
+    .diagram .d-flow {
+      stroke: var(--link);
+      stroke-width: 2;
+      fill: none;
+      marker-end: url(#arrow);
+    }
+
+    .diagram .d-bolt {
+      fill: var(--bolt);
+    }
+
+    /* ---------- add your app ---------- */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+    }
+
+    .step {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.4rem;
+    }
+
+    .step .num {
+      font-family: "Cascadia Code", ui-monospace, monospace;
+      font-size: .8rem;
+      color: var(--bolt);
+      font-weight: 700;
+      letter-spacing: .05em;
+    }
+
+    .step h3 {
+      margin: .5rem 0 .35rem;
+      font-size: 1.02rem;
+    }
+
+    .step p {
+      margin: 0;
       color: var(--muted);
       font-size: .9rem;
     }
 
-    footer a {
-      color: var(--fg);
-      text-decoration: none;
-      border-bottom: 1px solid var(--border);
+    .add-cta {
+      margin-top: 1.5rem;
+      display: flex;
+      gap: .75rem;
+      flex-wrap: wrap;
     }
 
-    footer a:hover {
-      border-color: var(--accent);
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .7rem 1.15rem;
+      border-radius: 11px;
+      font-weight: 600;
+      font-size: .94rem;
+      text-decoration: none;
+      border: 1px solid var(--border);
+      transition: transform .15s, border-color .15s, background .15s;
+    }
+
+    .btn svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .btn-primary {
+      background: linear-gradient(120deg, var(--bolt), var(--salmon));
+      color: #201800;
+      border-color: transparent;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+    }
+
+    .btn-ghost {
+      background: var(--panel);
+      color: var(--fg);
+    }
+
+    .btn-ghost:hover {
+      border-color: var(--link);
+      transform: translateY(-2px);
+    }
+
+    /* ---------- FAQ ---------- */
+    .faq {
+      display: grid;
+      gap: .7rem;
+    }
+
+    details.qa {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    details.qa[open] {
+      border-color: color-mix(in srgb, var(--link) 40%, var(--border));
+    }
+
+    details.qa summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 1.1rem 1.3rem;
+      font-weight: 600;
+      font-size: 1.02rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    details.qa summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details.qa summary .chev {
+      flex: none;
+      width: 18px;
+      height: 18px;
+      color: var(--muted);
+      transition: transform .2s;
+    }
+
+    details.qa[open] summary .chev {
+      transform: rotate(180deg);
+      color: var(--link);
+    }
+
+    details.qa .a {
+      padding: 0 1.3rem 1.2rem;
+      color: var(--muted);
+      font-size: .96rem;
+    }
+
+    details.qa .a p {
+      margin: 0 0 .6rem;
+    }
+
+    details.qa .a p:last-child {
+      margin-bottom: 0;
+    }
+
+    details.qa .a code {
+      background: var(--panel-2);
+      padding: .05rem .35rem;
+      border-radius: 5px;
+      font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+      font-size: .84em;
+      color: var(--fg);
+    }
+
+    .compare {
+      width: 100%;
+      border-collapse: collapse;
+      margin: .3rem 0 .2rem;
+      font-size: .9rem;
+    }
+
+    .compare th,
+    .compare td {
+      text-align: left;
+      padding: .5rem .6rem;
+      border-bottom: 1px solid var(--border-soft);
+    }
+
+    .compare th {
+      color: var(--fg);
+      font-weight: 600;
+    }
+
+    .compare td {
+      color: var(--muted);
+    }
+
+    /* ---------- footer ---------- */
+    footer.site {
+      border-top: 1px solid var(--border-soft);
+      margin-top: 5rem;
+    }
+
+    .foot {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: .9rem;
+    }
+
+    .foot .brand {
+      font-size: 1rem;
+    }
+
+    .foot-links {
+      display: flex;
+      gap: 1.25rem;
+      margin-left: auto;
+      flex-wrap: wrap;
+    }
+
+    .foot-links a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .foot-links a:hover {
+      color: var(--fg);
+    }
+
+    .made {
+      width: 100%;
+      color: var(--muted);
+      font-size: .84rem;
+    }
+
+    /* ---------- reveal on scroll ---------- */
+    .reveal {
+      opacity: 0;
+      transform: translateY(18px);
+      transition: opacity .6s ease, transform .6s ease;
+      will-change: opacity, transform;
+    }
+
+    .reveal.in {
+      opacity: 1;
+      transform: none;
+    }
+
+    /* ---------- responsive ---------- */
+    @media (max-width: 860px) {
+      .hero {
+        grid-template-columns: 1fr;
+        gap: 2rem;
+        padding-top: 2.5rem;
+      }
+
+      .hero-art {
+        order: -1;
+        max-width: 420px;
+      }
+
+      .how {
+        grid-template-columns: 1fr;
+      }
+
+      .steps {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .cards {
+        grid-template-columns: 1fr;
+      }
+
+      .nav-links .navlink {
+        display: none;
+      }
+
+      .cmd-row {
+        grid-template-columns: 1fr;
+        gap: .3rem;
+      }
+
+      .cmd-row code {
+        white-space: normal;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      .reveal {
+        opacity: 1;
+        transform: none;
+        transition: none;
+      }
+
+      * {
+        transition: none !important;
+      }
     }
   </style>
 </head>
 
 <body>
-  <div class="wrap">
-    <header>
-      <img src="assets/logo-forest.jpg" alt="voli — the bear that delivers">
-      <h1>voli</h1>
-      <p class="tag">A fast, no-admin package manager for Windows.<br>One binary. No scripts. Clean uninstalls.</p>
-    </header>
+  <a class="skip" href="#install">Skip to install</a>
 
-    <p class="install-label">Install (PowerShell)</p>
-    <div class="code" id="cmd">
-      <span class="prompt">PS&gt; </span><span id="cmd-text">iwr -useb volibear.dev/install | iex</span>
-      <button class="copy" id="copy" type="button">Copy</button>
+  <header class="site">
+    <nav class="nav" aria-label="Primary">
+      <a class="brand" href="#top">
+        <img src="assets/logo.png" alt="" width="30" height="30">
+        voli
+      </a>
+      <div class="nav-links">
+        <a class="navlink" href="#install">Install</a>
+        <a class="navlink" href="#commands">Commands</a>
+        <a class="navlink" href="#how">How it works</a>
+        <a class="navlink" href="#faq">FAQ</a>
+        <a class="icon-btn" href="https://github.com/Topurrra/voli" aria-label="voli on GitHub" rel="noopener">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z">
+            </path>
+          </svg>
+        </a>
+        <button class="icon-btn theme-toggle" id="theme" type="button" aria-label="Toggle color theme"
+          aria-pressed="false" title="Toggle theme">
+          <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+          </svg>
+          <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path
+              d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41">
+            </path>
+          </svg>
+        </button>
+      </div>
+    </nav>
+  </header>
+
+  <main id="top">
+    <!-- ---------- HERO ---------- -->
+    <section class="hero">
+      <div class="hero-copy">
+        <span class="pill"><span class="dot"></span> No admin &middot; No scripts &middot; Zero-trace uninstall</span>
+        <h1>The bear that delivers.<br><span class="wordmark">voli</span></h1>
+        <p class="lead">A fast, no-admin <b>package manager for Windows</b>. One static binary,
+          portable apps, clean uninstalls &mdash; and a package can never run code on your machine.</p>
+
+        <div class="install" id="install">
+          <p class="install-label">Install &mdash; one line in PowerShell, no admin</p>
+          <div class="code big">
+            <span class="prompt">PS&gt;&nbsp;</span><span class="cmd" id="cmd-text">iwr -useb volibear.dev/install | iex</span>
+            <button class="copy" id="copy" type="button" aria-label="Copy install command">
+              <svg class="clip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              <svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 6L9 17l-5-5"></path>
+              </svg>
+              <span class="copy-label">Copy</span>
+            </button>
+          </div>
+          <p class="install-note">Downloads the latest release, verifies its SHA-256, and runs
+            <code>voli setup</code> (user-level PATH). It does nothing else &mdash; read
+            <a href="https://github.com/Topurrra/voli/blob/main/install.ps1" rel="noopener">install.ps1</a> first if you
+            like.</p>
+        </div>
+      </div>
+
+      <div class="hero-art">
+        <img src="assets/logo-forest.jpg"
+          alt="voli, a dark-navy bear in a green forest holding a parcel with a yellow lightning bolt" width="800"
+          height="800">
+      </div>
+    </section>
+
+    <!-- ---------- GUARANTEES ---------- -->
+    <section id="guarantees">
+      <div class="section-head reveal">
+        <span class="eyebrow"><span class="bolt">&#9889;</span> Guarantees</span>
+        <h2 class="section-title">Four promises, never violated</h2>
+        <p class="section-sub">Not policy &mdash; architecture. Each guarantee holds by construction, not by good
+          intentions.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card reveal" style="--accent-c: var(--forest)">
+          <span class="ic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+          </span>
+          <h3>Never requires admin</h3>
+          <p>Never touches HKLM or Program Files. Everything lives under your user profile, and junctions need no
+            elevation.</p>
+        </div>
+
+        <div class="card reveal" style="--accent-c: var(--pink)">
+          <span class="ic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6">
+              </path>
+            </svg>
+          </span>
+          <h3>Zero-trace uninstall</h3>
+          <p><code>voli uninstall x</code> leaves nothing behind &mdash; directory, shims, env vars and PATH entries all
+            removed, replayed backwards from the ledger.</p>
+        </div>
+
+        <div class="card reveal" style="--accent-c: var(--salmon)">
+          <span class="ic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <path d="M16 18l6-6-6-6M8 6l-6 6 6 6"></path>
+            </svg>
+          </span>
+          <h3>No scripts, ever</h3>
+          <p>Install is download &rarr; verify hash &rarr; extract &rarr; shim &rarr; consented env. The manifest grammar
+            <em>cannot express</em> code &mdash; a package can't run on your machine.</p>
+        </div>
+
+        <div class="card reveal" style="--accent-c: var(--bolt)">
+          <span class="ic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="11" width="18" height="11" rx="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+          </span>
+          <h3>Signed &amp; pinned</h3>
+          <p>Every artifact is SHA-256 verified before extraction. The package index is Ed25519-signed and rejected if
+            the signature doesn't check out.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- COMMANDS ---------- -->
+    <section id="commands">
+      <div class="section-head reveal">
+        <span class="eyebrow"><span class="bolt">&#9889;</span> Reference</span>
+        <h2 class="section-title">The whole CLI on one screen</h2>
+        <p class="section-sub">Fast, predictable, scriptable. Stable exit codes and <code>--json</code> on
+          <code>list</code>, <code>search</code> and <code>info</code> from day one.</p>
+      </div>
+
+      <div class="cmd-table reveal">
+        <div class="cmd-group">Manage packages</div>
+        <div class="cmd-row">
+          <code><span class="tok">voli install</span> <span class="arg">&lt;pkg&gt;[@version] …</span></code>
+          <span class="desc">Install one or more packages from the registry; pin a version with <code>@</code>.
+            Transactional per package.</span>
+        </div>
+        <div class="cmd-row">
+          <code><span class="tok">voli uninstall</span> <span class="arg">&lt;pkg&gt; …</span></code>
+          <span class="desc">Remove a package and everything it touched &mdash; zero trace, replayed from the
+            ledger.</span>
+        </div>
+        <div class="cmd-row">
+          <code><span class="tok">voli update</span></code>
+          <span class="desc">Refresh the signed package index &mdash; one small download (~250&nbsp;KB), not a git
+            clone.</span>
+        </div>
+        <div class="cmd-row">
+          <code><span class="tok">voli upgrade</span> <span class="arg">[&lt;pkg&gt;|--all]</span></code>
+          <span class="desc">Upgrade packages; respects pins. Running apps keep working via the atomic junction
+            flip.</span>
+        </div>
+
+        <div class="cmd-group">Explore</div>
+        <div class="cmd-row">
+          <code><span class="tok">voli list</span></code>
+          <span class="desc">Everything installed, with versions.</span>
+        </div>
+        <div class="cmd-row">
+          <code><span class="tok">voli search</span> <span class="arg">&lt;query&gt;</span></code>
+          <span class="desc">Full-text search over the local index &mdash; instant and offline.</span>
+        </div>
+        <div class="cmd-row">
+          <code><span class="tok">voli info</span> <span class="arg">&lt;pkg&gt;</span></code>
+          <span class="desc">Version, description, homepage, license and sources for a package.</span>
+        </div>
+        <div class="cmd-row">
+          <code><span class="tok">voli which</span> <span class="arg">&lt;bin&gt;</span></code>
+          <span class="desc">Resolve a shim to the real target it points at.</span>
+        </div>
+
+        <div class="cmd-group">Maintain</div>
+        <div class="cmd-row">
+          <code><span class="tok">voli pin</span> / <span class="tok">unpin</span> <span
+              class="arg">&lt;pkg&gt;</span></code>
+          <span class="desc">Freeze a package at its current version, excluding it from <code>upgrade --all</code>.</span>
+        </div>
+        <div class="cmd-row">
+          <code><span class="tok">voli cleanup</span></code>
+          <span class="desc">Remove non-current version dirs and stale download cache.</span>
+        </div>
+        <div class="cmd-row">
+          <code><span class="tok">voli doctor</span></code>
+          <span class="desc">Health checks: PATH sanity, env drift, broken shims, sync-folder root warnings.</span>
+        </div>
+        <div class="cmd-row">
+          <code><span class="tok">voli config</span> <span class="arg">get|set &lt;key&gt; [value]</span></code>
+          <span class="desc">Read or set configuration such as the install root.</span>
+        </div>
+        <div class="cmd-row">
+          <code><span class="tok">voli setup</span> / <span class="tok">self-update</span></code>
+          <span class="desc">Self-install onto the user PATH, and keep voli itself up to date.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- HOW IT WORKS ---------- -->
+    <section id="how">
+      <div class="section-head reveal">
+        <span class="eyebrow"><span class="bolt">&#9889;</span> How it works</span>
+        <h2 class="section-title">Portable apps, atomic upgrades, a ledger for cleanup</h2>
+        <p class="section-sub">No MSI/EXE installers, no vendor scripts. Just archives, shims and one PATH entry.</p>
+      </div>
+
+      <div class="how">
+        <ol class="reveal">
+          <li><span class="n">1</span><strong>Portable archives only.</strong> Apps are downloaded as zips/tarballs and
+            extracted &mdash; no vendor installer ever runs.</li>
+          <li><span class="n">2</span><strong>Versioned dirs + a junction flip.</strong> Each version lives in its own
+            folder; a <code>current</code> junction points at the active one, so upgrades are an atomic flip that never
+            breaks a running program.</li>
+          <li><span class="n">3</span><strong>Shims on one PATH entry.</strong> Tiny shims sit in a single
+            user-PATH folder and forward to <code>current</code> &mdash; nothing else pollutes your PATH.</li>
+          <li><span class="n">4</span><strong>Ledger-replay uninstall.</strong> Every mutation is recorded; uninstall
+            replays it backwards. Zero trace by construction, not by promise.</li>
+          <li><span class="n">5</span><strong>A ~250&nbsp;KB signed index.</strong> The catalog is an Ed25519-signed
+            SQLite snapshot fetched over HTTP &mdash; one small download to update.</li>
+        </ol>
+
+        <div class="diagram reveal" aria-hidden="true">
+          <svg viewBox="0 0 360 260" xmlns="http://www.w3.org/2000/svg" role="img">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7"
+                orient="auto-start-reverse">
+                <path d="M0 0L10 5L0 10z" fill="var(--link)"></path>
+              </marker>
+            </defs>
+
+            <!-- apps versioned dirs -->
+            <rect class="d-box" x="12" y="18" width="150" height="34" rx="8"></rect>
+            <text class="d-label" x="26" y="34">apps\ripgrep\</text>
+            <text class="d-sub" x="26" y="47">14.1.0 · 14.1.1</text>
+
+            <!-- current junction -->
+            <rect class="d-box" x="12" y="104" width="150" height="34" rx="8"></rect>
+            <text class="d-label" x="26" y="120">current\</text>
+            <text class="d-sub" x="26" y="133">junction → 14.1.1</text>
+
+            <!-- shim -->
+            <rect class="d-box" x="205" y="104" width="140" height="34" rx="8"></rect>
+            <text class="d-label" x="219" y="120">shims\rg.exe</text>
+            <text class="d-sub" x="219" y="133">forwards args</text>
+
+            <!-- PATH -->
+            <rect class="d-box" x="205" y="196" width="140" height="34" rx="8"></rect>
+            <text class="d-label" x="219" y="212">user PATH</text>
+            <text class="d-sub" x="219" y="225">one entry</text>
+
+            <!-- flows -->
+            <path class="d-flow" d="M87 52 L87 104"></path>
+            <path class="d-flow" d="M162 121 L205 121"></path>
+            <path class="d-flow" d="M275 138 L275 196"></path>
+
+            <!-- bolt accent between current and shim -->
+            <path class="d-bolt" d="M183 108 l-7 12 h5 l-4 12 l11 -15 h-5 l4 -9 z"></path>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- ADD YOUR APP ---------- -->
+    <section id="add">
+      <div class="section-head reveal">
+        <span class="eyebrow"><span class="bolt">&#9889;</span> Registry</span>
+        <h2 class="section-title">Add your app in three steps</h2>
+        <p class="section-sub">The registry is declarative and open. No scripts to review &mdash; just a manifest.</p>
+      </div>
+
+      <div class="steps">
+        <div class="step reveal">
+          <span class="num">01</span>
+          <h3>Ship a zip</h3>
+          <p>Publish a portable archive on GitHub Releases &mdash; the same one users would download by hand.</p>
+        </div>
+        <div class="step reveal">
+          <span class="num">02</span>
+          <h3>One TOML manifest</h3>
+          <p>Open a PR with a single declarative manifest: name, version, source URL, SHA-256 and the shims to create.
+          </p>
+        </div>
+        <div class="step reveal">
+          <span class="num">03</span>
+          <h3>CI signs &amp; ships</h3>
+          <p>Registry CI verifies the hash, rebuilds the index and Ed25519-signs it. Your app is live on the next
+            <code>voli update</code>.</p>
+        </div>
+      </div>
+
+      <div class="add-cta reveal">
+        <a class="btn btn-primary" href="https://github.com/Topurrra/voli-registry" rel="noopener">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z">
+            </path>
+          </svg>
+          Open the registry
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/Topurrra/voli" rel="noopener">Read the source</a>
+      </div>
+    </section>
+
+    <!-- ---------- FAQ ---------- -->
+    <section id="faq">
+      <div class="section-head reveal">
+        <span class="eyebrow"><span class="bolt">&#9889;</span> FAQ</span>
+        <h2 class="section-title">Honest answers</h2>
+      </div>
+
+      <div class="faq reveal">
+        <details class="qa">
+          <summary>Is it safe?
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6"></path>
+            </svg>
+          </summary>
+          <div class="a">
+            <p>Safety is built into the format, not bolted on. Every artifact is SHA-256 verified <em>before</em> it's
+              extracted, and the package index is Ed25519-signed &mdash; the public key is baked into the binary, and an
+              unsigned or tampered index is rejected outright.</p>
+            <p>The manifest grammar cannot express code, so there is no post-install script for an attacker to hide
+              something in. Extraction is also protected against zip-slip (archive entries can't escape their folder).
+            </p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Does it need admin?
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6"></path>
+            </svg>
+          </summary>
+          <div class="a">
+            <p>Never. voli never touches HKLM or Program Files &mdash; apps live under your user profile, PATH changes
+              are user-level, and the junctions it relies on need no elevation. If a command ever asks for admin, that's
+              a bug.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How is it different from Scoop, Chocolatey or winget?
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6"></path>
+            </svg>
+          </summary>
+          <div class="a">
+            <p>We're building a <strong>better Scoop</strong>, not a better Chocolatey.</p>
+            <table class="compare">
+              <thead>
+                <tr>
+                  <th>&nbsp;</th>
+                  <th>Choco / winget</th>
+                  <th>Scoop</th>
+                  <th>voli</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Model</td>
+                  <td>vendor installers</td>
+                  <td>portable + shims</td>
+                  <td>portable + shims</td>
+                </tr>
+                <tr>
+                  <td>Admin</td>
+                  <td>usually</td>
+                  <td>no</td>
+                  <td>never</td>
+                </tr>
+                <tr>
+                  <td>Uninstall</td>
+                  <td>weak</td>
+                  <td>good</td>
+                  <td>absolute</td>
+                </tr>
+                <tr>
+                  <td>Built in</td>
+                  <td>PowerShell/.NET</td>
+                  <td>PowerShell</td>
+                  <td>Rust, one exe</td>
+                </tr>
+                <tr>
+                  <td>Post-install</td>
+                  <td>arbitrary scripts</td>
+                  <td>arbitrary PS</td>
+                  <td>declarative only</td>
+                </tr>
+              </tbody>
+            </table>
+            <p>Chocolatey and winget wrap vendor MSI/EXE installers that can run arbitrary code and often need admin.
+              Scoop got the model right &mdash; portable archives and shims &mdash; but it's PowerShell, its buckets
+              update by git clone, and manifests can still run scripts. voli is a single Rust binary, updates the index
+              as a signed snapshot, and forbids scripts by construction.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>Can it install Chrome?
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6"></path>
+            </svg>
+          </summary>
+          <div class="a">
+            <p>Honestly: only if there's a portable build. voli installs portable archives &mdash; no MSI/EXE installers
+              and no vendor scripts &mdash; so anything that ships as a self-contained zip works great (CLIs, dev tools,
+              portable apps). Big installer-only desktop apps like Chrome aren't a fit today. That's a deliberate
+              trade-off for the no-admin, no-scripts, zero-trace guarantees, not an oversight.</p>
+          </div>
+        </details>
+
+        <details class="qa">
+          <summary>How do I uninstall voli itself?
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6"></path>
+            </svg>
+          </summary>
+          <div class="a">
+            <p>The same way it installs &mdash; cleanly. voli tracks its own PATH entry and install directory in the
+              ledger, so removing its root folder and the single user-PATH entry it added takes everything with it. No
+              registry residue, nothing left in Program Files, because it was never there in the first place.</p>
+          </div>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="foot">
+      <a class="brand" href="#top">
+        <img src="assets/logo.png" alt="" width="30" height="30">
+        voli
+      </a>
+      <div class="foot-links">
+        <a href="https://github.com/Topurrra/voli" rel="noopener">GitHub</a>
+        <a href="https://github.com/Topurrra/voli-registry" rel="noopener">Registry</a>
+        <a href="https://github.com/Topurrra/voli/blob/main/LICENSE" rel="noopener">License</a>
+      </div>
+      <p class="made">Made with &#128059; by Topurrra &middot; a fast, no-admin package manager for Windows.</p>
     </div>
-
-    <h2>Guarantees, never violated</h2>
-    <ul class="guarantees">
-      <li><strong>Never requires admin.</strong> Never touches HKLM or Program Files.</li>
-      <li><strong>Clean uninstall.</strong> <code>voli uninstall x</code> leaves zero trace — directory, shims, env
-        vars, and PATH entries all removed.</li>
-      <li><strong>No scripts, ever.</strong> Install is download → verify hash → extract → shim → (consented) env vars.
-        A package cannot run code on your machine.</li>
-      <li><strong>Everything is pinned.</strong> Every artifact is sha256-verified; the index is Ed25519-signed.</li>
-    </ul>
-
-    <footer>
-      <a href="https://github.com/Topurrra/voli">GitHub</a>
-      &nbsp;·&nbsp;
-      <a href="https://github.com/Topurrra/voli-registry">Registry</a>
-    </footer>
-  </div>
+  </footer>
 
   <script>
-    // Vanilla, no framework. Copies the install one-liner.
-    var btn = document.getElementById('copy');
-    btn.addEventListener('click', function () {
-      var text = document.getElementById('cmd-text').textContent;
-      navigator.clipboard.writeText(text).then(function () {
-        btn.textContent = 'Copied';
-        setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+    // ---- Theme toggle: OS default, override + persist, no framework ----
+    (function () {
+      var root = document.documentElement;
+      var btn = document.getElementById('theme');
+
+      function current() {
+        var set = root.getAttribute('data-theme');
+        if (set) return set;
+        return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      function sync() {
+        var isLight = current() === 'light';
+        btn.classList.toggle('is-light', isLight);
+        btn.setAttribute('aria-pressed', String(isLight));
+      }
+      btn.addEventListener('click', function () {
+        var next = current() === 'light' ? 'dark' : 'light';
+        root.setAttribute('data-theme', next);
+        try { localStorage.setItem('voli-theme', next); } catch (e) { }
+        sync();
       });
-    });
+      sync();
+    })();
+
+    // ---- Copy the install one-liner ----
+    (function () {
+      var btn = document.getElementById('copy');
+      var label = btn.querySelector('.copy-label');
+      var src = document.getElementById('cmd-text');
+      btn.addEventListener('click', function () {
+        var text = src.textContent.trim();
+        function done() {
+          btn.classList.add('copied');
+          label.textContent = 'Copied';
+          setTimeout(function () { btn.classList.remove('copied'); label.textContent = 'Copy'; }, 1600);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () { fallback(text); done(); });
+        } else { fallback(text); done(); }
+      });
+      function fallback(text) {
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); } catch (e) { }
+        document.body.removeChild(ta);
+      }
+    })();
+
+    // ---- Subtle reveal on scroll (respects reduced-motion) ----
+    (function () {
+      var items = document.querySelectorAll('.reveal');
+      var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduce || !('IntersectionObserver' in window)) {
+        items.forEach(function (el) { el.classList.add('in'); });
+        return;
+      }
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+        });
+      }, { rootMargin: '0px 0px -8% 0px', threshold: .08 });
+      items.forEach(function (el) { io.observe(el); });
+    })();
   </script>
 </body>
 
