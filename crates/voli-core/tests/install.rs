@@ -152,7 +152,28 @@ fn snapshot(root: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
     out
 }
 
+/// Binary-wide scratch locations for the process-global env hooks, set ONCE
+/// before any install runs and never removed. Without this, tests that install
+/// while `VOLI_UNINSTALL_SUBKEY` is unset write to the user's REAL Apps &
+/// Features registry (found polluted 2026-07-24), and any test that flips the
+/// vars mid-run races every parallel sibling.
+fn scratch_global_env() -> std::path::PathBuf {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    let dir = std::env::temp_dir().join("voli-test-shortcuts-installbin");
+    INIT.call_once(|| {
+        let _ = std::fs::create_dir_all(&dir);
+        // SAFETY: set once before any reader thread, same value for the whole
+        // test binary, never mutated again.
+        unsafe {
+            std::env::set_var("VOLI_UNINSTALL_SUBKEY", "Software\\voli-scratch-installbin");
+            std::env::set_var("VOLI_SHORTCUT_DIR", &dir);
+        }
+    });
+    dir
+}
+
 fn setup() -> tempfile::TempDir {
+    scratch_global_env();
     ensure_stub();
     tempfile::tempdir().unwrap()
 }
@@ -426,9 +447,12 @@ fn zip_slip_7z_rejected_mutates_nothing() {
 // each other and with other install tests in this binary.
 
 fn write_manifest_with_shortcuts(dir: &Path, sha256: &str) -> PathBuf {
+    // Unique package name: other tests in this binary install "ripgrep", and
+    // the A&F registry base is now binary-wide — assertions here must not see
+    // their keys come and go.
     let toml = format!(
         r#"
-name = "ripgrep"
+name = "rgshort"
 version = "1.0.0"
 kind = "app"
 extract_dir = "ripgrep-1.0.0"
@@ -440,7 +464,7 @@ url = "https://example.com/rg.zip"
 sha256 = "{sha256}"
 "#
     );
-    let p = dir.join("ripgrep.toml");
+    let p = dir.join("rgshort.toml");
     fs::write(&p, toml).unwrap();
     p
 }
@@ -452,15 +476,10 @@ fn shortcut_and_apps_features_lifecycle() {
     let td = setup();
     let root = td.path();
 
-    // Scratch dirs/subkeys — avoid touching the real registry.
-    let shortcut_dir = td.path().join("shortcuts");
-    let sk = "Software\\voli-test-shortcut-af";
-    let _ = uninstall_reg::delete_base(sk);
-    // SAFETY: test-local env overrides, restored at end.
-    unsafe {
-        std::env::set_var("VOLI_SHORTCUT_DIR", &shortcut_dir);
-        std::env::set_var("VOLI_UNINSTALL_SUBKEY", sk);
-    }
+    // Binary-wide scratch env (set once in setup()) — never flipped mid-run,
+    // so parallel sibling tests can't race between real and scratch registry.
+    let shortcut_dir = scratch_global_env();
+    let sk = "Software\\voli-scratch-installbin";
 
     // --- Part 1: shortcut created on install, removed on uninstall ---
     let zip = ripgrep_zip();
@@ -474,9 +493,9 @@ fn shortcut_and_apps_features_lifecycle() {
     assert!(lnk.is_file(), "shortcut rg.lnk should exist after install");
 
     // Apps & Features key must exist with v1.0.0.
-    assert!(uninstall_reg::key_exists(sk, "ripgrep"));
+    assert!(uninstall_reg::key_exists(sk, "rgshort"));
     {
-        let subkey = uninstall_reg::package_subkey(sk, "ripgrep");
+        let subkey = uninstall_reg::package_subkey(sk, "rgshort");
         let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
             .open_subkey(&subkey)
             .unwrap();
@@ -484,20 +503,20 @@ fn shortcut_and_apps_features_lifecycle() {
         assert_eq!(ver, "1.0.0");
     }
 
-    uninstall("ripgrep", root, false).unwrap();
+    uninstall("rgshort", root, false).unwrap();
     assert!(
         !lnk.exists(),
         "shortcut rg.lnk should be removed after uninstall"
     );
     assert!(
-        !uninstall_reg::key_exists(sk, "ripgrep"),
+        !uninstall_reg::key_exists(sk, "rgshort"),
         "A&F key should be removed"
     );
 
     // --- Part 2: Apps & Features key updated on upgrade ---
     // Re-install v1.0.0.
     install_local(&manifest, &archive, root).unwrap();
-    assert!(uninstall_reg::key_exists(sk, "ripgrep"));
+    assert!(uninstall_reg::key_exists(sk, "rgshort"));
 
     // Upgrade to v2.0.0.
     let zip2 = build_zip(&[
@@ -508,7 +527,7 @@ fn shortcut_and_apps_features_lifecycle() {
     fs::write(&archive2, &zip2).unwrap();
     let toml2 = format!(
         r#"
-name = "ripgrep"
+name = "rgshort"
 version = "2.0.0"
 kind = "app"
 extract_dir = "ripgrep-2.0.0"
@@ -526,7 +545,7 @@ sha256 = "{}"
 
     // DisplayVersion must now be 2.0.0.
     {
-        let subkey = uninstall_reg::package_subkey(sk, "ripgrep");
+        let subkey = uninstall_reg::package_subkey(sk, "rgshort");
         let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
             .open_subkey(&subkey)
             .unwrap();
@@ -542,11 +561,7 @@ sha256 = "{}"
     // Shortcut must still exist after upgrade (rewritten).
     assert!(lnk.is_file(), "shortcut should survive upgrade");
 
-    // Cleanup.
-    uninstall("ripgrep", root, true).unwrap();
-    let _ = uninstall_reg::delete_base(sk);
-    unsafe {
-        std::env::remove_var("VOLI_SHORTCUT_DIR");
-        std::env::remove_var("VOLI_UNINSTALL_SUBKEY");
-    }
+    // Cleanup our own package key; the binary-wide scratch base and env vars
+    // stay for the whole process (other tests share them).
+    uninstall("rgshort", root, true).unwrap();
 }

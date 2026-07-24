@@ -38,7 +38,20 @@ fn ensure_stub() {
             p
         });
         // SAFETY: set once, before any install runs.
-        unsafe { std::env::set_var("VOLI_SHIM_STUB", stub) };
+        unsafe {
+            std::env::set_var("VOLI_SHIM_STUB", stub);
+            // Binary-wide scratch registry/shortcut hooks: without these, any
+            // in-process install writes to the user REAL Apps & Features
+            // registry (found polluted 2026-07-24).
+            std::env::set_var(
+                "VOLI_UNINSTALL_SUBKEY",
+                concat!("Software\\voli-scratch-", env!("CARGO_CRATE_NAME")),
+            );
+            let sdir =
+                std::env::temp_dir().join(concat!("voli-scratch-lnk-", env!("CARGO_CRATE_NAME")));
+            let _ = fs::create_dir_all(&sdir);
+            std::env::set_var("VOLI_SHORTCUT_DIR", sdir);
+        };
     });
 }
 
