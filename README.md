@@ -14,12 +14,6 @@ One line in PowerShell (no admin):
 iwr -useb volibear.dev/install | iex
 ```
 
-Before DNS is set up, use the raw GitHub fallback:
-
-```powershell
-iwr -useb https://raw.githubusercontent.com/Topurrra/voli/main/install.ps1 | iex
-```
-
 The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else — read it first
 if you like: [`install.ps1`](install.ps1).

@@ -20,7 +20,8 @@ const EXIT_ERROR: i32 = 1;
 #[command(
     name = "voli",
     version,
-    about = "A fast, no-admin package manager for Windows"
+    about = "A fast, no-admin package manager for Windows",
+    arg_required_else_help = true
 )]
 struct Cli {
     /// Assume "yes" to prompts; never wait for interactive input.

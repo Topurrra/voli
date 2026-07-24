@@ -91,18 +91,35 @@ pub fn self_install(
         .map(|p| env::path_has_segment(p, &shims_str))
         .unwrap_or(false);
 
-    // Ledger the PATH entry under @voli, once.
+    // Shim voli itself: only shims\ is on PATH, and voli.exe lives in bin\ —
+    // without this, `voli` is not resolvable in any shell (launch-day bug).
+    let stub = bin_dir.join("voli-shim.exe");
+    if stub.is_file() {
+        fs::write(
+            shims_dir.join("voli.shim"),
+            format!("{}\r\n", bin_dir.join("voli.exe").display()),
+        )?;
+        replace_file(&stub, &shims_dir.join("voli.exe"))?;
+    }
+
+    // Ledger the PATH entry + self-shim under @voli, once.
     let mut state = State::open(&paths.state_db())?;
     if !state.is_installed(SELF_PACKAGE)? {
-        let action = Action::PathAdded {
-            segment: shims_str.clone(),
-        };
+        let actions = [
+            Action::PathAdded {
+                segment: shims_str.clone(),
+            },
+            Action::ShimWritten {
+                shim: shims_dir.join("voli.shim"),
+                exe: shims_dir.join("voli.exe"),
+            },
+        ];
         let manifest_json = format!("{{\"name\":\"{SELF_PACKAGE}\"}}");
         state.record_install(
             SELF_PACKAGE,
             env!("CARGO_PKG_VERSION"),
             &manifest_json,
-            &[action],
+            &actions,
         )?;
     }
 
