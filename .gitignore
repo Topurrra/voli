@@ -16,3 +16,4 @@ Cargo.lock.bak
 # and must be rotated before launch. See docs/Voli.md §10 key management.
 /registry-dev/
 *.signing-key.hex
+.qwen/
