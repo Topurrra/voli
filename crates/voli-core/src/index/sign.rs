@@ -77,12 +77,20 @@ mod tests {
     use super::*;
 
     /// The dev secret in `registry-dev/dev-signing-key.hex` must derive exactly
-    /// the embedded [`DEV_PUBKEY`]. This is the cfg(test)-reachable key path and
-    /// the guard that the embedded key never drifts from the stored secret.
+    /// the embedded [`DEV_PUBKEY`], guarding against drift. The key file is
+    /// gitignored (never in CI clones), so read at runtime and skip if absent —
+    /// this check only means something on a machine that holds the key anyway.
     #[test]
     fn dev_pubkey_matches_stored_secret() {
-        let hex_str = include_str!("../../../../registry-dev/dev-signing-key.hex");
-        let secret = secret_key_from_hex(hex_str).expect("valid dev secret");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../registry-dev/dev-signing-key.hex"
+        );
+        let Ok(hex_str) = std::fs::read_to_string(path) else {
+            eprintln!("skipped: no local signing key at {path}");
+            return;
+        };
+        let secret = secret_key_from_hex(&hex_str).expect("valid dev secret");
         assert_eq!(public_key_hex(&secret), DEV_PUBKEY);
     }
 
