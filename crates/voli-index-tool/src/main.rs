@@ -55,6 +55,14 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Check GitHub releases for newer versions and emit updated manifests.
+    Bump {
+        /// The `manifests/` directory.
+        dir: PathBuf,
+        /// Max packages to bump per run (downloads are the cost).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 fn main() -> ExitCode {
@@ -135,6 +143,11 @@ fn run() -> anyhow::Result<ExitCode> {
                 }
                 None => print!("{toml}"),
             }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Bump { dir, limit } => {
+            let summary = voli_index_tool::bump(&dir, limit)?;
+            println!("\n{}", summary);
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -299,4 +312,46 @@ fn find_bins(dir: &Path) -> Vec<String> {
         .unwrap_or_default();
     bins.sort();
     bins
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guess_version_dotted() {
+        assert_eq!(
+            guess_version(
+                "https://github.com/o/r/releases/download/v14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip"
+            ),
+            "14.1.1"
+        );
+    }
+
+    #[test]
+    fn guess_version_v_prefix_tag() {
+        assert_eq!(
+            guess_version("https://github.com/o/r/releases/download/v2.3.4/tool-2.3.4.zip"),
+            "2.3.4"
+        );
+    }
+
+    #[test]
+    fn guess_version_bare_number() {
+        assert_eq!(guess_version("https://example.com/tool-7.zip"), "7");
+    }
+
+    #[test]
+    fn guess_version_fallback() {
+        assert_eq!(guess_version("https://example.com/mytool.zip"), "1.0.0");
+    }
+
+    #[test]
+    fn guess_version_no_arch_leak() {
+        // The "14.1.1-x86 bug": arch tokens must not leak into the version.
+        assert_eq!(
+            guess_version("https://x/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip"),
+            "14.1.1"
+        );
+    }
 }

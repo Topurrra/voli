@@ -120,6 +120,8 @@ enum Command {
     },
     /// Update voli itself.
     SelfUpdate,
+    /// Remove voli and all installed packages completely (zero trace).
+    SelfUninstall,
 }
 
 #[derive(Subcommand)]
@@ -177,6 +179,7 @@ fn main() {
         Command::Search { query } => cmd_index::run_search(&root(), query, cli.json),
         Command::Info { package } => cmd_index::run_info(&root(), package, cli.json),
         Command::SelfUpdate => cmd_self_update(),
+        Command::SelfUninstall => cmd_self_uninstall(cli.yes),
     };
     std::process::exit(code);
 }
@@ -810,6 +813,195 @@ fn replace_binary(src: &Path, dst: &Path) -> std::io::Result<()> {
         std::fs::rename(&staged, dst)?;
     }
     Ok(())
+}
+
+fn cmd_self_uninstall(auto_yes: bool) -> i32 {
+    let root = root();
+    let paths = Paths::at(&root);
+
+    // Safety rail: refuse if root doesn't look like a voli installation.
+    if !root.join("bin").join("voli.exe").exists() || !root.join("db").join("state.sqlite").exists()
+    {
+        eprintln!(
+            "error: {} does not look like a voli root (missing bin\\voli.exe or db\\state.sqlite)",
+            root.display()
+        );
+        eprintln!("refusing to delete a directory that is not a voli installation.");
+        return EXIT_ERROR;
+    }
+
+    // Gather what will be removed.
+    let state = match State::open(&paths.state_db()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot open state db: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let pkgs: Vec<String> = match state.list() {
+        Ok(list) => list
+            .iter()
+            .filter(|p| p.name != "@voli")
+            .map(|p| p.name.clone())
+            .collect(),
+        Err(e) => {
+            eprintln!("error: cannot list packages: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    drop(state);
+
+    // Prompt (default NO — the only voli prompt that defaults to no).
+    if !auto_yes {
+        println!("This will PERMANENTLY remove:");
+        println!("  - voli itself (bin, shims, db, cache)");
+        if pkgs.is_empty() {
+            println!("  - no installed packages");
+        } else {
+            println!(
+                "  - {} installed package(s): {}",
+                pkgs.len(),
+                pkgs.join(", ")
+            );
+        }
+        println!(
+            "  - all persist data, env vars, PATH entries, shortcuts, and Apps & Features keys"
+        );
+        println!("  - the voli root: {}", root.display());
+        println!();
+        print!("This cannot be undone. Proceed? [y/N] ");
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer).ok();
+        if !answer.trim().eq_ignore_ascii_case("y") && !answer.trim().eq_ignore_ascii_case("yes") {
+            println!("aborted.");
+            return 0;
+        }
+    }
+
+    // 1. Uninstall every package (purge — persist goes too).
+    let env_subkey = env_subkey();
+    for name in &pkgs {
+        match uninstall(name, &root, true) {
+            Ok(_) => println!("  uninstalled {name}"),
+            Err(e) => eprintln!("  warning: uninstall {name} failed: {e}"),
+        }
+    }
+
+    // 2. Remove @voli ledger items (PATH entry, self-shim).
+    {
+        let mut state = match State::open(&paths.state_db()) {
+            Ok(s) => s,
+            Err(_) => {
+                // State db may already be gone; proceed.
+                eprintln!("  warning: cannot open state db for @voli cleanup");
+                return cleanup_root(&root);
+            }
+        };
+        if let Ok(actions) = state.actions_for("@voli") {
+            for a in actions.iter().rev() {
+                match a {
+                    Action::PathAdded { segment } => {
+                        let _ = env::remove_from_path(&env_subkey, segment);
+                    }
+                    Action::ShimWritten { shim, exe } => {
+                        let _ = std::fs::remove_file(shim);
+                        let _ = std::fs::remove_file(exe);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let _ = state.remove_package("@voli");
+        env::broadcast_change();
+    }
+
+    // 3. Delete everything under root except bin\voli.exe (which is running).
+    cleanup_root(&root)
+}
+
+/// Remove the entire voli root, deterministically, while we are still running.
+///
+/// Windows will not DELETE a running exe, but it will happily MOVE one — so we
+/// move our own binary out to %TEMP% first, at which point nothing in the root
+/// is locked and a plain remove_dir_all wipes it synchronously (no detached
+/// helper races, works even under process-tree-killing Job Objects). The moved
+/// exe in %TEMP% gets a best-effort background delete; if that dies, a single
+/// orphan file in the temp dir is the worst case and the OS cleans temp anyway.
+fn cleanup_root(root: &Path) -> i32 {
+    // 3a. Move the running exe out of the tree.
+    let parked = std::env::temp_dir().join(format!("voli-selfdelete-{}.exe", std::process::id()));
+    if let Ok(me) = std::env::current_exe() {
+        let _ = std::fs::remove_file(&parked);
+        if std::fs::rename(&me, &parked).is_err() {
+            // Cross-volume temp (rename can't move a running exe between
+            // volumes) — park it inside root's parent instead.
+            let fallback = root.with_extension("voli-selfdelete.exe");
+            if std::fs::rename(&me, &fallback).is_ok() {
+                let _ = std::fs::remove_dir_all(root);
+                schedule_temp_delete(&fallback);
+                println!();
+                println!("voli removed itself. The bear waves goodbye. \u{1F43B}");
+                return 0;
+            }
+            // Can't move at all — extremely unusual; leave bin\voli.exe and
+            // tell the user rather than pretending.
+            let _ = std::fs::remove_dir_all(root.join("apps"));
+            let _ = std::fs::remove_dir_all(root.join("shims"));
+            let _ = std::fs::remove_dir_all(root.join("db"));
+            let _ = std::fs::remove_dir_all(root.join("cache"));
+            let _ = std::fs::remove_file(root.join("config.toml"));
+            eprintln!(
+                "warning: could not relocate the running voli.exe; delete {} manually.",
+                root.display()
+            );
+            return 0;
+        }
+    }
+
+    // 3b. Nothing in root is locked now — synchronous, verifiable removal.
+    if let Err(e) = std::fs::remove_dir_all(root) {
+        eprintln!("warning: could not fully remove {}: {e}", root.display());
+    }
+
+    // 3c. Best-effort background delete of the parked exe after we exit.
+    schedule_temp_delete(&parked);
+
+    println!();
+    println!("voli removed itself. The bear waves goodbye. \u{1F43B}");
+    0
+}
+
+/// Best-effort detached delete of the parked (still-running) exe copy.
+/// Breakaway first so tree-killing Job Objects don't reap the helper; if even
+/// that dies, one orphan file in %TEMP% is the accepted worst case.
+fn schedule_temp_delete(parked: &Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        let target = parked.to_string_lossy().replace('/', "\\");
+        let cmd = format!(
+            "for /l %n in (1,1,15) do (del /f /q \"{target}\" 2>nul & \
+             if not exist \"{target}\" exit 0 & ping -n 2 127.0.0.1 >nul)"
+        );
+        let spawn = |flags: u32| {
+            std::process::Command::new("cmd")
+                .args(["/c", &cmd])
+                .creation_flags(flags)
+                .spawn()
+        };
+        if spawn(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB).is_err() {
+            let _ = spawn(CREATE_NO_WINDOW | DETACHED_PROCESS);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::fs::remove_file(parked);
+    }
 }
 
 fn cmd_config(action: &ConfigAction, json: bool) -> i32 {

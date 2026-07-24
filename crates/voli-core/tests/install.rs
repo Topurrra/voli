@@ -419,3 +419,134 @@ fn zip_slip_7z_rejected_mutates_nothing() {
     let state = State::open(&root.join("db/state.sqlite")).unwrap();
     assert!(state.list().unwrap().is_empty());
 }
+
+// ---- shortcut + Apps & Features integration test ----
+// These mutate process-global env vars (VOLI_UNINSTALL_SUBKEY,
+// VOLI_SHORTCUT_DIR), so they run as ONE test to avoid racing with
+// each other and with other install tests in this binary.
+
+fn write_manifest_with_shortcuts(dir: &Path, sha256: &str) -> PathBuf {
+    let toml = format!(
+        r#"
+name = "ripgrep"
+version = "1.0.0"
+kind = "app"
+extract_dir = "ripgrep-1.0.0"
+bin = ["rg.exe"]
+shortcuts = ["rg.exe"]
+
+[source.x64]
+url = "https://example.com/rg.zip"
+sha256 = "{sha256}"
+"#
+    );
+    let p = dir.join("ripgrep.toml");
+    fs::write(&p, toml).unwrap();
+    p
+}
+
+#[test]
+fn shortcut_and_apps_features_lifecycle() {
+    use voli_core::uninstall_reg;
+
+    let td = setup();
+    let root = td.path();
+
+    // Scratch dirs/subkeys — avoid touching the real registry.
+    let shortcut_dir = td.path().join("shortcuts");
+    let sk = "Software\\voli-test-shortcut-af";
+    let _ = uninstall_reg::delete_base(sk);
+    // SAFETY: test-local env overrides, restored at end.
+    unsafe {
+        std::env::set_var("VOLI_SHORTCUT_DIR", &shortcut_dir);
+        std::env::set_var("VOLI_UNINSTALL_SUBKEY", sk);
+    }
+
+    // --- Part 1: shortcut created on install, removed on uninstall ---
+    let zip = ripgrep_zip();
+    let archive = root.join("rg.zip");
+    fs::write(&archive, &zip).unwrap();
+    let manifest = write_manifest_with_shortcuts(root, &sha256_hex(&zip));
+
+    install_local(&manifest, &archive, root).expect("install should succeed");
+
+    let lnk = shortcut_dir.join("rg.lnk");
+    assert!(lnk.is_file(), "shortcut rg.lnk should exist after install");
+
+    // Apps & Features key must exist with v1.0.0.
+    assert!(uninstall_reg::key_exists(sk, "ripgrep"));
+    {
+        let subkey = uninstall_reg::package_subkey(sk, "ripgrep");
+        let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+            .open_subkey(&subkey)
+            .unwrap();
+        let ver: String = key.get_value("DisplayVersion").unwrap();
+        assert_eq!(ver, "1.0.0");
+    }
+
+    uninstall("ripgrep", root, false).unwrap();
+    assert!(
+        !lnk.exists(),
+        "shortcut rg.lnk should be removed after uninstall"
+    );
+    assert!(
+        !uninstall_reg::key_exists(sk, "ripgrep"),
+        "A&F key should be removed"
+    );
+
+    // --- Part 2: Apps & Features key updated on upgrade ---
+    // Re-install v1.0.0.
+    install_local(&manifest, &archive, root).unwrap();
+    assert!(uninstall_reg::key_exists(sk, "ripgrep"));
+
+    // Upgrade to v2.0.0.
+    let zip2 = build_zip(&[
+        ("ripgrep-2.0.0/", b""),
+        ("ripgrep-2.0.0/rg.exe", b"fake rg binary v2"),
+    ]);
+    let archive2 = root.join("rg-2.0.0.zip");
+    fs::write(&archive2, &zip2).unwrap();
+    let toml2 = format!(
+        r#"
+name = "ripgrep"
+version = "2.0.0"
+kind = "app"
+extract_dir = "ripgrep-2.0.0"
+bin = ["rg.exe"]
+shortcuts = ["rg.exe"]
+
+[source.x64]
+url = "https://example.com/rg-2.0.0.zip"
+sha256 = "{}"
+"#,
+        sha256_hex(&zip2)
+    );
+    let m2 = voli_core::Manifest::from_toml_str(&toml2).unwrap();
+    voli_core::upgrade_install(&m2, &archive2, &[], root).unwrap();
+
+    // DisplayVersion must now be 2.0.0.
+    {
+        let subkey = uninstall_reg::package_subkey(sk, "ripgrep");
+        let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+            .open_subkey(&subkey)
+            .unwrap();
+        let ver: String = key.get_value("DisplayVersion").unwrap();
+        assert_eq!(
+            ver, "2.0.0",
+            "DisplayVersion should be updated after upgrade"
+        );
+        // EstimatedSize is in KB; tiny test fixtures round to 0.
+        let _size: u32 = key.get_value("EstimatedSize").unwrap();
+    }
+
+    // Shortcut must still exist after upgrade (rewritten).
+    assert!(lnk.is_file(), "shortcut should survive upgrade");
+
+    // Cleanup.
+    uninstall("ripgrep", root, true).unwrap();
+    let _ = uninstall_reg::delete_base(sk);
+    unsafe {
+        std::env::remove_var("VOLI_SHORTCUT_DIR");
+        std::env::remove_var("VOLI_UNINSTALL_SUBKEY");
+    }
+}

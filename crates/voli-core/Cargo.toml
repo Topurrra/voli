@@ -40,3 +40,4 @@ tiny_http = { workspace = true }
 
 [target.'cfg(windows)'.dev-dependencies]
 junction = { workspace = true }
+winreg = { workspace = true }

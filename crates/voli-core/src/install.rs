@@ -943,7 +943,11 @@ fn hex(bytes: &[u8]) -> String {
 // ---- Start Menu shortcuts (COM IShellLink) --------------------------------
 
 /// `%APPDATA%\Microsoft\Windows\Start Menu\Programs\voli\`
+/// Override with `VOLI_SHORTCUT_DIR` for tests.
 fn shortcut_dir() -> io::Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("VOLI_SHORTCUT_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
     let appdata = std::env::var_os("APPDATA")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "APPDATA is not set"))?;
     Ok(PathBuf::from(appdata)

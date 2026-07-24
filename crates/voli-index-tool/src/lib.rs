@@ -259,6 +259,338 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+// ---- auto-bump -----------------------------------------------------------
+
+/// Outcome of a single package bump attempt.
+enum BumpResult {
+    Bumped { from: String, to: String },
+    UpToDate(String),
+    Skipped(String),
+}
+
+/// Check GitHub releases for newer versions of packages with `[autoupdate]`
+/// and emit updated manifests. Returns a human-readable summary table.
+pub fn bump(dir: &Path, limit: usize) -> Result<String> {
+    let (manifests, errors) = analyze(dir)?;
+    if !errors.is_empty() {
+        bail!("{} manifest error(s); fix before bumping", errors.len());
+    }
+
+    // Group by name, keep latest version only.
+    let mut latest: std::collections::BTreeMap<String, Manifest> =
+        std::collections::BTreeMap::new();
+    for m in manifests {
+        match latest.get(&m.name) {
+            Some(prev) => {
+                if voli_core::index::cmp_version(&m.version, &prev.version)
+                    == std::cmp::Ordering::Greater
+                {
+                    latest.insert(m.name.clone(), m);
+                }
+            }
+            None => {
+                latest.insert(m.name.clone(), m);
+            }
+        }
+    }
+
+    let token = std::env::var("GITHUB_TOKEN").ok();
+    let mut results: Vec<(String, BumpResult)> = Vec::new();
+    let mut bumped_count = 0;
+
+    for (name, m) in &latest {
+        if bumped_count >= limit {
+            results.push((name.clone(), BumpResult::Skipped("limit reached".into())));
+            continue;
+        }
+
+        // Extract GitHub owner/repo from [autoupdate].
+        let Some((owner, repo)) = github_repo(m) else {
+            continue; // no autoupdate or not GitHub — silently skip
+        };
+
+        match bump_one(name, m, &owner, &repo, token.as_deref(), dir) {
+            Ok(r) => {
+                if matches!(r, BumpResult::Bumped { .. }) {
+                    bumped_count += 1;
+                }
+                results.push((name.clone(), r));
+            }
+            Err(e) => {
+                results.push((name.clone(), BumpResult::Skipped(e.to_string())));
+            }
+        }
+    }
+
+    // Build summary table.
+    let mut out = String::new();
+    out.push_str("bump summary\n");
+    out.push_str("| package | status | detail |\n|---|---|---|\n");
+    for (name, r) in &results {
+        match r {
+            BumpResult::Bumped { from, to } => {
+                out.push_str(&format!("| {name} | **bumped** | {from} → {to} |\n"));
+            }
+            BumpResult::UpToDate(v) => {
+                out.push_str(&format!("| {name} | up-to-date | {v} |\n"));
+            }
+            BumpResult::Skipped(reason) => {
+                out.push_str(&format!("| {name} | skipped | {reason} |\n"));
+            }
+        }
+    }
+    let bumped = results
+        .iter()
+        .filter(|(_, r)| matches!(r, BumpResult::Bumped { .. }))
+        .count();
+    let uptodate = results
+        .iter()
+        .filter(|(_, r)| matches!(r, BumpResult::UpToDate(_)))
+        .count();
+    let skipped = results
+        .iter()
+        .filter(|(_, r)| matches!(r, BumpResult::Skipped(_)))
+        .count();
+    out.push_str(&format!(
+        "\n{bumped} bumped, {uptodate} up-to-date, {skipped} skipped\n"
+    ));
+    Ok(out)
+}
+
+/// Extract `(owner, repo)` from a manifest's `[autoupdate]` if it has a
+/// GitHub-style checkver.
+fn github_repo(m: &Manifest) -> Option<(String, String)> {
+    let au = m.autoupdate.as_ref()?;
+    // checkver = { github = "owner/repo" }
+    if let Some(cv) = au.get("checkver") {
+        if let Some(gh) = cv.get("github").and_then(|v| v.as_str()) {
+            let parts: Vec<&str> = gh.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                return Some((parts[0].to_string(), parts[1].to_string()));
+            }
+        }
+        // checkver = "owner/repo" (bare string form)
+        if let Some(s) = cv.as_str() {
+            let parts: Vec<&str> = s.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                return Some((parts[0].to_string(), parts[1].to_string()));
+            }
+        }
+    }
+    None
+}
+
+fn bump_one(
+    name: &str,
+    m: &Manifest,
+    owner: &str,
+    repo: &str,
+    token: Option<&str>,
+    manifests_dir: &Path,
+) -> Result<BumpResult> {
+    // Query GitHub API.
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
+    let mut req = ureq::get(&url).set("User-Agent", "voli-index-tool");
+    if let Some(t) = token {
+        req = req.set("Authorization", &format!("Bearer {t}"));
+    }
+    let resp = match req.call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(404, _)) => {
+            return Ok(BumpResult::Skipped("repo not found (404)".into()));
+        }
+        Err(ureq::Error::Status(403, _)) => {
+            return Ok(BumpResult::Skipped("rate limited (403)".into()));
+        }
+        Err(e) => return Err(anyhow::anyhow!("GitHub API: {e}")),
+    };
+    let body: serde_json::Value = resp
+        .into_string()
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .ok_or_else(|| anyhow::anyhow!("bad API JSON"))?;
+
+    let tag = body["tag_name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no tag_name"))?;
+    let new_version = tag.trim_start_matches('v');
+
+    // Compare versions.
+    if voli_core::index::cmp_version(new_version, &m.version) != std::cmp::Ordering::Greater {
+        return Ok(BumpResult::UpToDate(m.version.clone()));
+    }
+
+    // Derive new URL for x64 source.
+    let source = m
+        .source
+        .x64
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("no x64 source"))?;
+    let new_url = derive_url(&source.url, &m.version, new_version)
+        .ok_or_else(|| anyhow::anyhow!("url not derivable"))?;
+
+    // Download and hash.
+    let is_sha512 = source.is_sha512();
+    let hash = download_and_hash(&new_url, is_sha512)?;
+
+    // Build new manifest TOML.
+    let new_toml = emit_bumped(m, new_version, &new_url, &hash, is_sha512);
+
+    // Validate with the real parser.
+    Manifest::from_toml_str(&new_toml)
+        .map_err(|e| anyhow::anyhow!("emitted manifest invalid: {e}"))?;
+
+    // Write.
+    let letter = &name[..1];
+    let dest = manifests_dir.join(letter).join(name);
+    std::fs::create_dir_all(&dest)?;
+    let file = dest.join(format!("{new_version}.toml"));
+    std::fs::write(&file, &new_toml)?;
+
+    Ok(BumpResult::Bumped {
+        from: m.version.clone(),
+        to: new_version.to_string(),
+    })
+}
+
+/// Derive the new asset URL by substituting the version.
+fn derive_url(old_url: &str, old_ver: &str, new_ver: &str) -> Option<String> {
+    // Try direct string replacement of old version in the URL.
+    if old_url.contains(old_ver) {
+        let new = old_url.replace(old_ver, new_ver);
+        if new != old_url {
+            return Some(new);
+        }
+    }
+    None
+}
+
+/// Download a URL and compute its hash (sha256 or sha512).
+fn download_and_hash(url: &str, sha512: bool) -> Result<String> {
+    use sha2::{Digest, Sha256, Sha512};
+    let resp = ureq::get(url)
+        .set("User-Agent", "voli-index-tool")
+        .call()
+        .map_err(|e| anyhow::anyhow!("download {url}: {e}"))?;
+    let mut bytes = Vec::new();
+    resp.into_reader()
+        .read_to_end(&mut bytes)
+        .map_err(|e| anyhow::anyhow!("reading {url}: {e}"))?;
+    if sha512 {
+        Ok(hex::encode(Sha512::digest(&bytes)))
+    } else {
+        Ok(hex::encode(Sha256::digest(&bytes)))
+    }
+}
+
+/// Emit a bumped manifest TOML from the old manifest with new version/url/hash.
+fn emit_bumped(
+    m: &Manifest,
+    new_ver: &str,
+    new_url: &str,
+    new_hash: &str,
+    is_sha512: bool,
+) -> String {
+    let mut o = String::new();
+    o.push_str(&format!("name = \"{}\"\n", m.name));
+    o.push_str(&format!("version = \"{new_ver}\"\n"));
+    if let Some(d) = &m.description {
+        o.push_str(&format!("description = \"{}\"\n", d.replace('"', "\\\"")));
+    }
+    if let Some(h) = &m.homepage {
+        o.push_str(&format!("homepage = \"{h}\"\n"));
+    }
+    if let Some(l) = &m.license {
+        o.push_str(&format!("license = \"{l}\"\n"));
+    }
+    o.push_str("kind = \"app\"\n");
+    if let Some(ed) = &m.extract_dir {
+        let new_ed = ed.replace(&m.version, new_ver);
+        o.push_str(&format!("extract_dir = \"{new_ed}\"\n"));
+    }
+    if !m.bin.is_empty() {
+        let bins: Vec<String> = m
+            .bin
+            .iter()
+            .map(|b| match b {
+                voli_core::Bin::Path(p) => format!("\"{p}\""),
+                voli_core::Bin::Table { name, path, args } => {
+                    let mut t = format!("{{ name = \"{name}\", path = \"{path}\"");
+                    if let Some(a) = args {
+                        t.push_str(&format!(", args = \"{a}\""));
+                    }
+                    t.push_str(" }");
+                    t
+                }
+            })
+            .collect();
+        o.push_str(&format!("bin = [{}]\n", bins.join(", ")));
+    }
+    if !m.persist.is_empty() {
+        let items: Vec<String> = m.persist.iter().map(|p| format!("\"{p}\"")).collect();
+        o.push_str(&format!("persist = [{}]\n", items.join(", ")));
+    }
+    if !m.shortcuts.is_empty() {
+        let items: Vec<String> = m
+            .shortcuts
+            .iter()
+            .map(|s| match s {
+                voli_core::Shortcut::Path(p) => format!("\"{p}\""),
+                voli_core::Shortcut::Table { target, name } => {
+                    format!("{{ target = \"{target}\", name = \"{name}\" }}")
+                }
+            })
+            .collect();
+        o.push_str(&format!("shortcuts = [{}]\n", items.join(", ")));
+    }
+    if !m.write_file.is_empty() {
+        o.push_str("write_file = [\n");
+        for wf in &m.write_file {
+            o.push_str(&format!(
+                "  {{ path = \"{}\", content = \"{}\" }},\n",
+                wf.path,
+                wf.content.replace('"', "\\\"")
+            ));
+        }
+        o.push_str("]\n");
+    }
+
+    o.push_str("\n[source.x64]\n");
+    o.push_str(&format!("url = \"{new_url}\"\n"));
+    if is_sha512 {
+        o.push_str(&format!("sha512 = \"{new_hash}\"\n"));
+    } else {
+        o.push_str(&format!("sha256 = \"{new_hash}\"\n"));
+    }
+
+    if !m.env.is_empty() {
+        o.push_str("\n[env]\n");
+        for (k, v) in &m.env {
+            o.push_str(&format!("{k} = \"{}\"\n", v.replace('"', "\\\"")));
+        }
+    }
+
+    if !m.depends.is_empty() {
+        o.push_str("\n[depends]\n");
+        for (k, v) in &m.depends {
+            o.push_str(&format!("{k} = \"{v}\"\n"));
+        }
+    }
+
+    if let Some(au) = &m.autoupdate {
+        // A toml::Value table Displays as an inline table (`{ k = v }`), which
+        // is invalid as a section body — emit per-key lines instead.
+        if let Some(t) = au.as_table() {
+            o.push_str("\n[autoupdate]\n");
+            for (k, v) in t {
+                o.push_str(&format!("{k} = {v}\n"));
+            }
+        }
+    }
+
+    o
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +776,61 @@ sha256 = "{hash}"
         let pk = voli_core::index::sign::public_key_hex(&[42u8; 32]);
         voli_core::index::verify(&db, &sig, &pk)
             .expect("test-signed index must verify with the matching pubkey");
+    }
+
+    // ---- bump tests ----
+
+    #[test]
+    fn derive_url_replaces_version() {
+        let old = "https://github.com/o/r/releases/download/v1.2.3/tool-1.2.3-x64.zip";
+        assert_eq!(
+            derive_url(old, "1.2.3", "2.0.0"),
+            Some("https://github.com/o/r/releases/download/v2.0.0/tool-2.0.0-x64.zip".into())
+        );
+    }
+
+    #[test]
+    fn derive_url_returns_none_when_no_match() {
+        let old = "https://example.com/tool.zip";
+        assert_eq!(derive_url(old, "1.0.0", "2.0.0"), None);
+    }
+
+    #[test]
+    fn github_repo_extracts_from_checkver_table() {
+        let m = Manifest::from_toml_str(&format!(
+            r#"
+name = "test"
+version = "1.0.0"
+kind = "app"
+[source.x64]
+url = "https://x/a.zip"
+sha256 = "{}"
+[autoupdate]
+checkver = {{ github = "BurntSushi/ripgrep" }}
+"#,
+            "a".repeat(64)
+        ))
+        .unwrap();
+        assert_eq!(
+            github_repo(&m),
+            Some(("BurntSushi".into(), "ripgrep".into()))
+        );
+    }
+
+    #[test]
+    fn github_repo_returns_none_without_autoupdate() {
+        let m = Manifest::from_toml_str(&format!(
+            r#"
+name = "test"
+version = "1.0.0"
+kind = "app"
+[source.x64]
+url = "https://x/a.zip"
+sha256 = "{}"
+"#,
+            "a".repeat(64)
+        ))
+        .unwrap();
+        assert_eq!(github_repo(&m), None);
     }
 }
