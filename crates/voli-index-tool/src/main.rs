@@ -36,6 +36,12 @@ enum Command {
         #[arg(long)]
         epoch: Option<u64>,
     },
+    /// Generate a fresh Ed25519 signing keypair (see docs/Voli.md §10 key management).
+    Keygen {
+        /// Where to write the hex secret key. Refuses to overwrite.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -79,6 +85,26 @@ fn run() -> anyhow::Result<ExitCode> {
                 "wrote index.sqlite, index.sqlite.zst, index.sig, index.json to {}",
                 out.display()
             );
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Keygen { out } => {
+            if out.exists() {
+                anyhow::bail!(
+                    "{} already exists — refusing to overwrite a key",
+                    out.display()
+                );
+            }
+            let mut secret = [0u8; 32];
+            getrandom::fill(&mut secret).map_err(|e| anyhow::anyhow!("os rng failed: {e}"))?;
+            let signing = ed25519_dalek::SigningKey::from_bytes(&secret);
+            let pubkey = hex::encode(signing.verifying_key().to_bytes());
+            std::fs::write(&out, hex::encode(secret))?;
+            println!(
+                "secret key written to {}   <- GitHub secret VOLI_INDEX_SIGNING_KEY; never commit",
+                out.display()
+            );
+            println!("public key: {pubkey}");
+            println!("  -> embed as DEV_PUBKEY replacement in crates/voli-core/src/index/sign.rs");
             Ok(ExitCode::SUCCESS)
         }
     }

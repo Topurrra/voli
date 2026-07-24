@@ -11,3 +11,8 @@ Cargo.lock.bak
 # local junk
 *.log
 .DS_Store
+
+# signing keys — NEVER commit. The committed dev key (git history) is burned
+# and must be rotated before launch. See docs/Voli.md §10 key management.
+/registry-dev/
+*.signing-key.hex
