@@ -149,11 +149,24 @@ pub fn install_local(
     archive_path: &Path,
     root: &Path,
 ) -> Result<InstallReport> {
-    let paths = Paths::at(root);
-    paths.ensure()?;
-
     let manifest_text = fs::read_to_string(manifest_path)?;
     let manifest = Manifest::from_toml_str(&manifest_text)?;
+    install_manifest(&manifest, archive_path, root)
+}
+
+/// Install from an already-parsed [`Manifest`] + local archive.
+///
+/// Same engine as [`install_local`], but the manifest is supplied directly (e.g.
+/// from the downloaded index by [`crate::remote::install_remote`]) rather than
+/// read from a `.toml` file. The archive is still hash-verified against the
+/// manifest before any mutation — the security gate never moves.
+pub fn install_manifest(
+    manifest: &Manifest,
+    archive_path: &Path,
+    root: &Path,
+) -> Result<InstallReport> {
+    let paths = Paths::at(root);
+    paths.ensure()?;
 
     let mut state = State::open(&paths.state_db())?;
     if state.is_installed(&manifest.name)? {
@@ -175,10 +188,10 @@ pub fn install_local(
     }
 
     // Perform every filesystem mutation, rolling those back internally on error.
-    let (actions, report) = do_install_fs(&paths, &manifest, archive_path)?;
+    let (actions, report) = do_install_fs(&paths, manifest, archive_path)?;
 
     // Persist the ledger + installed marker atomically. If this fails, undo FS.
-    let manifest_json = serde_json::to_string(&manifest)?;
+    let manifest_json = serde_json::to_string(manifest)?;
     if let Err(e) =
         state.record_install(&manifest.name, &manifest.version, &manifest_json, &actions)
     {

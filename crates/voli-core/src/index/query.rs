@@ -65,6 +65,27 @@ pub fn info(root: &std::path::Path, name: &str) -> Result<Option<Manifest>, Inde
     Ok(Some(Manifest::from_toml_str(&toml_text)?))
 }
 
+/// Manifest of a specific `name`@`version`, or `None` if that exact (name,
+/// version) pair is not in the index. Used by the remote installer to pin `@version`.
+pub fn manifest_at(
+    root: &std::path::Path,
+    name: &str,
+    version: &str,
+) -> Result<Option<Manifest>, IndexError> {
+    let conn = open_index(root)?;
+    let toml_text: Option<String> = conn
+        .query_row(
+            "SELECT manifest_toml FROM packages WHERE name = ?1 AND version = ?2 LIMIT 1",
+            rusqlite::params![name, version],
+            |r| r.get(0),
+        )
+        .ok();
+    match toml_text {
+        Some(t) => Ok(Some(Manifest::from_toml_str(&t)?)),
+        None => Ok(None),
+    }
+}
+
 /// Suggestions for a name that missed: Jaro-Winkler ≥ 0.75 over package names
 /// AND bin names, best 5 first (spec §5 install-miss path).
 pub fn did_you_mean(root: &std::path::Path, wrong: &str) -> Result<Vec<Suggestion>, IndexError> {

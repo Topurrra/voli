@@ -23,7 +23,7 @@ pub mod sign;
 
 pub use build::build;
 pub use net::{UpdateOutcome, update};
-pub use query::{SearchHit, Suggestion, did_you_mean, info, search};
+pub use query::{SearchHit, Suggestion, did_you_mean, info, manifest_at, search};
 pub use sign::{DEV_PUBKEY, sign, verify};
 
 /// Errors from the index client.

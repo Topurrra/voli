@@ -2,11 +2,12 @@
 //! prints "not implemented yet" and exits with code 2.
 
 mod cmd_index;
+mod cmd_install;
 
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use voli_core::{Paths, State, config, env, install_local, self_install, uninstall};
+use voli_core::{Paths, State, config, env, self_install, uninstall};
 
 /// Exit code for a command that is not yet implemented.
 const EXIT_UNIMPLEMENTED: i32 = 2;
@@ -129,7 +130,9 @@ fn main() {
     }
 
     let code = match &cli.command {
-        Command::Install { packages, archive } => cmd_install(packages, archive.as_deref()),
+        Command::Install { packages, archive } => {
+            cmd_install::run(packages, archive.as_deref(), &root(), cli.json)
+        }
         Command::Uninstall { packages, purge } => cmd_uninstall(packages, *purge),
         Command::List => cmd_list(cli.json),
         Command::Setup => cmd_setup(),
@@ -192,44 +195,6 @@ fn root() -> PathBuf {
         Err(e) => {
             eprintln!("error: cannot resolve voli root: {e}");
             std::process::exit(EXIT_ERROR);
-        }
-    }
-}
-
-fn cmd_install(packages: &[String], archive: Option<&Path>) -> i32 {
-    // Only local `.toml` installs are wired in this build (network is step 9).
-    if packages.len() != 1 {
-        eprintln!("error: this build installs one local manifest at a time");
-        return EXIT_ERROR;
-    }
-    let pkg = &packages[0];
-    let manifest_path = Path::new(pkg);
-    let is_local = pkg.ends_with(".toml") && manifest_path.is_file();
-    if !is_local {
-        eprintln!("error: network install is not implemented yet (spec §11 step 9)");
-        eprintln!("       for now, pass a local '<name>.toml' manifest plus --archive <path>");
-        return EXIT_ERROR;
-    }
-    let Some(archive) = archive else {
-        eprintln!("error: --archive <path> is required to install from a local manifest");
-        return EXIT_ERROR;
-    };
-
-    match install_local(manifest_path, archive, &root()) {
-        Ok(r) => {
-            println!("installed {} {}", r.name, r.version);
-            println!("  files: {}", r.version_dir.display());
-            for shim in &r.shims {
-                println!("  shim:  {}", shim.display());
-            }
-            for (k, v) in &r.env_requested {
-                println!("  note: manifest requests env {k}={v} (env feature not applied yet)");
-            }
-            0
-        }
-        Err(e) => {
-            eprintln!("error: install failed: {e}");
-            EXIT_ERROR
         }
     }
 }
