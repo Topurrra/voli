@@ -4,93 +4,52 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>voli — a fast, no-admin package manager for Windows</title>
+  <title>Voli</title>
   <meta name="description"
     content="The bear that delivers. A fast, no-admin package manager for Windows. One binary, no scripts, clean uninstalls. Install with one line.">
-  <meta name="theme-color" content="#0e1330" media="(prefers-color-scheme: dark)">
-  <meta name="theme-color" content="#fbf7ef" media="(prefers-color-scheme: light)">
-
-  <!-- No flash of wrong theme: apply stored choice before first paint. -->
-  <script>
-    (function () {
-      try {
-        var t = localStorage.getItem('voli-theme');
-        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
-      } catch (e) { }
-    })();
-  </script>
+  <meta name="theme-color" content="#001C16">
 
   <style>
+    /* ---------- self-hosted font (variable, one file, all weights) ---------- */
+    @font-face {
+      font-family: "Space Grotesk";
+      font-style: normal;
+      font-weight: 400 700;
+      font-display: swap;
+      src: url("assets/fonts/space-grotesk-latin.woff2") format("woff2");
+    }
+
     :root {
-      /* dark = deep navy/slate (the bear) — default tokens */
-      --bg: #0d1230;
-      --bg-2: #10173a;
-      --panel: #151d45;
-      --panel-2: #1b2454;
-      --border: #29325f;
-      --border-soft: #222a52;
-      --fg: #eef1fb;
-      --muted: #a3adcf;
-      --link: #ffd94a;
-      /* gold bolt, readable on dark */
-      --bolt: #ffd21e;
-      --salmon: #ff8a5c;
-      --pink: #ff5fa2;
-      --forest: #7cc16a;
-      --code-bg: #0a0f26;
-      --code-fg: #e9ecf8;
-      --shadow: 0 22px 60px -24px rgba(0, 0, 0, .75);
-      --glow: 0 0 0 1px rgba(255, 210, 30, .10), 0 30px 80px -30px rgba(6, 10, 30, .9);
-      --sel: rgba(255, 210, 30, .28);
-      --grain-opacity: .035;
-    }
+      /* deep green-black page + bands */
+      --bg: #001C16;
+      --bg-dark: #00120E;
+      --bg-darker: #000F0C;
+      --panel: #023A2E;
+      --panel-2: #04463A;
+      --border: rgba(233, 226, 210, .14);
+      --border-strong: rgba(233, 226, 210, .24);
 
-    :root[data-theme="light"] {
-      /* light = warm paper white, same accent family */
-      --bg: #fbf7ef;
-      --bg-2: #f4eee1;
-      --panel: #fffdf8;
-      --panel-2: #f7f1e6;
-      --border: #e4dccb;
-      --border-soft: #ece5d6;
-      --fg: #241f2e;
-      --muted: #6b6478;
-      --link: #216e39;
-      /* forest green — AA on paper */
-      --bolt: #e6a700;
-      --salmon: #d5643a;
-      --pink: #c63f80;
-      --forest: #2f7a3f;
-      --code-bg: #171a3a;
-      --code-fg: #eef1fb;
-      --shadow: 0 20px 50px -26px rgba(60, 50, 20, .35);
-      --glow: 0 0 0 1px rgba(230, 167, 0, .18), 0 26px 70px -32px rgba(70, 55, 20, .35);
-      --sel: rgba(230, 167, 0, .22);
-      --grain-opacity: .05;
-    }
+      /* cream / paper */
+      --cream: #EEE3CE;
+      --cream-card: #F4EEDF;
+      --cream-muted: #D1C8B4;
 
-    @media (prefers-color-scheme: light) {
-      :root:not([data-theme]) {
-        --bg: #fbf7ef;
-        --bg-2: #f4eee1;
-        --panel: #fffdf8;
-        --panel-2: #f7f1e6;
-        --border: #e4dccb;
-        --border-soft: #ece5d6;
-        --fg: #241f2e;
-        --muted: #6b6478;
-        --link: #216e39;
-        --bolt: #e6a700;
-        --salmon: #d5643a;
-        --pink: #c63f80;
-        --forest: #2f7a3f;
-        --code-bg: #171a3a;
-        --code-fg: #eef1fb;
-        --shadow: 0 20px 50px -26px rgba(60, 50, 20, .35);
-        --glow: 0 0 0 1px rgba(230, 167, 0, .18), 0 26px 70px -32px rgba(70, 55, 20, .35);
-        --sel: rgba(230, 167, 0, .22);
-        --grain-opacity: .05;
-      }
+      /* ink (text on cream) */
+      --ink: #10241D;
+      --ink-muted: #4C5F55;
+
+      /* accents */
+      --verm: #ED5126;
+      --verm-bright: #FF5526;
+      --verm-deep: #891f01;
+      --sage: #8BA399;
+      --sage-bright: #A7BDB3;
+      --amber: #E0A23C;
+      --pos: #6ED08C;
+      --white: #fff;
+
+      --mono: "Cascadia Code", "Cascadia Mono", "SF Mono", ui-monospace, Consolas, monospace;
+      --sans: "Space Grotesk", "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
     }
 
     * {
@@ -99,60 +58,43 @@
 
     html {
       scroll-behavior: smooth;
-      scroll-padding-top: 84px;
+      scroll-padding-top: 88px;
     }
 
     body {
       margin: 0;
       background: var(--bg);
-      color: var(--fg);
-      font: 16px/1.65 "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+      color: var(--cream);
+      font: 16px/1.65 var(--sans);
       -webkit-font-smoothing: antialiased;
       text-rendering: optimizeLegibility;
       overflow-x: hidden;
     }
 
-    /* Layered background: soft radial washes + faint grain, per theme. */
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      z-index: -2;
-      background:
-        radial-gradient(60% 45% at 82% -5%, rgba(255, 95, 162, .10), transparent 60%),
-        radial-gradient(55% 40% at 8% 4%, rgba(124, 193, 106, .12), transparent 60%),
-        radial-gradient(70% 55% at 50% 108%, rgba(255, 210, 30, .07), transparent 60%),
-        linear-gradient(180deg, var(--bg), var(--bg-2));
-    }
-
-    body::after {
-      content: "";
-      position: fixed;
-      inset: 0;
-      z-index: -1;
-      pointer-events: none;
-      opacity: var(--grain-opacity);
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    }
-
     ::selection {
-      background: var(--sel);
+      background: var(--verm);
+      color: #fff;
     }
 
     a {
-      color: var(--link);
-      text-decoration-color: color-mix(in srgb, var(--link) 45%, transparent);
+      color: var(--cream);
       text-underline-offset: 3px;
     }
 
-    a:hover {
-      text-decoration-color: var(--link);
-    }
-
     :focus-visible {
-      outline: 2px solid var(--link);
+      outline: 2px solid var(--verm-bright);
       outline-offset: 3px;
       border-radius: 6px;
+    }
+
+    img {
+      max-width: 100%;
+    }
+
+    .wrap {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
     }
 
     .skip {
@@ -160,9 +102,9 @@
       left: -9999px;
       top: 0;
       background: var(--panel);
-      color: var(--fg);
+      color: var(--cream);
       padding: .6rem 1rem;
-      border: 1px solid var(--border);
+      border: 1px solid var(--border-strong);
       border-radius: 8px;
       z-index: 100;
     }
@@ -172,20 +114,20 @@
       top: 12px;
     }
 
-    /* ---------- header / nav ---------- */
+    /* ---------- nav ---------- */
     header.site {
       position: sticky;
       top: 0;
       z-index: 50;
-      backdrop-filter: saturate(140%) blur(12px);
-      background: color-mix(in srgb, var(--bg) 78%, transparent);
-      border-bottom: 1px solid var(--border-soft);
+      backdrop-filter: saturate(140%) blur(14px);
+      background: color-mix(in srgb, var(--bg) 74%, transparent);
+      border-bottom: 1px solid var(--border);
     }
 
     .nav {
-      max-width: 1000px;
+      max-width: 1100px;
       margin: 0 auto;
-      padding: .6rem 1.25rem;
+      padding: .7rem 1.5rem;
       display: flex;
       align-items: center;
       gap: 1rem;
@@ -196,37 +138,64 @@
       align-items: center;
       gap: .55rem;
       font-weight: 700;
-      letter-spacing: -.01em;
-      color: var(--fg);
+      color: var(--cream);
       text-decoration: none;
-      font-size: 1.1rem;
+      font-size: 1.35rem;
     }
 
     .brand img {
-      width: 30px;
-      height: 30px;
-      border-radius: 9px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50px;
+    }
+
+    /* ratel-style mono tagline next to the wordmark */
+    .brand-tag {
+      display: inline-flex;
+      align-items: baseline;
+      gap: .5rem;
+      margin-left: .1rem;
+      font-weight: 400;
+    }
+
+    .brand-dot {
+      color: var(--vermilion);
+      font-weight: 700;
+    }
+
+    .brand-tag code {
+      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      font-size: .78em;
+      letter-spacing: -.01em;
+      color: var(--sage-bright);
+      background: none;
+      padding: 0;
+      font-style: oblique;
+    }
+
+    @media (max-width: 720px) {
+      .brand-tag { display: none; }
     }
 
     .nav-links {
       display: flex;
-      gap: .35rem;
+      gap: .2rem;
       margin-left: auto;
       align-items: center;
     }
 
     .nav-links a.navlink {
-      color: var(--muted);
+      color: var(--sage-bright);
       text-decoration: none;
       font-size: .92rem;
-      padding: .4rem .7rem;
+      padding: .45rem .75rem;
       border-radius: 8px;
       white-space: nowrap;
     }
 
     .nav-links a.navlink:hover {
-      color: var(--fg);
-      background: var(--panel);
+      color: var(--cream);
+      background: color-mix(in srgb, var(--panel) 60%, transparent);
     }
 
     .icon-btn {
@@ -235,17 +204,15 @@
       justify-content: center;
       width: 38px;
       height: 38px;
-      border-radius: 9px;
+      border-radius: 10px;
       border: 1px solid var(--border);
-      background: var(--panel);
-      color: var(--fg);
-      cursor: pointer;
+      color: var(--cream);
       text-decoration: none;
       transition: border-color .15s, transform .15s;
     }
 
     .icon-btn:hover {
-      border-color: var(--link);
+      border-color: var(--verm);
       transform: translateY(-1px);
     }
 
@@ -254,212 +221,588 @@
       height: 18px;
     }
 
-    /* the moon shows in dark, sun in light — toggled by JS via class */
-    .theme-toggle .sun {
-      display: none;
+    .nav-cta {
+      margin-left: .35rem;
     }
 
-    :root[data-theme="light"] .theme-toggle .sun,
-    .theme-toggle.is-light .sun {
-      display: block;
+    /* ---------- buttons ---------- */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .68rem 1.3rem;
+      border-radius: 999px;
+      font-weight: 500;
+      font-size: .95rem;
+      text-decoration: none;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: transform .15s, background .15s, border-color .15s, color .15s;
+      white-space: nowrap;
     }
 
-    :root[data-theme="light"] .theme-toggle .moon,
-    .theme-toggle.is-light .moon {
-      display: none;
+    .btn svg {
+      width: 16px;
+      height: 16px;
     }
 
-    /* ---------- layout ---------- */
-    main {
-      max-width: 1000px;
-      margin: 0 auto;
-      padding: 0 1.25rem 5rem;
+    .btn-cream {
+      background: var(--cream);
+      color: var(--bg);
     }
 
+    .btn-cream:hover {
+      transform: translateY(-2px);
+      background: #fff;
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--cream);
+      border-color: var(--border-strong);
+    }
+
+    .btn-ghost:hover {
+      border-color: var(--cream);
+      transform: translateY(-2px);
+    }
+
+    .btn-verm {
+      background: var(--verm);
+      color: #fff;
+    }
+
+    .btn-verm:hover {
+      transform: translateY(-2px);
+      background: var(--verm-bright);
+    }
+
+    .btn-sm {
+      padding: .5rem 1rem;
+      font-size: .88rem;
+    }
+
+    /* ---------- section scaffolding ---------- */
     section {
-      scroll-margin-top: 84px;
+      scroll-margin-top: 88px;
+      position: relative;
+    }
+
+    .band {
+      padding: 7rem 0;
     }
 
     .eyebrow {
       display: inline-flex;
       align-items: center;
       gap: .5rem;
-      font-size: .72rem;
-      font-weight: 600;
+      font-size: .74rem;
+      font-weight: 500;
       text-transform: uppercase;
-      letter-spacing: .14em;
-      color: var(--muted);
-      margin: 0 0 1rem;
+      letter-spacing: .16em;
+      color: var(--sage);
+      margin: 0 0 1.1rem;
     }
 
-    .eyebrow .bolt {
-      color: var(--bolt);
+    .eyebrow.on-cream {
+      color: var(--verm-deep);
     }
 
-    h2.section-title {
-      font-size: clamp(1.5rem, 3.5vw, 2rem);
-      letter-spacing: -.02em;
-      margin: 0 0 .5rem;
+    .h-sec {
+      font-size: clamp(1.9rem, 4.2vw, 2.9rem);
+      font-weight: 500;
+      line-height: 1.08;
+      letter-spacing: -.04em;
+      margin: 0 0 .8rem;
+      max-width: 20ch;
     }
 
-    .section-sub {
-      color: var(--muted);
-      margin: 0 0 2rem;
-      max-width: 56ch;
+    .h-sec.center {
+      margin-left: auto;
+      margin-right: auto;
+      text-align: center;
     }
 
-    .section-head {
-      margin: 4.5rem 0 2rem;
+    .accent {
+      color: var(--verm);
+    }
+
+    .on-cream .accent,
+    .accent.on-cream {
+      color: var(--verm-deep);
+    }
+
+    .sub {
+      color: var(--sage-bright);
+      margin: 0;
+      max-width: 60ch;
+      font-size: 1.05rem;
+    }
+
+    .sub.center {
+      margin: 0 auto;
+      text-align: center;
+    }
+
+    .sec-head {
+      margin-bottom: 3rem;
     }
 
     /* ---------- hero ---------- */
     .hero {
-      display: grid;
-      grid-template-columns: 1.05fr .95fr;
-      gap: 2.75rem;
-      align-items: center;
-      padding: 3.5rem 0 1.5rem;
+      background: var(--bg);
+      text-align: center;
+      padding: 6.5rem 0 6rem;
+      overflow: hidden;
     }
 
-    .hero-copy h1 {
-      font-size: clamp(2.4rem, 6vw, 3.6rem);
-      line-height: 1.04;
-      letter-spacing: -.03em;
-      margin: .4rem 0 1rem;
-    }
-
-    .hero-copy h1 .wordmark {
-      background: linear-gradient(120deg, var(--salmon), var(--pink) 55%, var(--bolt));
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-    }
-
-    .lead {
-      font-size: 1.18rem;
-      color: var(--muted);
-      margin: 0 0 1.6rem;
-      max-width: 46ch;
-    }
-
-    .lead b {
-      color: var(--fg);
-      font-weight: 600;
-    }
-
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: .5rem;
-      font-size: .78rem;
-      color: var(--muted);
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: .3rem .8rem;
-    }
-
-    .pill .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--forest);
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--forest) 25%, transparent);
-    }
-
-    .hero-art {
-      position: relative;
-    }
-
-    .hero-art img {
-      width: 100%;
-      height: auto;
-      display: block;
-      border-radius: 22px;
-      border: 1px solid var(--border);
-      box-shadow: var(--glow);
-    }
-
-    .hero-art::before {
+    .hero::before {
       content: "";
       position: absolute;
-      inset: -14px;
-      z-index: -1;
-      border-radius: 30px;
-      background: radial-gradient(60% 60% at 60% 30%, rgba(255, 95, 162, .28), transparent 70%),
-        radial-gradient(60% 60% at 20% 80%, rgba(124, 193, 106, .28), transparent 70%);
-      filter: blur(26px);
-      opacity: .8;
+      inset: -20% -10% auto -10%;
+      height: 130%;
+      z-index: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(42% 55% at 50% 34%, rgba(237, 81, 38, .42), rgba(237, 81, 38, .12) 42%, transparent 66%),
+        radial-gradient(38% 44% at 24% 20%, rgba(224, 162, 60, .20), transparent 60%),
+        radial-gradient(46% 50% at 78% 30%, rgba(196, 67, 31, .26), transparent 62%),
+        radial-gradient(60% 45% at 50% 96%, rgba(0, 15, 12, .55), transparent 70%);
+      filter: blur(8px);
     }
 
-    /* ---------- install code block ---------- */
-    .install {
-      margin: 1.9rem 0 .4rem;
-    }
-
-    .install-label {
-      font-size: .72rem;
-      text-transform: uppercase;
-      letter-spacing: .12em;
-      color: var(--muted);
-      margin: 0 0 .55rem;
-    }
-
-    .code {
+    .hero .wrap {
       position: relative;
-      background: var(--code-bg);
-      color: var(--code-fg);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 1.15rem 3.4rem 1.15rem 1.2rem;
-      font-family: "Cascadia Code", "Cascadia Mono", "SF Mono", ui-monospace, Consolas, monospace;
-      font-size: 1rem;
-      overflow-x: auto;
+      z-index: 1;
+    }
+
+    /* slow organic drift on the hero bloom (ratel-style living gradient) */
+    @keyframes bloom-drift {
+      0% { transform: translate3d(-1.5%, 0, 0) scale(1); }
+      50% { transform: translate3d(1.5%, 1%, 0) scale(1.05); }
+      100% { transform: translate3d(-1.5%, 0, 0) scale(1); }
+    }
+
+    .hero::before {
+      animation: bloom-drift 14s ease-in-out infinite;
+    }
+
+    /* hero headline: words blur in one by one (JS wraps them in .w spans) */
+    @keyframes word-in {
+      from { opacity: 0; filter: blur(10px); transform: translateY(.35em); }
+      to { opacity: 1; filter: blur(0); transform: none; }
+    }
+
+    .hero h1 .w {
+      display: inline-block;
+      opacity: 0;
+      animation: word-in .7s cubic-bezier(.2, .7, .2, 1) forwards;
+      animation-delay: calc(var(--i) * 90ms + 120ms);
+      will-change: opacity, transform, filter;
+    }
+
+    /* site-wide film grain: static SVG fractal noise over everything, so the
+       flat greens/creams read tactile instead of digital. pointer-events:none
+       keeps it purely visual; overlay blend lets both dark and light sections
+       take it naturally. */
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 240px 240px;
+      mix-blend-mode: overlay;
+    }
+
+    /* faint cream dot-grid texture (the "white dots" across ratel's UI) */
+    .hero::after,
+    .stats::after,
+    .cmds::after,
+    .orange::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background-image: radial-gradient(rgba(238, 227, 206, .085) 1px, transparent 1.4px);
+      background-size: 26px 26px;
+      -webkit-mask-image: radial-gradient(80% 90% at 50% 40%, #000 30%, transparent 100%);
+      mask-image: radial-gradient(80% 90% at 50% 40%, #000 30%, transparent 100%);
+    }
+
+    .stats, .cmds { position: relative; }
+    .stats .wrap, .cmds .wrap, .orange .wrap { position: relative; z-index: 1; }
+
+    /* the orange band's waves sway slowly */
+    @keyframes wave-sway {
+      0% { transform: translateX(-1.8%) scaleX(1.06); }
+      50% { transform: translateX(1.8%) scaleX(1.06); }
+      100% { transform: translateX(-1.8%) scaleX(1.06); }
+    }
+
+    .orange .wave {
+      animation: wave-sway 16s ease-in-out infinite;
+      transform-origin: center;
+    }
+
+    /* registry steps: staggered entrance + gentle hover lift */
+    .steps .step { transition: transform .35s ease, box-shadow .35s ease; }
+    .steps .step:nth-child(1) { transition-delay: 0s; }
+    .steps .step:nth-child(2).reveal { transition-delay: .12s; }
+    .steps .step:nth-child(3).reveal { transition-delay: .24s; }
+    .steps .step:hover { transform: translateY(-4px); box-shadow: 0 14px 34px rgba(0, 0, 0, .22); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .hero::before, .orange .wave { animation: none; }
+      .hero h1 .w { animation: none; opacity: 1; }
+      .steps .step { transition: none; }
+    }
+
+    /* ---------- hero motion (taste-kit house style) ----------
+       translate + opacity + blur together, spring-ish ease, staggered —
+       then a couple of slow loops so the hero never goes fully static. */
+    @keyframes tk-rise-in {
+      from { opacity: 0; filter: blur(8px); transform: translateY(14px); }
+      to   { opacity: 1; filter: blur(0);   transform: none; }
+    }
+
+    .hero .lead,
+    .hero .hero-btns,
+    .hero .install,
+    .hero .install-note,
+    .hero .scroll-cue {
+      opacity: 0;
+      animation: tk-rise-in .75s cubic-bezier(.2, .7, .2, 1) forwards;
+      will-change: opacity, transform, filter;
+    }
+    .hero .lead         { animation-delay: .45s; }
+    .hero .hero-btns    { animation-delay: .58s; }
+    .hero .install      { animation-delay: .70s; }
+    .hero .install-note { animation-delay: .82s; }
+    .hero .scroll-cue   { animation-delay: 1s; }
+
+    /* the accent word keeps a slow ember breath */
+    @keyframes tk-ember {
+      0%, 100% { text-shadow: 0 0 0 rgba(237, 81, 38, 0); }
+      50%      { text-shadow: 0 0 26px rgba(237, 81, 38, .45); }
+    }
+    .hero h1 .accent { animation: tk-ember 4.5s ease-in-out 1.6s infinite; }
+
+    /* blinking caret for the typed install command */
+    .cmd-caret {
+      display: inline-block;
+      width: .5ch;
+      height: 1.05em;
+      margin-left: .08em;
+      vertical-align: -.16em;
+      background: var(--verm);
+      animation: tk-blink 1.05s steps(1) infinite;
+    }
+    @keyframes tk-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
+    /* scroll cue */
+    .scroll-cue {
+      margin-top: 2.25rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: .45rem;
+      color: var(--sage);
+      font: 500 11px/1 var(--mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .scroll-cue svg { width: 16px; height: 16px; animation: tk-nudge 1.9s ease-in-out infinite; }
+    @keyframes tk-nudge {
+      0%, 100% { transform: translateY(0); opacity: .7; }
+      50%      { transform: translateY(5px); opacity: 1; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .hero .lead, .hero .hero-btns, .hero .install,
+      .hero .install-note, .hero .scroll-cue { animation: none; opacity: 1; }
+      .hero h1 .accent { animation: none; }
+      .cmd-caret { animation: none; opacity: 1; }
+      .scroll-cue svg { animation: none; }
+    }
+
+    /* ---------- FIX: long terminal snippets forced the page wide on mobile ---------- */
+    .fx-term pre,
+    .install .row { max-width: 100%; overflow-x: auto; }
+    .fx-term { min-width: 0; }
+
+    /* ---------- ratel-style hero: drifting light + dots ----------
+       A CSS mesh (3 blurred blobs on slow, differently-timed loops) instead of a
+       WebGL shader — same living-light feel, no GPU cost, no dependency. */
+    .hero { position: relative; }
+    .hero .wrap { position: relative; z-index: 1; }
+
+    /* WebGL hero background (mesh gradient + film grain). When it starts, the
+       CSS fallback layers below are hidden; if WebGL fails they stay. */
+    .tk-shader {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      display: block;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .6s ease;
+    }
+    .hero.shader-on .tk-shader { opacity: 1; }
+    .hero.shader-on .tk-mesh { display: none; }
+    .hero.shader-on::before { opacity: .35; }  /* keep a touch of the original bloom */
+    .hero.shader-on::after { display: none; }  /* grain replaces the CSS dot grid */
+
+    .tk-mesh {
+      position: absolute;
+      inset: -25% -15%;
+      z-index: 0;
+      pointer-events: none;
+      filter: blur(64px);
+    }
+    .tk-mesh span { position: absolute; display: block; border-radius: 50%; }
+    .tk-mesh .b1 {
+      width: 46%; height: 52%; left: 8%; top: 4%;
+      background: radial-gradient(circle, rgba(237, 81, 38, .38), transparent 68%);
+      animation: tk-float-a 19s ease-in-out infinite;
+    }
+    .tk-mesh .b2 {
+      width: 40%; height: 46%; right: 6%; top: 14%;
+      background: radial-gradient(circle, rgba(224, 162, 60, .26), transparent 66%);
+      animation: tk-float-b 25s ease-in-out infinite;
+    }
+    .tk-mesh .b3 {
+      width: 52%; height: 44%; left: 22%; bottom: 0%;
+      background: radial-gradient(circle, rgba(139, 163, 153, .20), transparent 70%);
+      animation: tk-float-c 31s ease-in-out infinite;
+    }
+    @keyframes tk-float-a {
+      0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+      50%      { transform: translate3d(7%, 5%, 0) scale(1.14); }
+    }
+    @keyframes tk-float-b {
+      0%, 100% { transform: translate3d(0, 0, 0) scale(1.05); }
+      50%      { transform: translate3d(-8%, 6%, 0) scale(.92); }
+    }
+    @keyframes tk-float-c {
+      0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+      50%      { transform: translate3d(5%, -6%, 0) scale(1.1); }
+    }
+
+    /* dots reach further across the hero (ratel has them everywhere) */
+    .hero::after {
+      -webkit-mask-image: radial-gradient(120% 130% at 50% 40%, #000 55%, transparent 100%);
+      mask-image: radial-gradient(120% 130% at 50% 40%, #000 55%, transparent 100%);
+      background-image: radial-gradient(rgba(238, 227, 206, .11) 1px, transparent 1.4px);
+    }
+
+    /* ---------- staggered children (sections used to fade in as one block) ---------- */
+    .stat-grid .stat.reveal:nth-child(2)  { transition-delay: .10s; }
+    .stat-grid .stat.reveal:nth-child(3)  { transition-delay: .20s; }
+    .g-grid .g-card.reveal:nth-child(2)   { transition-delay: .08s; }
+    .g-grid .g-card.reveal:nth-child(3)   { transition-delay: .16s; }
+    .g-grid .g-card.reveal:nth-child(4)   { transition-delay: .24s; }
+
+    /* ---------- terminals print their output line by line on first view ---------- */
+    .fx-term pre .ln { display: block; opacity: 0; }
+    .fx-term.printed pre .ln {
+      animation: tk-line-in .34s ease-out forwards;
+      animation-delay: calc(var(--l) * 95ms);
+    }
+    @keyframes tk-line-in {
+      from { opacity: 0; transform: translateY(4px); filter: blur(3px); }
+      to   { opacity: 1; transform: none; filter: blur(0); }
+    }
+
+    /* ---------- nav scroll-spy ---------- */
+    .navlink { position: relative; }
+    .navlink.active { color: var(--cream); }
+    .navlink.active::after {
+      content: "";
+      position: absolute;
+      left: .55rem; right: .55rem; bottom: .18rem;
+      height: 2px;
+      border-radius: 2px;
+      background: var(--verm);
+    }
+
+    /* ---------- comparison table ---------- */
+    .cmp-wrap { overflow-x: auto; margin-top: 2rem; }
+    .cmp {
+      width: 100%;
+      min-width: 640px;
+      border-collapse: separate;
+      border-spacing: 0;
+      font: 400 14.5px/1.45 var(--sans);
+    }
+    .cmp th, .cmp td {
+      padding: .85rem 1rem;
+      text-align: center;
+      border-bottom: 1px solid var(--border);
+    }
+    .cmp thead th {
+      font: 600 11px/1 var(--mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--sage);
+      border-bottom-color: var(--border-strong);
       white-space: nowrap;
-      box-shadow: var(--shadow);
+    }
+    .cmp thead th.is-voli { color: var(--verm); }
+    .cmp tbody th { font-weight: 500; color: var(--cream); }
+    .cmp td { color: var(--cream-muted); text-align: center; }
+    .cmp td.is-voli { background: rgba(237, 81, 38, .07); color: var(--cream); }
+    .cmp tbody tr:last-child th, .cmp tbody tr:last-child td { border-bottom: 0; }
+    .cmp .y { color: var(--pos); }
+    .cmp .n { color: var(--sage); opacity: .65; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .tk-mesh span { animation: none; }
+      .fx-term pre .ln { opacity: 1; animation: none; }
     }
 
-    .code.big {
-      font-size: 1.08rem;
+    .hero h1 {
+      font-size: clamp(2.6rem, 7vw, 4.6rem);
+      font-weight: 500;
+      line-height: 1.03;
+      letter-spacing: -.045em;
+      margin: 0 auto 1.4rem;
+      max-width: 15ch;
+      color: var(--white);
     }
 
-    .code .prompt {
-      color: var(--bolt);
+    .hero .lead {
+      font-size: clamp(1.05rem, 2vw, 1.25rem);
+      color: var(--sage-bright);
+      margin: 0 auto 2.2rem;
+      max-width: 54ch;
+    }
+
+    .hero-btns {
+      display: flex;
+      gap: .8rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 2.8rem;
+    }
+
+    /* ---------- terminal card ---------- */
+    .term {
+      background: var(--bg-darker);
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 30px 70px -30px rgba(0, 0, 0, .7);
+      text-align: left;
+    }
+
+    .term-bar {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .6rem .85rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .term-bar .dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+    }
+
+    /* macOS traffic lights */
+    .term-bar .dot:nth-of-type(1) { background: #ff5f57; }
+    .term-bar .dot:nth-of-type(2) { background: #febc2e; }
+    .term-bar .dot:nth-of-type(3) { background: #28c840; }
+
+    .term-bar .tt {
+      margin-left: .4rem;
+      font: .74rem var(--mono);
+      color: var(--sage);
+      letter-spacing: .02em;
+    }
+
+    .term pre {
+      margin: 0;
+      padding: 1.1rem 1.2rem;
+      font: .92rem/1.7 var(--mono);
+      color: var(--cream);
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .term .p {
+      color: var(--amber);
       user-select: none;
     }
 
-    .code .cmd {
-      color: var(--code-fg);
+    .term .ok {
+      color: var(--pos);
+    }
+
+    .term .warn {
+      color: var(--amber);
+    }
+
+    .term .up {
+      color: var(--verm-bright);
+    }
+
+    .term .mut {
+      color: var(--sage);
+    }
+
+    /* hero install one-liner card */
+    .install {
+      max-width: 620px;
+      margin: 0 auto;
+    }
+
+    .install .row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      padding: 1rem 3.6rem 1rem 1.15rem;
+      font: 1.02rem var(--mono);
+      color: var(--cream);
+    }
+
+    .install .p {
+      color: var(--amber);
+      user-select: none;
+      margin-right: .5rem;
     }
 
     .copy {
       position: absolute;
       top: 50%;
-      right: .6rem;
+      right: .65rem;
       transform: translateY(-50%);
       display: inline-flex;
       align-items: center;
       gap: .35rem;
-      background: rgba(255, 255, 255, .06);
-      color: #e9ecf8;
-      border: 1px solid rgba(255, 255, 255, .16);
+      background: color-mix(in srgb, var(--cream) 10%, transparent);
+      color: var(--cream);
+      border: 1px solid var(--border-strong);
       border-radius: 9px;
-      font: inherit;
-      font-size: .78rem;
-      font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-      padding: .4rem .6rem;
+      font: 500 .78rem var(--sans);
+      padding: .42rem .65rem;
       cursor: pointer;
       transition: border-color .15s, background .15s;
     }
 
     .copy:hover {
-      border-color: var(--bolt);
-      background: rgba(255, 255, 255, .12);
+      border-color: var(--verm);
+      background: color-mix(in srgb, var(--cream) 16%, transparent);
     }
 
     .copy.copied {
-      border-color: var(--forest);
-      color: #d6f5cf;
+      border-color: var(--pos);
+      color: var(--pos);
     }
 
     .copy svg {
@@ -480,324 +823,342 @@
     }
 
     .install-note {
-      color: var(--muted);
+      color: var(--sage);
       font-size: .86rem;
-      margin: .8rem 0 0;
+      margin: 1rem auto 0;
+      max-width: 60ch;
+    }
+
+    .install-note a {
+      color: var(--sage-bright);
     }
 
     .install-note code {
-      background: var(--panel);
-      border: 1px solid var(--border-soft);
-      padding: .08rem .38rem;
+      background: color-mix(in srgb, var(--panel) 60%, transparent);
+      border: 1px solid var(--border);
+      padding: .06rem .35rem;
       border-radius: 5px;
-      font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
-      font-size: .82em;
+      font: .82em var(--mono);
     }
 
-    /* ---------- cards / guarantees ---------- */
-    .cards {
+    /* ---------- stats ---------- */
+    .stats {
+      background: var(--bg-dark);
+      border-top: 1px solid var(--border);
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.1rem;
+    }
+
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.8rem 1.6rem;
+    }
+
+    .stat .num {
+      font-size: clamp(2rem, 4vw, 2.5rem);
+      font-weight: 700;
+      letter-spacing: -.03em;
+      color: var(--verm-bright);
+      line-height: 1;
+      margin: 0 0 .7rem;
+    }
+
+    .stat .num small {
+      font-size: 1.1rem;
+      font-weight: 500;
+      color: var(--verm);
+    }
+
+    .stat p {
+      margin: 0;
+      color: var(--sage-bright);
+      font-size: .95rem;
+    }
+
+    /* ---------- cream (guarantees) ---------- */
+    .cream {
+      background: var(--cream);
+      color: var(--ink);
+    }
+
+    .cream .sub {
+      color: var(--ink-muted);
+    }
+
+    .g-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
-      gap: 1rem;
+      gap: 1.2rem;
     }
 
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 1.4rem 1.4rem 1.5rem;
-      transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+    .g-card {
+      background: var(--cream-card);
+      border: 1px solid rgba(16, 36, 29, .1);
+      border-radius: 18px;
+      padding: 1.7rem;
+      display: flex;
+      flex-direction: column;
+      gap: .9rem;
     }
 
-    .card:hover {
-      transform: translateY(-4px);
-      border-color: color-mix(in srgb, var(--link) 55%, var(--border));
-      box-shadow: var(--shadow);
-    }
-
-    .card .ic {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 42px;
-      height: 42px;
+    .g-card .art {
+      width: 100%;
+      height: 96px;
       border-radius: 12px;
-      margin-bottom: .9rem;
-      background: color-mix(in srgb, var(--accent-c) 16%, transparent);
-      color: var(--accent-c);
-      border: 1px solid color-mix(in srgb, var(--accent-c) 30%, transparent);
+      background: #fff;
+      border: 1px solid rgba(16, 36, 29, .08);
+      overflow: hidden;
     }
 
-    .card .ic svg {
-      width: 21px;
-      height: 21px;
+    .g-card .art svg {
+      display: block;
+      width: 100%;
+      height: 100%;
     }
 
-    .card h3 {
-      margin: 0 0 .4rem;
-      font-size: 1.08rem;
-      letter-spacing: -.01em;
-    }
-
-    .card p {
+    .g-card h3 {
       margin: 0;
-      color: var(--muted);
-      font-size: .94rem;
+      font-size: 1.15rem;
+      font-weight: 500;
+      letter-spacing: -.02em;
+      color: var(--ink);
     }
 
-    .card code {
-      background: var(--panel-2);
+    .g-card p {
+      margin: 0;
+      color: var(--ink-muted);
+      font-size: .95rem;
+    }
+
+    .g-card code {
+      background: rgba(16, 36, 29, .07);
       padding: .05rem .32rem;
       border-radius: 5px;
-      font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
-      font-size: .82em;
-      color: var(--fg);
+      font: .82em var(--mono);
+      color: var(--ink);
     }
 
-    /* ---------- commands reference ---------- */
+    /* ---------- feature rows ---------- */
+    .feature {
+      border-top: 1px solid var(--border);
+    }
+
+    .feature .wrap {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3.2rem;
+      align-items: center;
+    }
+
+    .feature:nth-of-type(even) .fx-term {
+      order: 2;
+    }
+
+    .fx-copy h2 {
+      font-size: clamp(1.7rem, 3.4vw, 2.4rem);
+      font-weight: 500;
+      line-height: 1.1;
+      letter-spacing: -.035em;
+      margin: 0 0 .9rem;
+      color: var(--white);
+      max-width: 16ch;
+    }
+
+    .fx-copy p {
+      color: var(--sage-bright);
+      margin: 0 0 1.5rem;
+      max-width: 46ch;
+    }
+
+    .fx-btns {
+      display: flex;
+      gap: .7rem;
+      flex-wrap: wrap;
+    }
+
+    /* ---------- command reference ---------- */
+    .cmds {
+      background: var(--bg-dark);
+      border-top: 1px solid var(--border);
+    }
+
     .cmd-table {
       border: 1px solid var(--border);
-      border-radius: 16px;
+      border-radius: 18px;
       overflow: hidden;
-      background: var(--panel);
-    }
-
-    .cmd-row {
-      display: grid;
-      grid-template-columns: minmax(200px, 300px) 1fr;
-      gap: 1rem;
-      padding: .85rem 1.25rem;
-      border-top: 1px solid var(--border-soft);
-      align-items: baseline;
-    }
-
-    .cmd-row:first-child {
-      border-top: none;
-    }
-
-    .cmd-row:hover {
-      background: var(--panel-2);
-    }
-
-    .cmd-row code {
-      font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
-      font-size: .9rem;
-      color: var(--fg);
-      white-space: nowrap;
-    }
-
-    .cmd-row code .tok {
-      color: var(--link);
-    }
-
-    .cmd-row code .arg {
-      color: var(--muted);
-    }
-
-    .cmd-row .desc {
-      color: var(--muted);
-      font-size: .92rem;
+      background: color-mix(in srgb, var(--panel) 45%, transparent);
     }
 
     .cmd-group {
-      font-size: .68rem;
-      letter-spacing: .14em;
+      font-size: .7rem;
+      letter-spacing: .16em;
       text-transform: uppercase;
-      color: var(--muted);
-      padding: 1.1rem 1.25rem .3rem;
-      background: var(--panel-2);
-      border-top: 1px solid var(--border-soft);
+      color: var(--sage);
+      padding: 1.2rem 1.4rem .4rem;
+      border-top: 1px solid var(--border);
     }
 
     .cmd-group:first-child {
       border-top: none;
     }
 
-    /* ---------- how it works ---------- */
-    .how {
+    .cmd-row {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 2rem;
-      align-items: center;
+      grid-template-columns: minmax(220px, 320px) 1fr;
+      gap: 1.2rem;
+      padding: .95rem 1.4rem;
+      border-top: 1px solid var(--border);
+      align-items: baseline;
     }
 
-    .how ol {
-      margin: 0;
-      padding: 0;
-      list-style: none;
-      display: grid;
-      gap: 1rem;
+    .cmd-row:hover {
+      background: color-mix(in srgb, var(--panel) 40%, transparent);
     }
 
-    .how ol li {
-      position: relative;
-      padding-left: 2.6rem;
-      color: var(--muted);
-      font-size: .96rem;
+    .cmd-row code {
+      font: .92rem var(--mono);
+      color: var(--cream);
+      white-space: nowrap;
     }
 
-    .how ol li strong {
-      color: var(--fg);
-      font-weight: 600;
+    .cmd-row code .tok {
+      color: var(--verm-bright);
     }
 
-    .how ol li .n {
+    .cmd-row code .arg {
+      color: var(--sage);
+    }
+
+    .cmd-row .desc {
+      color: var(--sage-bright);
+      font-size: .93rem;
+    }
+
+    .cmd-row .desc code {
+      font: .84em var(--mono);
+      color: var(--cream);
+      background: color-mix(in srgb, var(--panel) 60%, transparent);
+      padding: .04rem .3rem;
+      border-radius: 5px;
+    }
+
+    /* ---------- orange band (add your app) ---------- */
+    .orange {
+      background: linear-gradient(150deg, var(--verm) 0%, var(--verm-deep) 100%);
+      color: #fff;
+      overflow: hidden;
+    }
+
+    .orange .wave {
       position: absolute;
-      left: 0;
-      top: -.1rem;
-      width: 1.9rem;
-      height: 1.9rem;
-      display: grid;
-      place-items: center;
-      border-radius: 9px;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      color: var(--link);
-      font-size: .82rem;
-      font-weight: 700;
-      font-family: "Cascadia Code", ui-monospace, monospace;
-    }
-
-    .diagram {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 1.25rem;
-    }
-
-    .diagram svg {
+      inset: auto 0 0 0;
       width: 100%;
-      height: auto;
-      display: block;
+      height: 220px;
+      z-index: 0;
+      opacity: .5;
+      pointer-events: none;
     }
 
-    .diagram .d-label {
-      fill: var(--fg);
-      font: 600 13px "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    .orange .wrap {
+      position: relative;
+      z-index: 1;
     }
 
-    .diagram .d-sub {
-      fill: var(--muted);
-      font: 11px "Cascadia Code", ui-monospace, Consolas, monospace;
+    .orange .eyebrow {
+      color: rgba(255, 255, 255, .78);
     }
 
-    .diagram .d-box {
-      fill: var(--panel-2);
-      stroke: var(--border);
+    .orange .h-sec {
+      color: #fff;
     }
 
-    .diagram .d-flow {
-      stroke: var(--link);
-      stroke-width: 2;
-      fill: none;
-      marker-end: url(#arrow);
+    .orange .h-sec .accent {
+      color: #2a0e06;
     }
 
-    .diagram .d-bolt {
-      fill: var(--bolt);
+    .orange .sub {
+      color: rgba(255, 255, 255, .88);
     }
 
-    /* ---------- add your app ---------- */
     .steps {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 1rem;
+      gap: 1.2rem;
+      margin-bottom: 2rem;
     }
 
     .step {
-      background: var(--panel);
-      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, .1);
+      border: 1px solid rgba(255, 255, 255, .22);
       border-radius: 16px;
-      padding: 1.4rem;
+      padding: 1.5rem;
     }
 
     .step .num {
-      font-family: "Cascadia Code", ui-monospace, monospace;
-      font-size: .8rem;
-      color: var(--bolt);
-      font-weight: 700;
-      letter-spacing: .05em;
+      font: 700 .82rem var(--mono);
+      color: #fff;
+      opacity: .8;
+      letter-spacing: .08em;
     }
 
     .step h3 {
-      margin: .5rem 0 .35rem;
-      font-size: 1.02rem;
+      margin: .55rem 0 .4rem;
+      font-size: 1.12rem;
+      font-weight: 500;
+      color: #fff;
     }
 
     .step p {
       margin: 0;
-      color: var(--muted);
-      font-size: .9rem;
+      color: rgba(255, 255, 255, .85);
+      font-size: .92rem;
     }
 
-    .add-cta {
-      margin-top: 1.5rem;
-      display: flex;
-      gap: .75rem;
-      flex-wrap: wrap;
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: .5rem;
-      padding: .7rem 1.15rem;
-      border-radius: 11px;
-      font-weight: 600;
-      font-size: .94rem;
-      text-decoration: none;
-      border: 1px solid var(--border);
-      transition: transform .15s, border-color .15s, background .15s;
-    }
-
-    .btn svg {
-      width: 16px;
-      height: 16px;
-    }
-
-    .btn-primary {
-      background: linear-gradient(120deg, var(--bolt), var(--salmon));
-      color: #201800;
-      border-color: transparent;
-    }
-
-    .btn-primary:hover {
-      transform: translateY(-2px);
-    }
-
-    .btn-ghost {
-      background: var(--panel);
-      color: var(--fg);
-    }
-
-    .btn-ghost:hover {
-      border-color: var(--link);
-      transform: translateY(-2px);
+    .step code {
+      background: rgba(0, 0, 0, .22);
+      padding: .05rem .32rem;
+      border-radius: 5px;
+      font: .82em var(--mono);
+      color: #fff;
     }
 
     /* ---------- FAQ ---------- */
+    .faq-sec {
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+    }
+
     .faq {
       display: grid;
-      gap: .7rem;
+      gap: .8rem;
+      max-width: 820px;
+      margin: 0 auto;
     }
 
     details.qa {
-      background: var(--panel);
+      background: color-mix(in srgb, var(--panel) 45%, transparent);
       border: 1px solid var(--border);
       border-radius: 14px;
       overflow: hidden;
     }
 
     details.qa[open] {
-      border-color: color-mix(in srgb, var(--link) 40%, var(--border));
+      border-color: var(--border-strong);
     }
 
     details.qa summary {
       cursor: pointer;
       list-style: none;
-      padding: 1.1rem 1.3rem;
-      font-weight: 600;
-      font-size: 1.02rem;
+      padding: 1.15rem 1.35rem;
+      font-weight: 500;
+      font-size: 1.05rem;
+      color: var(--white);
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -812,23 +1173,23 @@
       flex: none;
       width: 18px;
       height: 18px;
-      color: var(--muted);
+      color: var(--sage);
       transition: transform .2s;
     }
 
     details.qa[open] summary .chev {
       transform: rotate(180deg);
-      color: var(--link);
+      color: var(--verm-bright);
     }
 
     details.qa .a {
-      padding: 0 1.3rem 1.2rem;
-      color: var(--muted);
+      padding: 0 1.35rem 1.3rem;
+      color: var(--sage-bright);
       font-size: .96rem;
     }
 
     details.qa .a p {
-      margin: 0 0 .6rem;
+      margin: 0 0 .7rem;
     }
 
     details.qa .a p:last-child {
@@ -836,82 +1197,134 @@
     }
 
     details.qa .a code {
-      background: var(--panel-2);
+      background: color-mix(in srgb, var(--panel) 60%, transparent);
       padding: .05rem .35rem;
       border-radius: 5px;
-      font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
-      font-size: .84em;
-      color: var(--fg);
+      font: .84em var(--mono);
+      color: var(--cream);
+    }
+
+    details.qa .a strong {
+      color: var(--cream);
     }
 
     .compare {
       width: 100%;
       border-collapse: collapse;
-      margin: .3rem 0 .2rem;
+      margin: .6rem 0;
       font-size: .9rem;
     }
 
     .compare th,
     .compare td {
       text-align: left;
-      padding: .5rem .6rem;
-      border-bottom: 1px solid var(--border-soft);
+      padding: .55rem .6rem;
+      border-bottom: 1px solid var(--border);
     }
 
     .compare th {
-      color: var(--fg);
-      font-weight: 600;
+      color: var(--cream);
+      font-weight: 500;
     }
 
     .compare td {
-      color: var(--muted);
+      color: var(--sage-bright);
+    }
+
+    /* ---------- photo CTA band ---------- */
+    .cta {
+      background: var(--bg-dark);
+      border-top: 1px solid var(--border);
+    }
+
+    .cta-card {
+      position: relative;
+      border-radius: 24px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      min-height: 340px;
+      display: flex;
+      align-items: center;
+    }
+
+    .cta-card img {
+      width: 100%;
+      height: 100%;
+    }
+
+    .cta-card::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+    }
+
+    .cta-inner {
+      position: relative;
+      z-index: 2;
+      padding: 3rem;
+      max-width: 640px;
+    }
+
+    .cta-inner h2 {
+      font-size: clamp(1.8rem, 4vw, 2.7rem);
+      font-weight: 500;
+      line-height: 1.08;
+      letter-spacing: -.04em;
+      margin: 0 0 1.5rem;
+      color: var(--white);
+    }
+
+    .cta-inner .btns {
+      display: flex;
+      gap: .8rem;
+      flex-wrap: wrap;
     }
 
     /* ---------- footer ---------- */
     footer.site {
-      border-top: 1px solid var(--border-soft);
-      margin-top: 5rem;
+      background: var(--bg-darker);
+      border-top: 1px solid var(--border);
     }
 
     .foot {
-      max-width: 1000px;
+      max-width: 1100px;
       margin: 0 auto;
-      padding: 2.5rem 1.25rem;
+      padding: 2.6rem 1.5rem;
       display: flex;
       align-items: center;
       gap: 1.25rem;
       flex-wrap: wrap;
-      color: var(--muted);
+      color: var(--sage);
       font-size: .9rem;
     }
 
     .foot .brand {
-      font-size: 1rem;
+      font-size: 1.05rem;
     }
 
     .foot-links {
       display: flex;
-      gap: 1.25rem;
-      margin-left: auto;
+      gap: 1.4rem;
       flex-wrap: wrap;
     }
 
     .foot-links a {
-      color: var(--muted);
+      color: var(--sage-bright);
       text-decoration: none;
     }
 
     .foot-links a:hover {
-      color: var(--fg);
+      color: var(--cream);
     }
 
     .made {
       width: 100%;
-      color: var(--muted);
-      font-size: .84rem;
+      color: var(--sage);
+      font-size: .85rem;
     }
 
-    /* ---------- reveal on scroll ---------- */
+    /* ---------- reveal ---------- */
     .reveal {
       opacity: 0;
       transform: translateY(18px);
@@ -925,29 +1338,29 @@
     }
 
     /* ---------- responsive ---------- */
-    @media (max-width: 860px) {
-      .hero {
-        grid-template-columns: 1fr;
-        gap: 2rem;
-        padding-top: 2.5rem;
-      }
+    @media (max-width: 880px) {
 
-      .hero-art {
-        order: -1;
-        max-width: 420px;
-      }
-
-      .how {
-        grid-template-columns: 1fr;
-      }
-
+      .stat-grid,
       .steps {
         grid-template-columns: 1fr;
+      }
+
+      .feature .wrap {
+        grid-template-columns: 1fr;
+        gap: 2rem;
+      }
+
+      .feature:nth-of-type(even) .fx-term {
+        order: 0;
+      }
+
+      .band {
+        padding: 5rem 0;
       }
     }
 
     @media (max-width: 640px) {
-      .cards {
+      .g-grid {
         grid-template-columns: 1fr;
       }
 
@@ -962,6 +1375,14 @@
 
       .cmd-row code {
         white-space: normal;
+      }
+
+      .cta-inner {
+        padding: 2rem 1.5rem;
+      }
+
+      .cta-card::after {
+        background: linear-gradient(180deg, rgba(0, 18, 14, .7) 0%, rgba(0, 18, 14, .92) 60%);
       }
     }
 
@@ -990,12 +1411,12 @@
     <nav class="nav" aria-label="Primary">
       <a class="brand" href="#top">
         <img src="assets/logo.png" alt="" width="30" height="30">
-        voli
+        Voli<span class="brand-tag"><span class="brand-dot">·</span><code>The Bear That Delivers</code></span>
       </a>
       <div class="nav-links">
-        <a class="navlink" href="#install">Install</a>
+        <a class="navlink" href="#why">Why</a>
         <a class="navlink" href="#commands">Commands</a>
-        <a class="navlink" href="#how">How it works</a>
+        <a class="navlink" href="#add">Add your app</a>
         <a class="navlink" href="#faq">FAQ</a>
         <a class="icon-btn" href="https://github.com/Topurrra/voli" aria-label="voli on GitHub" rel="noopener">
           <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -1004,20 +1425,7 @@
             </path>
           </svg>
         </a>
-        <button class="icon-btn theme-toggle" id="theme" type="button" aria-label="Toggle color theme"
-          aria-pressed="false" title="Toggle theme">
-          <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-          </svg>
-          <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="4"></circle>
-            <path
-              d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41">
-            </path>
-          </svg>
-        </button>
+        <a class="btn btn-cream btn-sm nav-cta" href="#install">Install</a>
       </div>
     </nav>
   </header>
@@ -1025,16 +1433,25 @@
   <main id="top">
     <!-- ---------- HERO ---------- -->
     <section class="hero">
-      <div class="hero-copy">
-        <span class="pill"><span class="dot"></span> No admin &middot; No scripts &middot; Zero-trace uninstall</span>
-        <h1>The bear that delivers.<br><span class="wordmark">voli</span></h1>
-        <p class="lead">A fast, no-admin <b>package manager for Windows</b>. One static binary,
-          portable apps, clean uninstalls &mdash; and a package can never run code on your machine.</p>
+      <canvas id="hero-bg" class="tk-shader" aria-hidden="true"></canvas>
+      <div class="tk-mesh" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span></div>
+      <div class="wrap">
+        <h1>No admin. No scripts. Just packages that <span class="accent">behave.</span></h1>
+        <p class="lead">Voli is a fast, no-admin <b>package manager for Windows</b> - one static binary,
+          portable apps, clean uninstalls, and a package can never run code on your machine.</p>
 
-        <div class="install" id="install">
-          <p class="install-label">Install &mdash; one line in PowerShell, no admin</p>
-          <div class="code big">
-            <span class="prompt">PS&gt;&nbsp;</span><span class="cmd" id="cmd-text">iwr -useb volibear.dev/install | iex</span>
+        <div class="hero-btns">
+          <a class="btn btn-cream" href="#install">Install voli</a>
+          <a class="btn btn-ghost" href="#why">Why voli</a>
+        </div>
+
+        <div class="install term" id="install">
+          <div class="term-bar">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="tt">PowerShell - no admin</span>
+          </div>
+          <div class="row">
+            <span class="p">PS&gt;</span><span id="cmd-text">iwr -useb volibear.dev/install | iex</span>
             <button class="copy" id="copy" type="button" aria-label="Copy install command">
               <svg class="clip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1048,438 +1465,537 @@
               <span class="copy-label">Copy</span>
             </button>
           </div>
-          <p class="install-note">Downloads the latest release, verifies its SHA-256, and runs
-            <code>voli setup</code> (user-level PATH). It does nothing else &mdash; read
-            <a href="https://github.com/Topurrra/voli/blob/main/install.ps1" rel="noopener">install.ps1</a> first if you
-            like.</p>
         </div>
-      </div>
+        <p class="install-note">Downloads the latest release, verifies its SHA-256, and runs
+          <code>voli setup</code> (user-level PATH). It does nothing else - read
+          <a href="https://github.com/Topurrra/voli/blob/main/install.ps1" rel="noopener">install.ps1</a> first if you
+          like.</p>
 
-      <div class="hero-art">
-        <img src="assets/logo-forest.jpg"
-          alt="voli, a dark-navy bear in a green forest holding a parcel with a yellow lightning bolt" width="800"
-          height="800">
+        <div class="scroll-cue" aria-hidden="true">
+          <span>Scroll</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round">
+            <path d="M12 5v14"></path>
+            <path d="m19 12-7 7-7-7"></path>
+          </svg>
+        </div>
       </div>
     </section>
 
-    <!-- ---------- GUARANTEES ---------- -->
-    <section id="guarantees">
-      <div class="section-head reveal">
-        <span class="eyebrow"><span class="bolt">&#9889;</span> Guarantees</span>
-        <h2 class="section-title">Four promises, never violated</h2>
-        <p class="section-sub">Not policy &mdash; architecture. Each guarantee holds by construction, not by good
-          intentions.</p>
+    <!-- ---------- STATS ---------- -->
+    <section class="band stats" id="why">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <span class="eyebrow">By the numbers</span>
+          <h2 class="h-sec">Fewer prompts. <span class="accent">Zero surprises.</span></h2>
+          <p class="sub">Not policy - architecture. Each number below holds by construction, not by good
+            intentions.</p>
+        </div>
+        <div class="stat-grid">
+          <div class="stat reveal">
+            <p class="num">0</p>
+            <p>Admin prompts, ever. Never touches HKLM or Program Files - everything lives under your user
+              profile.</p>
+          </div>
+          <div class="stat reveal">
+            <p class="num"><small>~</small>250<small>&nbsp;KB</small></p>
+            <p>Per index update. A signed snapshot fetched over HTTP - not a git clone of a bucket.</p>
+          </div>
+          <div class="stat reveal">
+            <p class="num">100<small>%</small></p>
+            <p>Ledgered. Every mutation is recorded, so uninstall replays each action backwards - zero trace.</p>
+          </div>
+        </div>
       </div>
+    </section>
 
-      <div class="cards">
-        <div class="card reveal" style="--accent-c: var(--forest)">
-          <span class="ic">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-              stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-            </svg>
-          </span>
-          <h3>Never requires admin</h3>
-          <p>Never touches HKLM or Program Files. Everything lives under your user profile, and junctions need no
-            elevation.</p>
+    <!-- ---------- GUARANTEES (cream) ---------- -->
+    <section class="band cream" id="guarantees">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <span class="eyebrow on-cream">Guarantees</span>
+          <h2 class="h-sec">Four promises, <span class="accent on-cream">never violated.</span></h2>
+          <p class="sub">Each guarantee is baked into the format, not bolted on after. Here is what that buys you.</p>
         </div>
 
-        <div class="card reveal" style="--accent-c: var(--pink)">
-          <span class="ic">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-              stroke-linejoin="round" aria-hidden="true">
-              <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6">
-              </path>
-            </svg>
-          </span>
-          <h3>Zero-trace uninstall</h3>
-          <p><code>voli uninstall x</code> leaves nothing behind &mdash; directory, shims, env vars and PATH entries all
-            removed, replayed backwards from the ledger.</p>
-        </div>
+        <div class="g-grid">
+          <div class="g-card reveal">
+            <div class="art">
+              <svg viewBox="0 0 200 96" fill="none" aria-hidden="true">
+                <g fill="#4c5f55" opacity=".38">
+                  <circle cx="24" cy="24" r="3.5"/><circle cx="52" cy="24" r="3.5"/><circle cx="80" cy="24" r="3.5"/>
+                  <circle cx="24" cy="48" r="3.5"/><circle cx="52" cy="48" r="3.5"/><circle cx="80" cy="48" r="3.5"/>
+                  <circle cx="24" cy="72" r="3.5"/><circle cx="52" cy="72" r="3.5"/><circle cx="80" cy="72" r="3.5"/>
+                </g>
+                <circle cx="150" cy="48" r="30" fill="none" stroke="#ED5126" stroke-width="3" opacity=".85"/>
+                <path d="M138 48l8 8 16-18" stroke="#ED5126" stroke-width="4" stroke-linecap="round"
+                  stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <h3>Never requires admin</h3>
+            <p>Never touches HKLM or Program Files. Everything lives under your user profile, and junctions need no
+              elevation.</p>
+          </div>
 
-        <div class="card reveal" style="--accent-c: var(--salmon)">
-          <span class="ic">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-              stroke-linejoin="round" aria-hidden="true">
-              <path d="M16 18l6-6-6-6M8 6l-6 6 6 6"></path>
-            </svg>
-          </span>
-          <h3>No scripts, ever</h3>
-          <p>Install is download &rarr; verify hash &rarr; extract &rarr; shim &rarr; consented env. The manifest grammar
-            <em>cannot express</em> code &mdash; a package can't run on your machine.</p>
-        </div>
+          <div class="g-card reveal">
+            <div class="art">
+              <svg viewBox="0 0 200 96" fill="none" aria-hidden="true">
+                <g stroke="#4c5f55" stroke-width="2.5" opacity=".4">
+                  <circle cx="100" cy="48" r="10"/>
+                  <circle cx="100" cy="48" r="22"/>
+                  <circle cx="100" cy="48" r="34"/>
+                </g>
+                <path d="M100 48 L164 20" stroke="#ED5126" stroke-width="3" stroke-linecap="round"/>
+                <circle cx="164" cy="20" r="5" fill="#ED5126"/>
+                <circle cx="100" cy="48" r="4" fill="#ED5126"/>
+              </svg>
+            </div>
+            <h3>Zero-trace uninstall</h3>
+            <p><code>voli uninstall x</code> leaves nothing behind - directory, shims, env vars and PATH entries
+              all removed, replayed backwards from the ledger.</p>
+          </div>
 
-        <div class="card reveal" style="--accent-c: var(--bolt)">
-          <span class="ic">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-              stroke-linejoin="round" aria-hidden="true">
-              <rect x="3" y="11" width="18" height="11" rx="2"></rect>
-              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-            </svg>
-          </span>
-          <h3>Signed &amp; pinned</h3>
-          <p>Every artifact is SHA-256 verified before extraction. The package index is Ed25519-signed and rejected if
-            the signature doesn't check out.</p>
+          <div class="g-card reveal">
+            <div class="art">
+              <svg viewBox="0 0 200 96" fill="none" aria-hidden="true">
+                <g fill="#4c5f55" opacity=".34">
+                  <rect x="20" y="20" width="14" height="14" rx="2" transform="rotate(45 27 27)"/>
+                  <rect x="52" y="20" width="14" height="14" rx="2" transform="rotate(45 59 27)"/>
+                  <rect x="20" y="52" width="14" height="14" rx="2" transform="rotate(45 27 59)"/>
+                  <rect x="52" y="52" width="14" height="14" rx="2" transform="rotate(45 59 59)"/>
+                </g>
+                <path d="M112 30 l-14 18 14 18 M150 30 l14 18 -14 18" stroke="#ED5126" stroke-width="4"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M132 26 l-6 44" stroke="#4c5f55" stroke-width="3" stroke-linecap="round" opacity=".55"/>
+              </svg>
+            </div>
+            <h3>No scripts, ever</h3>
+            <p>Install is download &rarr; verify hash &rarr; extract &rarr; shim &rarr; consented env. The manifest
+              grammar <em>cannot express</em> code - a package can't run on your machine.</p>
+          </div>
+
+          <div class="g-card reveal">
+            <div class="art">
+              <svg viewBox="0 0 200 96" fill="none" aria-hidden="true">
+                <g fill="#4c5f55">
+                  <circle cx="30" cy="48" r="9" opacity=".5"/><circle cx="56" cy="48" r="7" opacity=".42"/>
+                  <circle cx="80" cy="48" r="5.5" opacity=".34"/><circle cx="100" cy="48" r="4" opacity=".26"/>
+                  <circle cx="118" cy="48" r="3" opacity=".2"/>
+                </g>
+                <rect x="146" y="30" width="34" height="40" rx="6" fill="none" stroke="#ED5126" stroke-width="3"/>
+                <path d="M153 30v-6a10 10 0 0120 0v6" stroke="#ED5126" stroke-width="3" fill="none"/>
+                <circle cx="163" cy="50" r="4" fill="#ED5126"/>
+              </svg>
+            </div>
+            <h3>Signed &amp; pinned</h3>
+            <p>Every artifact is SHA-256 verified before extraction. The package index is Ed25519-signed and rejected if
+              the signature doesn't check out.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- FEATURE ROW 1: install ---------- -->
+    <section class="band feature">
+      <div class="wrap">
+        <div class="fx-term reveal">
+          <div class="term">
+            <div class="term-bar">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <span class="tt">install</span>
+            </div>
+            <pre><span class="p">PS&gt;</span> voli search ripgrep
+<span class="mut">ripgrep   14.1.1   recursively search with a regex</span>
+<span class="p">PS&gt;</span> voli install ripgrp
+  <span class="warn">! no package 'ripgrp' - did you mean ripgrep?</span>
+<span class="p">PS&gt;</span> voli install ripgrep
+  <span class="ok">&#10003;</span> ripgrep 14.1.1  <span class="mut">verified &middot; extracted &middot; shimmed</span>  <span class="ok">(1.2s)</span></pre>
+          </div>
+        </div>
+        <div class="fx-copy reveal">
+          <span class="eyebrow">Install</span>
+          <h2>Install anything in <span class="accent">seconds.</span></h2>
+          <p>Full-text search over a local index - instant and offline. Typo a name and voli suggests the closest
+            match instead of failing. Every install is download, verify, extract, shim; transactional per package.</p>
+          <div class="fx-btns">
+            <a class="btn btn-cream btn-sm" href="#commands">See all commands</a>
+            <a class="btn btn-ghost btn-sm" href="https://github.com/Topurrra/voli" rel="noopener">Read the source</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- FEATURE ROW 2: upgrade ---------- -->
+    <section class="band feature">
+      <div class="wrap">
+        <div class="fx-term reveal">
+          <div class="term">
+            <div class="term-bar">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <span class="tt">upgrade</span>
+            </div>
+            <pre><span class="p">PS&gt;</span> voli upgrade --all
+  <span class="up">&#8593;</span> ripgrep 14.1.0 <span class="mut">&rarr;</span> 14.1.1
+  <span class="mut">&middot; flipping current\ junction &hellip; atomic</span>
+  <span class="ok">&#10003;</span> done - <span class="mut">running processes untouched</span></pre>
+          </div>
+        </div>
+        <div class="fx-copy reveal">
+          <span class="eyebrow">Upgrade</span>
+          <h2>Upgrades that never <span class="accent">break</span> running apps.</h2>
+          <p>Each version lives in its own folder; a <code style="color:var(--cream)">current</code> junction points at
+            the active one. Upgrading is an atomic junction flip - a program that's already running keeps using its
+            files and never notices. Pins are respected.</p>
+          <div class="fx-btns">
+            <a class="btn btn-cream btn-sm" href="#commands">Command reference</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- FEATURE ROW 3: env ---------- -->
+    <section class="band feature">
+      <div class="wrap">
+        <div class="fx-term reveal">
+          <div class="term">
+            <div class="term-bar">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <span class="tt">environment</span>
+            </div>
+            <pre><span class="p">PS&gt;</span> voli install oven-sh.bun
+  <span class="mut">env</span>  BUN_INSTALL  <span class="mut">&rarr; add to user PATH? [y/N]</span> y
+  <span class="ok">&#10003;</span> set BUN_INSTALL <span class="mut">(user)</span>
+<span class="p">PS&gt;</span> voli uninstall oven-sh.bun
+  <span class="ok">&#10003;</span> removed BUN_INSTALL - <span class="mut">replayed from ledger</span></pre>
+          </div>
+        </div>
+        <div class="fx-copy reveal">
+          <span class="eyebrow">Environment</span>
+          <h2>Env vars with <span class="accent">consent</span> + cleanup.</h2>
+          <p>When a package wants an environment variable, voli asks - it never edits your environment behind your
+            back. And because every change is written to the ledger, uninstall takes it back out again. Nothing lingers.
+          </p>
+          <div class="fx-btns">
+            <a class="btn btn-cream btn-sm" href="#faq">How it works</a>
+          </div>
         </div>
       </div>
     </section>
 
     <!-- ---------- COMMANDS ---------- -->
-    <section id="commands">
-      <div class="section-head reveal">
-        <span class="eyebrow"><span class="bolt">&#9889;</span> Reference</span>
-        <h2 class="section-title">The whole CLI on one screen</h2>
-        <p class="section-sub">Fast, predictable, scriptable. Stable exit codes and <code>--json</code> on
-          <code>list</code>, <code>search</code> and <code>info</code> from day one.</p>
-      </div>
-
-      <div class="cmd-table reveal">
-        <div class="cmd-group">Manage packages</div>
-        <div class="cmd-row">
-          <code><span class="tok">voli install</span> <span class="arg">&lt;pkg&gt;[@version] …</span></code>
-          <span class="desc">Install one or more packages from the registry; pin a version with <code>@</code>.
-            Transactional per package.</span>
-        </div>
-        <div class="cmd-row">
-          <code><span class="tok">voli uninstall</span> <span class="arg">&lt;pkg&gt; …</span></code>
-          <span class="desc">Remove a package and everything it touched &mdash; zero trace, replayed from the
-            ledger.</span>
-        </div>
-        <div class="cmd-row">
-          <code><span class="tok">voli update</span></code>
-          <span class="desc">Refresh the signed package index &mdash; one small download (~250&nbsp;KB), not a git
-            clone.</span>
-        </div>
-        <div class="cmd-row">
-          <code><span class="tok">voli upgrade</span> <span class="arg">[&lt;pkg&gt;|--all]</span></code>
-          <span class="desc">Upgrade packages; respects pins. Running apps keep working via the atomic junction
-            flip.</span>
+    <section class="band cmds" id="commands">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <span class="eyebrow">Reference</span>
+          <h2 class="h-sec">The whole CLI on <span class="accent">one screen.</span></h2>
+          <p class="sub">Fast, predictable, scriptable. Stable exit codes and <code
+              style="color:var(--cream);background:color-mix(in srgb,var(--panel) 60%,transparent);padding:.04rem .3rem;border-radius:5px;font:.86em var(--mono)">--json</code>
+            on <code
+              style="color:var(--cream);background:color-mix(in srgb,var(--panel) 60%,transparent);padding:.04rem .3rem;border-radius:5px;font:.86em var(--mono)">list</code>,
+            <code
+              style="color:var(--cream);background:color-mix(in srgb,var(--panel) 60%,transparent);padding:.04rem .3rem;border-radius:5px;font:.86em var(--mono)">search</code>
+            and <code
+              style="color:var(--cream);background:color-mix(in srgb,var(--panel) 60%,transparent);padding:.04rem .3rem;border-radius:5px;font:.86em var(--mono)">info</code>
+            from day one.</p>
         </div>
 
-        <div class="cmd-group">Explore</div>
-        <div class="cmd-row">
-          <code><span class="tok">voli list</span></code>
-          <span class="desc">Everything installed, with versions.</span>
-        </div>
-        <div class="cmd-row">
-          <code><span class="tok">voli search</span> <span class="arg">&lt;query&gt;</span></code>
-          <span class="desc">Full-text search over the local index &mdash; instant and offline.</span>
-        </div>
-        <div class="cmd-row">
-          <code><span class="tok">voli info</span> <span class="arg">&lt;pkg&gt;</span></code>
-          <span class="desc">Version, description, homepage, license and sources for a package.</span>
-        </div>
-        <div class="cmd-row">
-          <code><span class="tok">voli which</span> <span class="arg">&lt;bin&gt;</span></code>
-          <span class="desc">Resolve a shim to the real target it points at.</span>
-        </div>
+        <div class="cmd-table reveal">
+          <div class="cmd-group">Manage packages</div>
+          <div class="cmd-row">
+            <code><span class="tok">voli install</span> <span class="arg">&lt;pkg&gt;[@version] &hellip;</span></code>
+            <span class="desc">Install one or more packages from the registry; pin a version with <code>@</code>.
+              Transactional per package.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli uninstall</span> <span class="arg">&lt;pkg&gt; &hellip;</span></code>
+            <span class="desc">Remove a package and everything it touched - zero trace, replayed from the
+              ledger.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli update</span></code>
+            <span class="desc">Refresh the signed package index - one small download (~250&nbsp;KB), not a git
+              clone.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli upgrade</span> <span class="arg">[&lt;pkg&gt;|--all]</span></code>
+            <span class="desc">Upgrade packages; respects pins. Running apps keep working via the atomic junction
+              flip.</span>
+          </div>
 
-        <div class="cmd-group">Maintain</div>
-        <div class="cmd-row">
-          <code><span class="tok">voli pin</span> / <span class="tok">unpin</span> <span
-              class="arg">&lt;pkg&gt;</span></code>
-          <span class="desc">Freeze a package at its current version, excluding it from <code>upgrade --all</code>.</span>
-        </div>
-        <div class="cmd-row">
-          <code><span class="tok">voli cleanup</span></code>
-          <span class="desc">Remove non-current version dirs and stale download cache.</span>
-        </div>
-        <div class="cmd-row">
-          <code><span class="tok">voli doctor</span></code>
-          <span class="desc">Health checks: PATH sanity, env drift, broken shims, sync-folder root warnings.</span>
-        </div>
-        <div class="cmd-row">
-          <code><span class="tok">voli config</span> <span class="arg">get|set &lt;key&gt; [value]</span></code>
-          <span class="desc">Read or set configuration such as the install root.</span>
-        </div>
-        <div class="cmd-row">
-          <code><span class="tok">voli setup</span> / <span class="tok">self-update</span></code>
-          <span class="desc">Self-install onto the user PATH, and keep voli itself up to date.</span>
-        </div>
-      </div>
-    </section>
+          <div class="cmd-group">Explore</div>
+          <div class="cmd-row">
+            <code><span class="tok">voli list</span></code>
+            <span class="desc">Everything installed, with versions.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli search</span> <span class="arg">&lt;query&gt;</span></code>
+            <span class="desc">Full-text search over the local index - instant and offline.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli info</span> <span class="arg">&lt;pkg&gt;</span></code>
+            <span class="desc">Version, description, homepage, license and sources for a package.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli which</span> <span class="arg">&lt;bin&gt;</span></code>
+            <span class="desc">Resolve a shim to the real target it points at.</span>
+          </div>
 
-    <!-- ---------- HOW IT WORKS ---------- -->
-    <section id="how">
-      <div class="section-head reveal">
-        <span class="eyebrow"><span class="bolt">&#9889;</span> How it works</span>
-        <h2 class="section-title">Portable apps, atomic upgrades, a ledger for cleanup</h2>
-        <p class="section-sub">No MSI/EXE installers, no vendor scripts. Just archives, shims and one PATH entry.</p>
-      </div>
-
-      <div class="how">
-        <ol class="reveal">
-          <li><span class="n">1</span><strong>Portable archives only.</strong> Apps are downloaded as zips/tarballs and
-            extracted &mdash; no vendor installer ever runs.</li>
-          <li><span class="n">2</span><strong>Versioned dirs + a junction flip.</strong> Each version lives in its own
-            folder; a <code>current</code> junction points at the active one, so upgrades are an atomic flip that never
-            breaks a running program.</li>
-          <li><span class="n">3</span><strong>Shims on one PATH entry.</strong> Tiny shims sit in a single
-            user-PATH folder and forward to <code>current</code> &mdash; nothing else pollutes your PATH.</li>
-          <li><span class="n">4</span><strong>Ledger-replay uninstall.</strong> Every mutation is recorded; uninstall
-            replays it backwards. Zero trace by construction, not by promise.</li>
-          <li><span class="n">5</span><strong>A ~250&nbsp;KB signed index.</strong> The catalog is an Ed25519-signed
-            SQLite snapshot fetched over HTTP &mdash; one small download to update.</li>
-        </ol>
-
-        <div class="diagram reveal" aria-hidden="true">
-          <svg viewBox="0 0 360 260" xmlns="http://www.w3.org/2000/svg" role="img">
-            <defs>
-              <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7"
-                orient="auto-start-reverse">
-                <path d="M0 0L10 5L0 10z" fill="var(--link)"></path>
-              </marker>
-            </defs>
-
-            <!-- apps versioned dirs -->
-            <rect class="d-box" x="12" y="18" width="150" height="34" rx="8"></rect>
-            <text class="d-label" x="26" y="34">apps\ripgrep\</text>
-            <text class="d-sub" x="26" y="47">14.1.0 · 14.1.1</text>
-
-            <!-- current junction -->
-            <rect class="d-box" x="12" y="104" width="150" height="34" rx="8"></rect>
-            <text class="d-label" x="26" y="120">current\</text>
-            <text class="d-sub" x="26" y="133">junction → 14.1.1</text>
-
-            <!-- shim -->
-            <rect class="d-box" x="205" y="104" width="140" height="34" rx="8"></rect>
-            <text class="d-label" x="219" y="120">shims\rg.exe</text>
-            <text class="d-sub" x="219" y="133">forwards args</text>
-
-            <!-- PATH -->
-            <rect class="d-box" x="205" y="196" width="140" height="34" rx="8"></rect>
-            <text class="d-label" x="219" y="212">user PATH</text>
-            <text class="d-sub" x="219" y="225">one entry</text>
-
-            <!-- flows -->
-            <path class="d-flow" d="M87 52 L87 104"></path>
-            <path class="d-flow" d="M162 121 L205 121"></path>
-            <path class="d-flow" d="M275 138 L275 196"></path>
-
-            <!-- bolt accent between current and shim -->
-            <path class="d-bolt" d="M183 108 l-7 12 h5 l-4 12 l11 -15 h-5 l4 -9 z"></path>
-          </svg>
+          <div class="cmd-group">Maintain</div>
+          <div class="cmd-row">
+            <code><span class="tok">voli pin</span> / <span class="tok">unpin</span> <span
+                class="arg">&lt;pkg&gt;</span></code>
+            <span class="desc">Freeze a package at its current version, excluding it from <code>upgrade --all</code>.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli cleanup</span></code>
+            <span class="desc">Remove non-current version dirs and stale download cache.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli doctor</span></code>
+            <span class="desc">Health checks: PATH sanity, env drift, broken shims, sync-folder root warnings.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli config</span> <span class="arg">get|set &lt;key&gt; [value]</span></code>
+            <span class="desc">Read or set configuration such as the install root.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli setup</span> / <span class="tok">self-update</span></code>
+            <span class="desc">Self-install onto the user PATH, and keep voli itself up to date.</span>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- ---------- ADD YOUR APP ---------- -->
-    <section id="add">
-      <div class="section-head reveal">
-        <span class="eyebrow"><span class="bolt">&#9889;</span> Registry</span>
-        <h2 class="section-title">Add your app in three steps</h2>
-        <p class="section-sub">The registry is declarative and open. No scripts to review &mdash; just a manifest.</p>
-      </div>
+    <!-- ---------- ORANGE BAND: add your app ---------- -->
+    <section class="band orange" id="add">
+      <svg class="wave" viewBox="0 0 1440 220" preserveAspectRatio="none" aria-hidden="true">
+        <path fill="#C4431F" d="M0 120 C 240 60 380 180 660 130 C 940 80 1140 190 1440 110 L1440 220 L0 220 Z"/>
+        <path fill="#a5371a" opacity=".7"
+          d="M0 165 C 280 120 520 210 820 165 C 1080 128 1260 205 1440 160 L1440 220 L0 220 Z"/>
+      </svg>
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <span class="eyebrow">Registry</span>
+          <h2 class="h-sec">Add your app in <span class="accent">three steps.</span></h2>
+          <p class="sub">The registry is declarative and open. No scripts to review - just a manifest.</p>
+        </div>
 
-      <div class="steps">
-        <div class="step reveal">
-          <span class="num">01</span>
-          <h3>Ship a zip</h3>
-          <p>Publish a portable archive on GitHub Releases &mdash; the same one users would download by hand.</p>
+        <div class="steps">
+          <div class="step reveal">
+            <span class="num">01</span>
+            <h3>Ship a zip</h3>
+            <p>Publish a portable archive on GitHub Releases - the same one users would download by hand.</p>
+          </div>
+          <div class="step reveal">
+            <span class="num">02</span>
+            <h3>One TOML manifest</h3>
+            <p>Open a PR with a single declarative manifest: name, version, source URL, SHA-256 and the shims to create.
+            </p>
+          </div>
+          <div class="step reveal">
+            <span class="num">03</span>
+            <h3>CI signs &amp; ships</h3>
+            <p>Registry CI verifies the hash, rebuilds the index and Ed25519-signs it. Your app is live on the next
+              <code>voli update</code>.</p>
+          </div>
         </div>
-        <div class="step reveal">
-          <span class="num">02</span>
-          <h3>One TOML manifest</h3>
-          <p>Open a PR with a single declarative manifest: name, version, source URL, SHA-256 and the shims to create.
-          </p>
-        </div>
-        <div class="step reveal">
-          <span class="num">03</span>
-          <h3>CI signs &amp; ships</h3>
-          <p>Registry CI verifies the hash, rebuilds the index and Ed25519-signs it. Your app is live on the next
-            <code>voli update</code>.</p>
-        </div>
-      </div>
 
-      <div class="add-cta reveal">
-        <a class="btn btn-primary" href="https://github.com/Topurrra/voli-registry" rel="noopener">
-          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path
-              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z">
-            </path>
-          </svg>
-          Open the registry
-        </a>
-        <a class="btn btn-ghost" href="https://github.com/Topurrra/voli" rel="noopener">Read the source</a>
+        <div class="fx-btns reveal">
+          <a class="btn btn-cream" href="https://github.com/Topurrra/voli-registry" rel="noopener">Open the registry</a>
+          <a class="btn btn-ghost" style="border-color:rgba(255,255,255,.5);color:#fff"
+            href="https://github.com/Topurrra/voli" rel="noopener">Read the source</a>
+        </div>
       </div>
     </section>
 
     <!-- ---------- FAQ ---------- -->
-    <section id="faq">
-      <div class="section-head reveal">
-        <span class="eyebrow"><span class="bolt">&#9889;</span> FAQ</span>
-        <h2 class="section-title">Honest answers</h2>
+    <!-- ---------- COMPARISON ---------- -->
+    <section class="band stats" id="compare">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <span class="eyebrow">Comparison</span>
+          <h2 class="h-sec">How Voli differs from <span class="accent">the others.</span></h2>
+          <p class="sub">Same job, different architecture. The rows below are structural properties, not
+            feature-checklist marketing.</p>
+        </div>
+
+        <div class="cmp-wrap reveal">
+          <table class="cmp">
+            <thead>
+              <tr>
+                <th scope="col">&nbsp;</th>
+                <th scope="col" class="is-voli">Voli</th>
+                <th scope="col">Scoop</th>
+                <th scope="col">Chocolatey</th>
+                <th scope="col">winget</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Runs without admin</th>
+                <td class="is-voli"><span class="y">Always</span></td>
+                <td><span class="y">Yes</span></td>
+                <td><span class="n">Usually not</span></td>
+                <td><span class="n">Often not</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Packages can run scripts</th>
+                <td class="is-voli"><span class="y">Never - grammar can't express it</span></td>
+                <td><span class="n">Yes</span></td>
+                <td><span class="n">Yes (PowerShell)</span></td>
+                <td><span class="n">Yes (installers)</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Uninstall leaves nothing</th>
+                <td class="is-voli"><span class="y">Ledger-replayed</span></td>
+                <td><span class="n">Mostly</span></td>
+                <td><span class="n">Installer-dependent</span></td>
+                <td><span class="n">Installer-dependent</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Upgrade while app is running</th>
+                <td class="is-voli"><span class="y">Atomic junction flip</span></td>
+                <td><span class="n">Can break</span></td>
+                <td><span class="n">Can break</span></td>
+                <td><span class="n">Can break</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Index update size</th>
+                <td class="is-voli"><span class="y">~250 KB signed snapshot</span></td>
+                <td><span class="n">git clone per bucket</span></td>
+                <td><span class="n">API calls</span></td>
+                <td><span class="n">API calls</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Index signature</th>
+                <td class="is-voli"><span class="y">Ed25519, enforced</span></td>
+                <td><span class="n">Git trust</span></td>
+                <td><span class="n">Feed trust</span></td>
+                <td><span class="y">MS-signed</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Env vars need consent</th>
+                <td class="is-voli"><span class="y">Prompted + reverted</span></td>
+                <td><span class="n">Script-dependent</span></td>
+                <td><span class="n">Script-dependent</span></td>
+                <td><span class="n">Installer-dependent</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
+    </section>
 
-      <div class="faq reveal">
-        <details class="qa">
-          <summary>Is it safe?
-            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6"></path>
-            </svg>
-          </summary>
-          <div class="a">
-            <p>Safety is built into the format, not bolted on. Every artifact is SHA-256 verified <em>before</em> it's
-              extracted, and the package index is Ed25519-signed &mdash; the public key is baked into the binary, and an
-              unsigned or tampered index is rejected outright.</p>
-            <p>The manifest grammar cannot express code, so there is no post-install script for an attacker to hide
-              something in. Extraction is also protected against zip-slip (archive entries can't escape their folder).
-            </p>
-          </div>
-        </details>
+    <section class="band faq-sec" id="faq">
+      <div class="wrap">
+        <div class="sec-head reveal" style="text-align:center">
+          <span class="eyebrow">FAQ</span>
+        </div>
 
-        <details class="qa">
-          <summary>Does it need admin?
-            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6"></path>
-            </svg>
-          </summary>
-          <div class="a">
-            <p>Never. voli never touches HKLM or Program Files &mdash; apps live under your user profile, PATH changes
-              are user-level, and the junctions it relies on need no elevation. If a command ever asks for admin, that's
-              a bug.</p>
-          </div>
-        </details>
+        <div class="faq reveal">
+          <details class="qa">
+            <summary>Is it safe?
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 9l6 6 6-6"></path>
+              </svg>
+            </summary>
+            <div class="a">
+              <p>Safety is built into the format, not bolted on. Every artifact is SHA-256 verified <em>before</em> it's
+                extracted, and the package index is Ed25519-signed - the public key is baked into the binary, and
+                an unsigned or tampered index is rejected outright.</p>
+              <p>The manifest grammar cannot express code, so there is no post-install script for an attacker to hide
+                something in. Extraction is also protected against zip-slip (archive entries can't escape their folder).
+              </p>
+            </div>
+          </details>
 
-        <details class="qa">
-          <summary>How is it different from Scoop, Chocolatey or winget?
-            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6"></path>
-            </svg>
-          </summary>
-          <div class="a">
-            <p>We're building a <strong>better Scoop</strong>, not a better Chocolatey.</p>
-            <table class="compare">
-              <thead>
-                <tr>
-                  <th>&nbsp;</th>
-                  <th>Choco / winget</th>
-                  <th>Scoop</th>
-                  <th>voli</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>Model</td>
-                  <td>vendor installers</td>
-                  <td>portable + shims</td>
-                  <td>portable + shims</td>
-                </tr>
-                <tr>
-                  <td>Admin</td>
-                  <td>usually</td>
-                  <td>no</td>
-                  <td>never</td>
-                </tr>
-                <tr>
-                  <td>Uninstall</td>
-                  <td>weak</td>
-                  <td>good</td>
-                  <td>absolute</td>
-                </tr>
-                <tr>
-                  <td>Built in</td>
-                  <td>PowerShell/.NET</td>
-                  <td>PowerShell</td>
-                  <td>Rust, one exe</td>
-                </tr>
-                <tr>
-                  <td>Post-install</td>
-                  <td>arbitrary scripts</td>
-                  <td>arbitrary PS</td>
-                  <td>declarative only</td>
-                </tr>
-              </tbody>
-            </table>
-            <p>Chocolatey and winget wrap vendor MSI/EXE installers that can run arbitrary code and often need admin.
-              Scoop got the model right &mdash; portable archives and shims &mdash; but it's PowerShell, its buckets
-              update by git clone, and manifests can still run scripts. voli is a single Rust binary, updates the index
-              as a signed snapshot, and forbids scripts by construction.</p>
-          </div>
-        </details>
+          <details class="qa">
+            <summary>Does it need admin?
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 9l6 6 6-6"></path>
+              </svg>
+            </summary>
+            <div class="a">
+              <p>Never. Voli never touches HKLM or Program Files - apps live under your user profile, PATH changes
+                are user-level, and the junctions it relies on need no elevation. If a command ever asks for admin,
+                that's a bug.</p>
+            </div>
+          </details>
 
-        <details class="qa">
-          <summary>Can it install Chrome?
-            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6"></path>
-            </svg>
-          </summary>
-          <div class="a">
-            <p>Honestly: only if there's a portable build. voli installs portable archives &mdash; no MSI/EXE installers
-              and no vendor scripts &mdash; so anything that ships as a self-contained zip works great (CLIs, dev tools,
-              portable apps). Big installer-only desktop apps like Chrome aren't a fit today. That's a deliberate
-              trade-off for the no-admin, no-scripts, zero-trace guarantees, not an oversight.</p>
-          </div>
-        </details>
+          <details class="qa">
+            <summary>Can it install Chrome?
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 9l6 6 6-6"></path>
+              </svg>
+            </summary>
+            <div class="a">
+              <p>Only if there's a portable build. Voli installs portable archives - no MSI/EXE
+                installers and no vendor scripts - so anything that ships as a self-contained zip works great
+                (CLIs, dev tools, portable apps). Big installer-only desktop apps like Chrome aren't a fit today. That's
+                a deliberate trade-off for the no-admin, no-scripts, zero-trace guarantees, not an oversight.</p>
+            </div>
+          </details>
 
-        <details class="qa">
-          <summary>How do I uninstall voli itself?
-            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6"></path>
-            </svg>
-          </summary>
-          <div class="a">
-            <p>The same way it installs &mdash; cleanly. voli tracks its own PATH entry and install directory in the
-              ledger, so removing its root folder and the single user-PATH entry it added takes everything with it. No
-              registry residue, nothing left in Program Files, because it was never there in the first place.</p>
+          <details class="qa">
+            <summary>How do I uninstall Voli itself?
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 9l6 6 6-6"></path>
+              </svg>
+            </summary>
+            <div class="a">
+              <p>The same way it installs - cleanly. Voli tracks its own PATH entry and install directory in the
+                ledger, so removing its root folder and the single user-PATH entry it added takes everything with it. No
+                registry residue, nothing left in Program Files, because it was never there in the first place.</p>
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- PHOTO CTA ---------- -->
+    <section class="band cta">
+      <div class="wrap">
+        <div class="cta-card reveal">
+          <img
+            src="assets/logo-forest.jpg"
+            alt="voli, a dark-navy bear in a green forest holding a parcel with a yellow lightning bolt" width="800"
+            height="800">
+          <div class="cta-inner">
+            <h2>Got a Windows machine?<br>Let the bear <span class="accent">deliver.</span></h2>
+            <div class="btns">
+              <a class="btn btn-cream" href="#install">Install Voli</a>
+              <a class="btn btn-ghost" href="https://github.com/Topurrra/voli" rel="noopener">Star on GitHub</a>
+            </div>
           </div>
-        </details>
+        </div>
       </div>
     </section>
   </main>
 
   <footer class="site">
     <div class="foot">
-      <a class="brand" href="#top">
-        <img src="assets/logo.png" alt="" width="30" height="30">
-        voli
-      </a>
       <div class="foot-links">
         <a href="https://github.com/Topurrra/voli" rel="noopener">GitHub</a>
         <a href="https://github.com/Topurrra/voli-registry" rel="noopener">Registry</a>
         <a href="https://github.com/Topurrra/voli/blob/main/LICENSE" rel="noopener">License</a>
+        <p class="made">Made with &#128059; <a href="https://github.com/Topurrra">By Topurrra</a> &middot; a fast, no-admin package manager for Windows.</p>
       </div>
-      <p class="made">Made with &#128059; by Topurrra &middot; a fast, no-admin package manager for Windows.</p>
     </div>
   </footer>
 
   <script>
-    // ---- Theme toggle: OS default, override + persist, no framework ----
-    (function () {
-      var root = document.documentElement;
-      var btn = document.getElementById('theme');
-
-      function current() {
-        var set = root.getAttribute('data-theme');
-        if (set) return set;
-        return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-      }
-      function sync() {
-        var isLight = current() === 'light';
-        btn.classList.toggle('is-light', isLight);
-        btn.setAttribute('aria-pressed', String(isLight));
-      }
-      btn.addEventListener('click', function () {
-        var next = current() === 'light' ? 'dark' : 'light';
-        root.setAttribute('data-theme', next);
-        try { localStorage.setItem('voli-theme', next); } catch (e) { }
-        sync();
-      });
-      sync();
-    })();
-
     // ---- Copy the install one-liner ----
     (function () {
       var btn = document.getElementById('copy');
       var label = btn.querySelector('.copy-label');
       var src = document.getElementById('cmd-text');
       btn.addEventListener('click', function () {
-        var text = src.textContent.trim();
+        // data-full is set by the typing effect, so copy is correct mid-animation
+        var text = (src.dataset.full || src.textContent).trim();
         function done() {
           btn.classList.add('copied');
           label.textContent = 'Copied';
@@ -1498,6 +2014,53 @@
       }
     })();
 
+    // ---- Hero headline: wrap words for the blur-in stagger ----
+    (function () {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      var h1 = document.querySelector('.hero h1');
+      if (!h1) return;
+      var i = 0;
+      function splitNode(node) {
+        if (node.nodeType === 3) {
+          var frag = document.createDocumentFragment();
+          node.textContent.split(/(\s+)/).forEach(function (part) {
+            if (/^\s+$/.test(part) || part === '') { frag.appendChild(document.createTextNode(part)); return; }
+            var s = document.createElement('span');
+            s.className = 'w';
+            s.style.setProperty('--i', i++);
+            s.textContent = part;
+            frag.appendChild(s);
+          });
+          node.parentNode.replaceChild(frag, node);
+        } else if (node.nodeType === 1) {
+          Array.prototype.slice.call(node.childNodes).forEach(splitNode);
+        }
+      }
+      splitNode(h1);
+    })();
+
+    // ---- Hero install line: type the command, then hold a blinking caret ----
+    (function () {
+      var el = document.getElementById('cmd-text');
+      if (!el) return;
+      var full = el.textContent.trim();
+      el.dataset.full = full; // copy button reads this, so it is right at any moment
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+      var caret = document.createElement('span');
+      caret.className = 'cmd-caret';
+      caret.setAttribute('aria-hidden', 'true');
+      el.parentNode.insertBefore(caret, el.nextSibling);
+
+      el.textContent = '';
+      var i = 0;
+      function tick() {
+        el.textContent = full.slice(0, ++i);
+        if (i < full.length) setTimeout(tick, 22 + Math.random() * 30);
+      }
+      setTimeout(tick, 950); // let the headline land first
+    })();
+
     // ---- Subtle reveal on scroll (respects reduced-motion) ----
     (function () {
       var items = document.querySelectorAll('.reveal');
@@ -1513,7 +2076,111 @@
       }, { rootMargin: '0px 0px -8% 0px', threshold: .08 });
       items.forEach(function (el) { io.observe(el); });
     })();
+
+    var TK_REDUCE = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // ---- Stats count up when they scroll into view ----
+    (function () {
+      var nums = document.querySelectorAll('.stat-grid .num');
+      if (!nums.length || TK_REDUCE || !('IntersectionObserver' in window)) return;
+
+      function numericNode(el) {
+        // the bare number sits in a text node next to the <small> units
+        for (var i = 0; i < el.childNodes.length; i++) {
+          var n = el.childNodes[i];
+          if (n.nodeType === 3 && /\d/.test(n.textContent)) return n;
+        }
+        return null;
+      }
+
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (!e.isIntersecting) return;
+          io.unobserve(e.target);
+          var node = numericNode(e.target);
+          if (!node) return;
+          var target = parseFloat(node.textContent.replace(/[^\d.]/g, ''));
+          if (!isFinite(target)) return;
+          var dur = 1100, t0 = performance.now();
+          (function step(now) {
+            var p = Math.min(1, (now - t0) / dur);
+            var eased = 1 - Math.pow(1 - p, 3);
+            node.textContent = String(Math.round(target * eased));
+            if (p < 1) requestAnimationFrame(step);
+            else node.textContent = String(target);
+          })(t0);
+        });
+      }, { threshold: .5 });
+      nums.forEach(function (n) { io.observe(n); });
+    })();
+
+    // ---- Feature terminals print their output line by line on first view ----
+    (function () {
+      var terms = document.querySelectorAll('.fx-term pre');
+      if (!terms.length) return;
+
+      terms.forEach(function (pre) {
+        // wrap each visual line in .ln, keeping the coloured spans intact
+        var lines = [document.createElement('span')];
+        lines[0].className = 'ln';
+        Array.prototype.slice.call(pre.childNodes).forEach(function (node) {
+          if (node.nodeType === 3 && node.textContent.indexOf('\n') !== -1) {
+            var parts = node.textContent.split('\n');
+            parts.forEach(function (part, idx) {
+              if (idx > 0) {
+                var ln = document.createElement('span');
+                ln.className = 'ln';
+                lines.push(ln);
+              }
+              if (part !== '') lines[lines.length - 1].appendChild(document.createTextNode(part));
+            });
+          } else {
+            lines[lines.length - 1].appendChild(node.cloneNode(true));
+          }
+        });
+        pre.textContent = '';
+        lines.forEach(function (ln, i) {
+          if (!ln.textContent.trim() && !ln.childNodes.length) return;
+          ln.style.setProperty('--l', i);
+          pre.appendChild(ln);
+        });
+      });
+
+      if (TK_REDUCE || !('IntersectionObserver' in window)) {
+        document.querySelectorAll('.fx-term').forEach(function (t) { t.classList.add('printed'); });
+        return;
+      }
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) { e.target.classList.add('printed'); io.unobserve(e.target); }
+        });
+      }, { threshold: .25 });
+      document.querySelectorAll('.fx-term').forEach(function (t) { io.observe(t); });
+    })();
+
+    // ---- Nav scroll-spy ----
+    (function () {
+      var links = Array.prototype.slice.call(document.querySelectorAll('.navlink'));
+      if (!links.length || !('IntersectionObserver' in window)) return;
+      var map = {};
+      links.forEach(function (a) {
+        var id = (a.getAttribute('href') || '').replace('#', '');
+        var sec = id && document.getElementById(id);
+        if (sec) map[id] = a;
+      });
+      var ids = Object.keys(map);
+      if (!ids.length) return;
+      var visible = {};
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting; });
+        var current = ids.filter(function (id) { return visible[id]; })[0];
+        links.forEach(function (a) { a.classList.remove('active'); });
+        if (current && map[current]) map[current].classList.add('active');
+      }, { rootMargin: '-45% 0px -50% 0px', threshold: 0 });
+      ids.forEach(function (id) { io.observe(document.getElementById(id)); });
+    })();
   </script>
+  <script src="assets/hero-bg.js" defer></script>
 </body>
 
 </html>
