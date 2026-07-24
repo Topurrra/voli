@@ -209,6 +209,41 @@ pub fn build(
     let json = serde_json::to_string_pretty(&remote).context("serializing index.json")?;
     std::fs::write(out.join("index.json"), format!("{json}\n")).context("writing index.json")?;
 
+    // Convenience mirror for the website search (NOT signed — the client never
+    // uses it; it's a read-only catalog snapshot for volibear.dev).
+    {
+        use std::collections::BTreeMap;
+        let mut latest: BTreeMap<&str, &Manifest> = BTreeMap::new();
+        for m in &manifests {
+            match latest.get(m.name.as_str()) {
+                Some(prev) => {
+                    if voli_core::index::cmp_version(&m.version, &prev.version)
+                        == std::cmp::Ordering::Greater
+                    {
+                        latest.insert(&m.name, m);
+                    }
+                }
+                None => {
+                    latest.insert(&m.name, m);
+                }
+            }
+        }
+        let pkgs: Vec<serde_json::Value> = latest
+            .values()
+            .map(|m| {
+                let bins: Vec<&str> = m.bin.iter().map(|b| b.path()).collect();
+                serde_json::json!({
+                    "n": m.name,
+                    "v": m.version,
+                    "d": m.description.as_deref().unwrap_or(""),
+                    "b": bins,
+                })
+            })
+            .collect();
+        let minified = serde_json::to_string(&pkgs).context("serializing packages.json")?;
+        std::fs::write(out.join("packages.json"), &minified).context("writing packages.json")?;
+    }
+
     Ok(BuildMeta {
         epoch,
         sha256,

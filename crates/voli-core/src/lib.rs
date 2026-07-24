@@ -18,6 +18,8 @@ pub mod remote;
 pub mod selfinstall;
 #[cfg(windows)]
 pub mod state;
+#[cfg(windows)]
+pub mod uninstall_reg;
 
 pub use config::Config;
 pub use fetch::{FetchError, download};

@@ -92,7 +92,7 @@ fn latest_version(conn: &Connection, name: &str) -> Result<Option<String>, Index
 /// ponytail: naive dotted/dashed tokenization, not full semver — pre-release
 /// precedence (`1.0.0-rc1 < 1.0.0`) is *not* modeled. Swap in the `semver` crate
 /// if the catalog ever needs real pre-release ordering.
-pub(crate) fn cmp_version(a: &str, b: &str) -> Ordering {
+pub fn cmp_version(a: &str, b: &str) -> Ordering {
     let ta = tokenize_version(a);
     let tb = tokenize_version(b);
     for (x, y) in ta.iter().zip(tb.iter()) {

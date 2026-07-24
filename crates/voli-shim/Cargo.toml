@@ -32,3 +32,8 @@ harness = false
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = { workspace = true }
+image = { workspace = true }
+ico = { workspace = true }

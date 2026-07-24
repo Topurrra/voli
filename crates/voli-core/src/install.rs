@@ -78,6 +78,10 @@ pub enum Action {
     ShortcutCreated {
         path: PathBuf,
     },
+    /// An Apps & Features Uninstall registry key we created.
+    UninstallKeyCreated {
+        name: String,
+    },
 }
 
 impl Action {
@@ -90,6 +94,7 @@ impl Action {
             Action::EnvSet { .. } => "env_set",
             Action::PathAdded { .. } => "path_added",
             Action::ShortcutCreated { .. } => "shortcut_created",
+            Action::UninstallKeyCreated { .. } => "uninstall_key_created",
         }
     }
 }
@@ -253,6 +258,35 @@ pub fn install_manifest(
         }
         crate::env::broadcast_change();
         report.env_applied = resolved;
+    }
+
+    // Apps & Features registration: write the Uninstall key so the package
+    // appears in Windows Settings → Apps.
+    {
+        let base = crate::uninstall_reg::uninstall_base();
+        let current = paths.current(&manifest.name);
+        let icon = manifest
+            .bin
+            .first()
+            .map(|b| current.join(b.path()).to_string_lossy().into_owned())
+            .unwrap_or_else(|| current.to_string_lossy().into_owned());
+        let voli_exe = paths.root.join("bin").join("voli.exe");
+        let size_kb = dir_size(&report.version_dir) / 1024;
+        if let Err(e) = crate::uninstall_reg::write_key(
+            &base,
+            &manifest.name,
+            &manifest.version,
+            &current,
+            &icon,
+            &voli_exe,
+            size_kb,
+        ) {
+            rollback(env_subkey, &actions);
+            return Err(e.into());
+        }
+        actions.push(Action::UninstallKeyCreated {
+            name: manifest.name.clone(),
+        });
     }
 
     // Persist the ledger + installed marker atomically. If this fails, undo
@@ -515,6 +549,10 @@ fn rollback(subkey: &str, actions: &[Action]) {
             Action::ShortcutCreated { path } => {
                 let _ = fs::remove_file(path);
             }
+            Action::UninstallKeyCreated { name } => {
+                let base = crate::uninstall_reg::uninstall_base();
+                let _ = crate::uninstall_reg::delete_key(&base, name);
+            }
         }
     }
     if touched_env {
@@ -608,6 +646,10 @@ pub fn uninstall_env(
             }
             Action::ShortcutCreated { path } => {
                 let _ = fs::remove_file(path);
+            }
+            Action::UninstallKeyCreated { name } => {
+                let base = crate::uninstall_reg::uninstall_base();
+                let _ = crate::uninstall_reg::delete_key(&base, name);
             }
         }
     }
@@ -728,13 +770,38 @@ pub fn upgrade_install(
         match &a {
             Action::JunctionCreated { path } if *path == old_current => {} // old current: dropped
             Action::ShimWritten { .. } => {}                               // rewritten
+            Action::UninstallKeyCreated { .. } => {}                       // rewritten below
             Action::EnvSet { .. } | Action::PathAdded { .. } => old_env.push(a),
             _ => structural.push(a),
         }
     }
+
+    // Rewrite the Apps & Features key with the new version + size.
+    {
+        let base = crate::uninstall_reg::uninstall_base();
+        let current = paths.current(name);
+        let icon = manifest_new
+            .bin
+            .first()
+            .map(|b| current.join(b.path()).to_string_lossy().into_owned())
+            .unwrap_or_else(|| current.to_string_lossy().into_owned());
+        let voli_exe = paths.root.join("bin").join("voli.exe");
+        let size_kb = dir_size(&new_report.version_dir) / 1024;
+        let _ = crate::uninstall_reg::write_key(
+            &base,
+            name,
+            new_version,
+            &current,
+            &icon,
+            &voli_exe,
+            size_kb,
+        );
+    }
+
     let mut combined = structural;
     // Clone: `new_actions` is retained for the failure-rollback path below.
     combined.extend(new_actions.clone());
+    combined.push(Action::UninstallKeyCreated { name: name.clone() });
     combined.extend(old_env);
 
     // Swap the installed row (version bump, ledger replaced) preserving the pin.

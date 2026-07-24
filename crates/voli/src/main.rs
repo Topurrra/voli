@@ -997,14 +997,14 @@ fn cmd_doctor(json: bool) -> i32 {
     };
 
     // 5 + 6. per-package shims, shim targets, and current junctions.
-    if let Some(state) = state {
+    if let Some(state) = &state {
         match state.list() {
             Ok(pkgs) => {
                 for p in &pkgs {
                     if p.name == "@voli" {
                         continue; // synthetic self entry has no shims/junction
                     }
-                    check_package(&paths, &state, p, &env_subkey, &mut add);
+                    check_package(&paths, state, p, &env_subkey, &mut add);
                 }
             }
             Err(e) => add(
@@ -1012,6 +1012,35 @@ fn cmd_doctor(json: bool) -> i32 {
                 "installed packages",
                 format!("cannot list: {e}"),
             ),
+        }
+    }
+
+    // 7. Orphaned Apps & Features keys (key exists but package not in state db).
+    {
+        let base = voli_core::uninstall_reg::uninstall_base();
+        match voli_core::uninstall_reg::list_voli_keys(&base) {
+            Ok(keys) => {
+                let installed: std::collections::HashSet<String> = state
+                    .as_ref()
+                    .and_then(|s| s.list().ok())
+                    .map(|pkgs| pkgs.into_iter().map(|p| p.name).collect())
+                    .unwrap_or_default();
+                let orphans: Vec<&String> =
+                    keys.iter().filter(|k| !installed.contains(*k)).collect();
+                if orphans.is_empty() {
+                    add(Status::Pass, "uninstall keys", "no orphans".to_string());
+                } else {
+                    let names: Vec<&str> = orphans.iter().map(|s| s.as_str()).collect();
+                    add(
+                        Status::Warn,
+                        "uninstall keys",
+                        format!("orphaned: {}", names.join(", ")),
+                    );
+                }
+            }
+            Err(_) => {
+                // Cannot read the key — not fatal.
+            }
         }
     }
 
