@@ -13,6 +13,7 @@ pub mod manifest;
 pub mod paths;
 #[cfg(windows)]
 pub mod selfinstall;
+#[cfg(windows)]
 pub mod state;
 
 pub use config::Config;
@@ -24,4 +25,5 @@ pub use manifest::{Bin, Kind, Manifest, ManifestError, Source};
 pub use paths::Paths;
 #[cfg(windows)]
 pub use selfinstall::{SelfInstallError, SelfInstallReport, self_install};
+#[cfg(windows)]
 pub use state::{InstalledPkg, State};
