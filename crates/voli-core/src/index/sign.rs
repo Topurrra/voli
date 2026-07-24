@@ -8,10 +8,9 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use super::IndexError;
 
-/// Public half of the development signing key.
-///
-// DEV KEY — replace before public launch
-pub const DEV_PUBKEY: &str = "8889001cad89219e037858025da3ecc081922248ae5f8b1bec443badf379a8ab";
+/// Public half of the production index-signing key (rotated 2026-07-24 per
+/// Voli.md §10.1; the retired dev key remains only as a test fixture value).
+pub const DEV_PUBKEY: &str = "9fa724f7004638687ef8332d1bff3d15fd7792745b051f91cce0adefd303a2fa";
 
 /// Env override for the verification pubkey (hex), for tests and staging.
 pub const PUBKEY_ENV: &str = "VOLI_INDEX_PUBKEY";
