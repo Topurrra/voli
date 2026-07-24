@@ -20,3 +20,16 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: Format check
         run: cargo fmt --check
+
+  # docs-site/install is a verbatim copy of install.ps1 (so `volibear.dev/install`
+  # serves the same script). Fail the build if they drift.
+  installer-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check docs-site/install matches install.ps1
+        run: |
+          if ! diff -q install.ps1 docs-site/install; then
+            echo "::error::docs-site/install drifted from install.ps1. Run: cp install.ps1 docs-site/install"
+            exit 1
+          fi

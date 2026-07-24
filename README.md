@@ -6,6 +6,24 @@
 
 <p align="center">⚡ A fast, no-admin package manager for Windows. One binary, clean uninstalls, zero scripts.</p>
 
+## Install
+
+One line in PowerShell (no admin):
+
+```powershell
+iwr -useb volibear.dev/install | iex
+```
+
+Before DNS is set up, use the raw GitHub fallback:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/Topurrra/voli/main/install.ps1 | iex
+```
+
+The installer downloads the latest release, verifies its SHA-256, and runs
+`voli setup` (user-level PATH, no admin). It does nothing else — read it first
+if you like: [`install.ps1`](install.ps1).
+
 > **Status: early development.** The core works — `voli install ripgrep`
 > downloads from the signed registry, installs, and runs — but nothing is
 > released yet and everything may change. Don't depend on it before v0.1.
