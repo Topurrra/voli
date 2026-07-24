@@ -555,7 +555,7 @@
       opacity: 0;
       transition: opacity .6s ease;
     }
-    .hero.shader-on .tk-shader { opacity: 1; }
+
     .hero.shader-on .tk-mesh { display: none; }
     .hero.shader-on::before { opacity: .35; }  /* keep a touch of the original bloom */
     .hero.shader-on::after { display: none; }  /* grain replaces the CSS dot grid */
@@ -1245,15 +1245,14 @@
       border-radius: 24px;
       overflow: hidden;
       border: 1px solid var(--border);
-      min-height: 340px;
       display: flex;
       align-items: center;
     }
 
-    .cta-card img {
+    /* .cta-card img {
       width: 100%;
       height: 100%;
-    }
+    } */
 
     .cta-card::after {
       content: "";
@@ -1265,7 +1264,7 @@
     .cta-inner {
       position: relative;
       z-index: 2;
-      padding: 3rem;
+      padding-left: 3rem;
       max-width: 640px;
     }
 
@@ -1381,12 +1380,14 @@
       }
 
       .cta-inner {
-        padding: 2rem 1.5rem;
+        display:none;
       }
 
-      .cta-card::after {
-        background: linear-gradient(180deg, rgba(0, 18, 14, .7) 0%, rgba(0, 18, 14, .92) 60%);
+      img{
+        width: 355px;
+        height: 355px;
       }
+
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -1444,8 +1445,8 @@
           portable apps, clean uninstalls, and a package can never run code on your machine.</p>
 
         <div class="hero-btns">
-          <a class="btn btn-cream" href="#install">Install voli</a>
-          <a class="btn btn-ghost" href="#why">Why voli</a>
+          <a class="btn btn-cream" href="#install">Install Voli</a>
+          <a class="btn btn-ghost" href="#why">Why Voli</a>
         </div>
 
         <div class="install term" id="install">
@@ -1965,8 +1966,8 @@
         <div class="cta-card reveal">
           <img
             src="assets/logo-forest.jpg"
-            alt="voli, a dark-navy bear in a green forest holding a parcel with a yellow lightning bolt" width="800"
-            height="800">
+            alt="voli, a dark-navy bear in a green forest holding a parcel with a yellow lightning bolt" width="250"
+            height="250">
           <div class="cta-inner">
             <h2>Got a Windows machine?<br>Let the bear <span class="accent">deliver.</span></h2>
             <div class="btns">
