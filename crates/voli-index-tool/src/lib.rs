@@ -383,8 +383,10 @@ sha256 = "{hash}"
     fn build_produces_verifiable_triple() {
         let reg = registry_with_examples();
         let out = TempDir::new().unwrap();
-        let key =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../registry-dev/dev-signing-key.hex");
+        // Ephemeral test key written to a temp file — no key material in the repo.
+        let keydir = TempDir::new().unwrap();
+        let key = keydir.path().join("test-key.hex");
+        fs::write(&key, hex::encode([42u8; 32])).unwrap();
 
         let meta = build(reg.path(), out.path(), &key, Some(1_753_315_200)).unwrap();
         assert_eq!(meta.epoch, 1_753_315_200);
@@ -402,9 +404,10 @@ sha256 = "{hash}"
         assert_eq!(db.len() as u64, remote.size);
         assert_eq!(hex::encode(Sha256::digest(&db)), remote.sha256);
 
-        // Signature over the decompressed bytes verifies with the dev pubkey.
+        // Signature over the decompressed bytes verifies with the matching pubkey.
         let sig = fs::read(out.path().join("index.sig")).unwrap();
-        voli_core::index::verify(&db, &sig, voli_core::index::DEV_PUBKEY)
-            .expect("dev-signed index must verify with the embedded dev pubkey");
+        let pk = voli_core::index::sign::public_key_hex(&[42u8; 32]);
+        voli_core::index::verify(&db, &sig, &pk)
+            .expect("test-signed index must verify with the matching pubkey");
     }
 }

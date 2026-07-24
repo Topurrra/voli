@@ -35,8 +35,14 @@ fn write_good(root: &Path, name: &str, version: &str, bin: &str) {
     .unwrap();
 }
 
-fn dev_key_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../registry-dev/dev-signing-key.hex")
+/// Ephemeral test secret — no key material in the repo. The client is pointed
+/// at the matching pubkey via the VOLI_INDEX_PUBKEY override below.
+const TEST_SECRET: [u8; 32] = [42u8; 32];
+
+fn write_test_key(dir: &Path) -> PathBuf {
+    let p = dir.join("test-key.hex");
+    std::fs::write(&p, hex::encode(TEST_SECRET)).unwrap();
+    p
 }
 
 #[test]
@@ -47,12 +53,13 @@ fn registry_triple_is_accepted_by_the_client() {
     write_good(reg.path(), "ripgrep", "14.1.1", "rg.exe");
     write_good(reg.path(), "fd", "10.1.0", "fd.exe");
 
-    // 2. Build the dist/ triple with the dev key (derives the embedded DEV_PUBKEY).
+    // 2. Build the dist/ triple with an ephemeral test key.
     let dist = TempDir::new().unwrap();
+    let keydir = TempDir::new().unwrap();
     voli_index_tool::build(
         reg.path(),
         dist.path(),
-        &dev_key_path(),
+        &write_test_key(keydir.path()),
         Some(1_753_315_200),
     )
     .unwrap();
@@ -74,8 +81,15 @@ fn registry_triple_is_accepted_by_the_client() {
         }
     });
 
-    // 4. Client update against the served base URL (no VOLI_INDEX_PUBKEY set ⇒
-    //    verifies with the embedded DEV_PUBKEY, which the dev key matches).
+    // 4. Client update against the served base URL, verifying with the test
+    //    pubkey via the env override (sole test in this binary — no race).
+    // SAFETY: single-threaded at this point; one writer, same value always.
+    unsafe {
+        std::env::set_var(
+            "VOLI_INDEX_PUBKEY",
+            voli_core::index::sign::public_key_hex(&TEST_SECRET),
+        )
+    };
     let client_root = TempDir::new().unwrap();
     let outcome = voli_core::index::update(client_root.path(), &base).expect("update must succeed");
     handle.join().ok();
@@ -106,7 +120,14 @@ fn served_snapshot_matches_index_json() {
     let reg = TempDir::new().unwrap();
     write_good(reg.path(), "fd", "10.1.0", "fd.exe");
     let dist = TempDir::new().unwrap();
-    voli_index_tool::build(reg.path(), dist.path(), &dev_key_path(), Some(1)).unwrap();
+    let keydir = TempDir::new().unwrap();
+    voli_index_tool::build(
+        reg.path(),
+        dist.path(),
+        &write_test_key(keydir.path()),
+        Some(1),
+    )
+    .unwrap();
 
     let json = std::fs::read_to_string(dist.path().join("index.json")).unwrap();
     let remote: voli_core::index::net::RemoteIndex = serde_json::from_str(&json).unwrap();

@@ -1298,8 +1298,10 @@ dependencies = [
  "clap",
  "indicatif",
  "serde_json",
+ "sha2",
  "tempfile",
  "voli-core",
+ "zip",
 ]
 
 [[package]]

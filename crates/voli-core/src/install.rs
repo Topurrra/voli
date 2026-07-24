@@ -60,12 +60,17 @@ pub enum Action {
         shim: PathBuf,
         exe: PathBuf,
     },
-    /// Reserved for the env feature (spec §8), not emitted in this step.
+    /// A user env var we set (spec §8). `value` is what we wrote (so `voli env`
+    /// and doctor's drift check can compare against the live registry); `prior`
+    /// is the value to restore on uninstall (`None` = the key was unset, so
+    /// uninstall deletes it — the zero-trace guarantee).
     EnvSet {
         key: String,
+        value: String,
         prior: Option<String>,
     },
-    /// Reserved for PATH-segment tracking (spec §8), not emitted in this step.
+    /// A PATH segment we prepended (spec §8). Uninstall removes exactly this
+    /// segment; `value` doubles as what `voli env` reports.
     PathAdded {
         segment: String,
     },
@@ -84,6 +89,17 @@ impl Action {
     }
 }
 
+/// Per-package env consent (spec §8): given the package name and the resolved
+/// `(key, value)` pairs it wants to set, return `true` to apply, `false` to skip.
+/// The CLI supplies the `[Y/n]` prompt / `--yes` / non-TTY / `--no-env` logic.
+pub type EnvConsent<'a> = dyn FnMut(&str, &[(String, String)]) -> bool + 'a;
+
+/// A consent closure that always skips `[env]` (used by [`install_local`] and by
+/// tests whose fixtures carry no env).
+pub fn skip_env(_name: &str, _resolved: &[(String, String)]) -> bool {
+    false
+}
+
 /// What an install produced.
 #[derive(Debug, Clone)]
 pub struct InstallReport {
@@ -92,8 +108,23 @@ pub struct InstallReport {
     pub version_dir: PathBuf,
     /// Absolute paths of the `.exe` shims written under `shims\`.
     pub shims: Vec<PathBuf>,
-    /// Env vars the manifest requested (not applied in this step; spec §8).
+    /// Env vars the manifest requested, `{dir}`-resolved (regardless of consent).
     pub env_requested: Vec<(String, String)>,
+    /// Env vars actually applied (empty when skipped/declined). Resolved values.
+    pub env_applied: Vec<(String, String)>,
+}
+
+/// What an upgrade produced (spec §3 junction-flip model).
+#[derive(Debug, Clone)]
+pub struct UpgradeReport {
+    pub name: String,
+    pub from_version: String,
+    pub to_version: String,
+    pub new_version_dir: PathBuf,
+    /// The old version dir, left on disk until `voli cleanup` (running exes keep
+    /// working — the §3 promise).
+    pub old_version_dir: PathBuf,
+    pub shims: Vec<PathBuf>,
 }
 
 /// What an uninstall did.
@@ -151,7 +182,15 @@ pub fn install_local(
 ) -> Result<InstallReport> {
     let manifest_text = fs::read_to_string(manifest_path)?;
     let manifest = Manifest::from_toml_str(&manifest_text)?;
-    install_manifest(&manifest, archive_path, root)
+    // The bare local path skips `[env]` (no consent context); the CLI drives the
+    // env-consent flow explicitly via [`install_manifest`].
+    install_manifest(
+        &manifest,
+        archive_path,
+        root,
+        crate::env::ENVIRONMENT,
+        &mut skip_env,
+    )
 }
 
 /// Install from an already-parsed [`Manifest`] + local archive.
@@ -164,6 +203,8 @@ pub fn install_manifest(
     manifest: &Manifest,
     archive_path: &Path,
     root: &Path,
+    env_subkey: &str,
+    consent: &mut EnvConsent,
 ) -> Result<InstallReport> {
     let paths = Paths::at(root);
     paths.ensure()?;
@@ -188,18 +229,76 @@ pub fn install_manifest(
     }
 
     // Perform every filesystem mutation, rolling those back internally on error.
-    let (actions, report) = do_install_fs(&paths, manifest, archive_path)?;
+    let (mut actions, mut report) = do_install_fs(&paths, manifest, archive_path)?;
 
-    // Persist the ledger + installed marker atomically. If this fails, undo FS.
+    // Env consent flow (spec §8): resolve `{dir}` -> apps\<name>\current, prompt
+    // (via `consent`), and — if applied — append EnvSet/PathAdded to the SAME
+    // action list so it lands in the install transaction and uninstall replays
+    // it. A failure here rolls back both env and filesystem.
+    let resolved = resolve_env(manifest, &paths);
+    report.env_requested = resolved.clone();
+    if !resolved.is_empty() && consent(&manifest.name, &resolved) {
+        if let Err(e) = apply_env(env_subkey, &resolved, &mut actions) {
+            rollback(env_subkey, &actions);
+            return Err(e.into());
+        }
+        crate::env::broadcast_change();
+        report.env_applied = resolved;
+    }
+
+    // Persist the ledger + installed marker atomically. If this fails, undo
+    // everything (filesystem AND env) so the machine is byte-identical.
     let manifest_json = serde_json::to_string(manifest)?;
     if let Err(e) =
         state.record_install(&manifest.name, &manifest.version, &manifest_json, &actions)
     {
-        rollback_fs(&actions);
+        rollback(env_subkey, &actions);
         return Err(e.into());
     }
 
     Ok(report)
+}
+
+/// Resolve a manifest's `[env]` values, substituting `{dir}` with the package's
+/// `current` junction path (spec §8). Returns `(key, resolved_value)` pairs in
+/// manifest order.
+fn resolve_env(manifest: &Manifest, paths: &Paths) -> Vec<(String, String)> {
+    if manifest.env.is_empty() {
+        return Vec::new();
+    }
+    let current = paths.current(&manifest.name);
+    let current_str = current.to_string_lossy().into_owned();
+    manifest
+        .env
+        .iter()
+        .map(|(k, v)| (k.clone(), v.replace("{dir}", &current_str)))
+        .collect()
+}
+
+/// Apply resolved env vars to `subkey`, appending an [`Action`] per var so the
+/// ledger can restore prior state exactly. PATH-type keys prepend (tracked
+/// segment); everything else is a plain set that records the prior value.
+fn apply_env(
+    subkey: &str,
+    resolved: &[(String, String)],
+    actions: &mut Vec<Action>,
+) -> io::Result<()> {
+    for (key, value) in resolved {
+        if key.eq_ignore_ascii_case("PATH") {
+            crate::env::add_to_path(subkey, value)?;
+            actions.push(Action::PathAdded {
+                segment: value.clone(),
+            });
+        } else {
+            let prior = crate::env::set(subkey, key, value)?;
+            actions.push(Action::EnvSet {
+                key: key.clone(),
+                value: value.clone(),
+                prior,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Run all filesystem mutations, undoing them if any step fails.
@@ -212,7 +311,9 @@ fn do_install_fs(
     match install_fs_inner(paths, manifest, archive_path, &mut actions) {
         Ok(report) => Ok((actions, report)),
         Err(e) => {
-            rollback_fs(&actions);
+            // Only filesystem actions exist at this point (env is applied later,
+            // in install_manifest), so the subkey is irrelevant here.
+            rollback("", &actions);
             Err(e)
         }
     }
@@ -338,18 +439,19 @@ fn install_fs_inner(
         version: version.clone(),
         version_dir,
         shims,
-        env_requested: manifest
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
+        // Filled in (resolved + consent-gated) by install_manifest.
+        env_requested: Vec::new(),
+        env_applied: Vec::new(),
     })
 }
 
 /// Undo a partial install, best-effort. Replayed in reverse so junctions are
 /// deleted before the version dir that contains them (otherwise a recursive
-/// delete could follow a junction into real persist data).
-fn rollback_fs(actions: &[Action]) {
+/// delete could follow a junction into real persist data) and env vars are
+/// restored to their prior state. `subkey` is the registry env subkey the env
+/// actions were applied to (unused when there are no env actions).
+fn rollback(subkey: &str, actions: &[Action]) {
+    let mut touched_env = false;
     for a in actions.iter().rev() {
         match a {
             Action::ShimWritten { shim, exe } => {
@@ -365,7 +467,30 @@ fn rollback_fs(actions: &[Action]) {
             Action::DirCreated { path, .. } => {
                 let _ = fs::remove_dir_all(path);
             }
-            Action::EnvSet { .. } | Action::PathAdded { .. } => {}
+            Action::EnvSet { key, prior, .. } => {
+                restore_env(subkey, key, prior.as_deref());
+                touched_env = true;
+            }
+            Action::PathAdded { segment } => {
+                let _ = crate::env::remove_from_path(subkey, segment);
+                touched_env = true;
+            }
+        }
+    }
+    if touched_env {
+        crate::env::broadcast_change();
+    }
+}
+
+/// Restore one env var to its prior state: set it back if it existed, delete it
+/// if it did not (the zero-trace guarantee, spec §1/§8).
+fn restore_env(subkey: &str, key: &str, prior: Option<&str>) {
+    match prior {
+        Some(v) => {
+            let _ = crate::env::set(subkey, key, v);
+        }
+        None => {
+            let _ = crate::env::delete(subkey, key);
         }
     }
 }
@@ -376,6 +501,22 @@ fn rollback_fs(actions: &[Action]) {
 /// remaining trace of the package is `apps\<name>\persist\` (and only when not
 /// purging); the state rows are removed in one transaction.
 pub fn uninstall(name: &str, root: &Path, purge: bool) -> Result<UninstallReport> {
+    uninstall_env(name, root, purge, &crate::env::env_subkey())
+}
+
+/// Like [`uninstall`], but with an explicit registry env subkey (spec §8). The
+/// bare [`uninstall`] resolves it from [`crate::env::env_subkey`]; tests pass a
+/// scratch subkey so they never touch the real user Environment.
+///
+/// After an upgrade the package's ledger carries every version's `dir_created`
+/// entry (see [`upgrade_install`]), so this removes ALL version dirs, leaving
+/// zero trace (spec §3).
+pub fn uninstall_env(
+    name: &str,
+    root: &Path,
+    purge: bool,
+    env_subkey: &str,
+) -> Result<UninstallReport> {
     let paths = Paths::at(root);
     let mut state = State::open(&paths.state_db())?;
 
@@ -386,6 +527,7 @@ pub fn uninstall(name: &str, root: &Path, purge: bool) -> Result<UninstallReport
     let actions = state.actions_for(name)?;
 
     let mut kept_persist = false;
+    let mut touched_env = false;
     for a in actions.iter().rev() {
         match a {
             Action::ShimWritten { shim, exe } => {
@@ -416,8 +558,18 @@ pub fn uninstall(name: &str, root: &Path, purge: bool) -> Result<UninstallReport
                     }
                 }
             },
-            Action::EnvSet { .. } | Action::PathAdded { .. } => {}
+            Action::EnvSet { key, prior, .. } => {
+                restore_env(env_subkey, key, prior.as_deref());
+                touched_env = true;
+            }
+            Action::PathAdded { segment } => {
+                let _ = crate::env::remove_from_path(env_subkey, segment);
+                touched_env = true;
+            }
         }
+    }
+    if touched_env {
+        crate::env::broadcast_change();
     }
 
     state.remove_package(name)?;
@@ -427,6 +579,212 @@ pub fn uninstall(name: &str, root: &Path, purge: bool) -> Result<UninstallReport
         version,
         kept_persist,
     })
+}
+
+/// Upgrade an installed package to `manifest_new` via the §3 junction-flip model.
+///
+/// The new version dir is installed alongside the old, the `current` junction is
+/// flipped to it, shims are rewritten (added/removed as the bin set changed), and
+/// env values (which reference `{dir}` = the stable `current` path) are carried
+/// forward with their ORIGINAL priors.
+///
+/// ## Ledger transition (the design decision, spec §3)
+///
+/// The package's action ledger is rewritten so that a later `uninstall` removes
+/// EVERY version dir and restores the ORIGINAL pre-install env. Concretely the
+/// new ledger is built as:
+///
+/// 1. the OLD ledger's structural actions — app-root, persist-root/dirs, the old
+///    version's `dir_created`, and the old version's persist junctions — are
+///    **carried forward verbatim** (so the old version dir survives for
+///    `cleanup`, and is still removed on `uninstall`);
+/// 2. the OLD `current` junction action and OLD shim actions are **dropped**
+///    (the junction is flipped, the shims are rewritten);
+/// 3. the NEW version's actions (its `dir_created`, persist junctions, the new
+///    `current` junction, the new shims) are appended;
+/// 4. the OLD env actions are appended LAST, **unchanged** — preserving the
+///    original `prior` values so uninstall restores the pre-install state, not
+///    an intermediate one. `{dir}` resolves to `current` either way, so the
+///    applied value is identical across versions (spec §8: "usually a no-op").
+///
+/// Env value *changes* across versions (rare — only if a manifest hard-codes a
+/// non-`{dir}` env value that differs) and env vars newly *added* by the new
+/// version are out of scope for v1: env is carried forward as-is.
+pub fn upgrade_install(
+    manifest_new: &Manifest,
+    archive_path: &Path,
+    root: &Path,
+) -> Result<UpgradeReport> {
+    let paths = Paths::at(root);
+    let name = &manifest_new.name;
+    let new_version = &manifest_new.version;
+
+    let mut state = State::open(&paths.state_db())?;
+    let old_version = match state.installed_version(name)? {
+        Some(v) => v,
+        None => return Err(InstallError::NotInstalled(name.clone())),
+    };
+
+    // Hash gate first (same as install) — no mutation before it passes.
+    let source = manifest_new
+        .source
+        .x64
+        .as_ref()
+        .ok_or(InstallError::NoArchSource)?;
+    let actual = sha256_file(archive_path)?;
+    if !actual.eq_ignore_ascii_case(&source.sha256) {
+        return Err(InstallError::HashMismatch {
+            expected: source.sha256.clone(),
+            actual,
+        });
+    }
+
+    let old_actions = state.actions_for(name)?;
+    let old_current = paths.current(name);
+    let old_version_dir = paths.version_dir(name, &old_version);
+
+    // Flip prep: drop the old `current` junction so the new install can recreate
+    // it. (Brief window where `current` is absent; the new junction is recreated
+    // within the same call. On failure we restore it, below.)
+    let _ = junction::delete(&old_current);
+    let _ = fs::remove_dir(&old_current);
+
+    // Install the new version's filesystem payload (version dir, persist
+    // junctions, current junction -> new, shims). Reuses the install engine.
+    let mut new_actions: Vec<Action> = Vec::new();
+    let new_report = match install_fs_inner(&paths, manifest_new, archive_path, &mut new_actions) {
+        Ok(r) => r,
+        Err(e) => {
+            // Undo the partial new install and put `current` back on the old
+            // version so running tools (and shims) keep resolving.
+            rollback("", &new_actions);
+            let _ = junction::create(&old_version_dir, &old_current);
+            return Err(e);
+        }
+    };
+
+    // Remove shims for bins that vanished in the new version (bin-set change).
+    let new_bases: std::collections::HashSet<String> =
+        manifest_new.bin.iter().map(|b| b.shim_name()).collect();
+    for a in &old_actions {
+        if let Action::ShimWritten { exe, .. } = a
+            && let Some(base) = exe.file_stem().and_then(|s| s.to_str())
+            && !new_bases.contains(base)
+        {
+            let _ = fs::remove_file(paths.shims().join(format!("{base}.shim")));
+            let _ = fs::remove_file(exe);
+        }
+    }
+
+    // Build the transitioned ledger (see the doc comment above).
+    let mut structural: Vec<Action> = Vec::new();
+    let mut old_env: Vec<Action> = Vec::new();
+    for a in old_actions {
+        match &a {
+            Action::JunctionCreated { path } if *path == old_current => {} // old current: dropped
+            Action::ShimWritten { .. } => {}                               // rewritten
+            Action::EnvSet { .. } | Action::PathAdded { .. } => old_env.push(a),
+            _ => structural.push(a),
+        }
+    }
+    let mut combined = structural;
+    // Clone: `new_actions` is retained for the failure-rollback path below.
+    combined.extend(new_actions.clone());
+    combined.extend(old_env);
+
+    // Swap the installed row (version bump, ledger replaced) preserving the pin.
+    let manifest_json = serde_json::to_string(manifest_new)?;
+    if let Err(e) = state.replace_install(name, new_version, &manifest_json, &combined) {
+        // Best-effort: undo the new install and restore `current` to old. The old
+        // ledger row is intact (replace_install failed before committing).
+        rollback("", &new_actions);
+        let _ = junction::create(&old_version_dir, &old_current);
+        return Err(e.into());
+    }
+
+    Ok(UpgradeReport {
+        name: name.clone(),
+        from_version: old_version,
+        to_version: new_version.clone(),
+        new_version_dir: new_report.version_dir,
+        old_version_dir,
+        shims: new_report.shims,
+    })
+}
+
+/// Remove every version dir of `name` that is not `keep_version` (spec §11
+/// cleanup). Junctions inside a version dir (persist links) are deleted before
+/// the dir so a recursive delete never follows one into real persist data.
+/// Returns the paths removed and total bytes freed. `dry_run` reports only.
+///
+/// `persist` and the `current` junction are never touched.
+pub fn cleanup_versions(
+    root: &Path,
+    name: &str,
+    keep_version: &str,
+    dry_run: bool,
+) -> io::Result<(Vec<PathBuf>, u64)> {
+    let paths = Paths::at(root);
+    let app_dir = paths.app_dir(name);
+    let mut removed = Vec::new();
+    let mut freed = 0u64;
+    let entries = match fs::read_dir(&app_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok((removed, freed)),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let base = file_name.to_string_lossy();
+        // Skip the kept version, the current junction, and persist.
+        if base == keep_version || base == "current" || base == "persist" {
+            continue;
+        }
+        if !path.is_dir() || junction::exists(&path).unwrap_or(false) {
+            continue; // only real version dirs
+        }
+        freed += dir_size(&path);
+        removed.push(path.clone());
+        if !dry_run {
+            remove_version_dir_safe(&path);
+        }
+    }
+    Ok((removed, freed))
+}
+
+/// Remove a version dir after deleting any junctions it directly contains
+/// (persist links), so the recursive delete can't follow a junction into
+/// persist. ponytail: persist junctions are top-level in the version dir (the
+/// schema is flat), so immediate children suffice.
+fn remove_version_dir_safe(dir: &Path) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if junction::exists(&p).unwrap_or(false) {
+                let _ = junction::delete(&p);
+                let _ = fs::remove_dir(&p);
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Recursively sum the byte size of a directory tree (best-effort; unreadable
+/// entries count as zero).
+pub fn dir_size(path: &Path) -> u64 {
+    let mut total = 0;
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() && !junction::exists(entry.path()).unwrap_or(false) {
+            total += dir_size(&entry.path());
+        } else if let Ok(meta) = entry.metadata() {
+            total += meta.len();
+        }
+    }
+    total
 }
 
 /// Locate the shim stub exe: `VOLI_SHIM_STUB` override, else `voli-shim.exe`

@@ -20,6 +20,14 @@ use winreg::types::FromRegValue;
 /// The real user-environment subkey. Tests substitute their own.
 pub const ENVIRONMENT: &str = "Environment";
 
+/// The registry subkey env mutations target: `VOLI_ENV_SUBKEY` if set (the test
+/// hook — points at a throwaway subkey so tests never touch the real user
+/// Environment), else [`ENVIRONMENT`]. Lives here so both the CLI and the core
+/// install/uninstall flows resolve the same subkey (spec §8).
+pub fn env_subkey() -> String {
+    std::env::var("VOLI_ENV_SUBKEY").unwrap_or_else(|_| ENVIRONMENT.to_string())
+}
+
 /// Open (creating if absent) an `HKCU\<subkey>` with read+write access.
 fn open(subkey: &str) -> io::Result<RegKey> {
     RegKey::predef(HKEY_CURRENT_USER)

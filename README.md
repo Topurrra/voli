@@ -1,9 +1,14 @@
-# voli
+<p align="center">
+  <img src="assets/logo.png" width="180" alt="voli — the bear that delivers">
+</p>
 
-⚡ A fast, no-admin package manager for Windows. One binary, clean uninstalls, zero scripts.
+<h1 align="center">voli</h1>
 
-> **Status: early development — not usable yet.** The scaffold compiles; the
-> install engine, index, and registry are still being built.
+<p align="center">⚡ A fast, no-admin package manager for Windows. One binary, clean uninstalls, zero scripts.</p>
+
+> **Status: early development.** The core works — `voli install ripgrep`
+> downloads from the signed registry, installs, and runs — but nothing is
+> released yet and everything may change. Don't depend on it before v0.1.
 
 ## Guarantees (never violated)
 
@@ -15,17 +20,32 @@
 4. **Everything is pinned.** Every artifact is sha256-verified; the index is
    Ed25519-signed.
 
-## Planned commands
+## Commands
 
 ```
-voli install ripgrep fd fzf
-voli uninstall ripgrep
-voli update
-voli upgrade --all
-voli list
-voli search regex
+voli install ripgrep fd fzf     # from the registry (935 packages and growing)
+voli install ripgrep@15.2.0     # pin a version
+voli uninstall ripgrep          # zero trace
+voli update                     # refresh the signed index (~250 KB)
+voli upgrade --all              # respects pins; running apps keep working
+voli search regex               # full-text, offline
 voli info ripgrep
-voli doctor
+voli pin ripgrep / unpin
+voli cleanup                    # old versions + stale cache
+voli setup                      # self-install + PATH (user-level)
+voli doctor                     # health checks
 ```
 
-Not implemented yet — every subcommand currently exits with "not implemented".
+## How it works
+
+Portable archives only — no MSI/EXE installers, no vendor install scripts.
+Apps live in versioned directories under your user profile; tiny shims on a
+single user-PATH entry point at the current version through a junction, so
+upgrades are an atomic flip and never break a running program. Every mutation
+(files, shims, env vars) is recorded in a local ledger, and uninstall replays
+it backwards — that's the zero-trace guarantee, by construction rather than
+by promise.
+
+The package index is a signed sqlite snapshot fetched over HTTP — updating it
+is one small download, not a git clone. Registry:
+[Topurrra/voli-registry](https://github.com/Topurrra/voli-registry).

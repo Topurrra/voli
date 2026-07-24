@@ -7,7 +7,9 @@ mod cmd_install;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use voli_core::{Paths, State, config, env, self_install, uninstall};
+use voli_core::{
+    Action, Paths, State, Step, UpgradeOutcome, config, env, self_install, uninstall, upgrade,
+};
 
 /// Exit code for a command that is not yet implemented.
 const EXIT_UNIMPLEMENTED: i32 = 2;
@@ -45,6 +47,9 @@ enum Command {
         /// Local archive to install from (required for a local `.toml` manifest).
         #[arg(long)]
         archive: Option<PathBuf>,
+        /// Do not apply any `[env]` environment variables (spec §8).
+        #[arg(long)]
+        no_env: bool,
     },
     /// Uninstall one or more packages.
     Uninstall {
@@ -85,8 +90,20 @@ enum Command {
         #[arg(required = true)]
         package: String,
     },
+    /// Show the environment variables a package set (from the ledger).
+    Env {
+        #[arg(required = true)]
+        package: String,
+    },
     /// Remove non-current version dirs and stale cache.
-    Cleanup,
+    Cleanup {
+        /// Delete cache entries older than N days (0 = all). Default 30.
+        #[arg(long, default_value_t = 30)]
+        cache_days: u64,
+        /// Print what would be removed without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Install voli itself: copy binaries to bin\ and add shims\ to PATH.
     Setup,
     /// Get or set configuration values.
@@ -130,11 +147,28 @@ fn main() {
     }
 
     let code = match &cli.command {
-        Command::Install { packages, archive } => {
-            cmd_install::run(packages, archive.as_deref(), &root(), cli.json)
-        }
+        Command::Install {
+            packages,
+            archive,
+            no_env,
+        } => cmd_install::run(
+            packages,
+            archive.as_deref(),
+            &root(),
+            cli.json,
+            cli.yes,
+            *no_env,
+        ),
         Command::Uninstall { packages, purge } => cmd_uninstall(packages, *purge),
         Command::List => cmd_list(cli.json),
+        Command::Upgrade { packages, all } => cmd_upgrade(packages, *all, cli.json),
+        Command::Pin { package } => cmd_pin(package, true),
+        Command::Unpin { package } => cmd_pin(package, false),
+        Command::Env { package } => cmd_env(package, cli.json),
+        Command::Cleanup {
+            cache_days,
+            dry_run,
+        } => cmd_cleanup(*cache_days, *dry_run, cli.json),
         Command::Setup => cmd_setup(),
         Command::Config { action } => cmd_config(action, cli.json),
         Command::Doctor => cmd_doctor(cli.json),
@@ -180,7 +214,8 @@ fn name_of(cmd: &Command) -> &'static str {
         Command::Info { .. } => "info",
         Command::Pin { .. } => "pin",
         Command::Unpin { .. } => "unpin",
-        Command::Cleanup => "cleanup",
+        Command::Env { .. } => "env",
+        Command::Cleanup { .. } => "cleanup",
         Command::Setup => "setup",
         Command::Config { .. } => "config",
         Command::Doctor => "doctor",
@@ -257,10 +292,335 @@ fn cmd_list(json: bool) -> i32 {
     0
 }
 
-// Test hook shared by setup and doctor: point env mutations/checks at a scratch
-// subkey so tests and smoke runs never touch the real user Environment.
+fn cmd_upgrade(packages: &[String], all: bool, json: bool) -> i32 {
+    let root = root();
+
+    // Determine the target set: explicit names, or every non-pinned package.
+    let targets: Vec<(String, bool)> = if all {
+        let state = match State::open(&Paths::at(&root).state_db()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: cannot open state db: {e}");
+                return EXIT_ERROR;
+            }
+        };
+        match state.list() {
+            Ok(pkgs) => pkgs
+                .into_iter()
+                .filter(|p| p.name != "@voli")
+                .map(|p| (p.name, p.pinned))
+                .collect(),
+            Err(e) => {
+                eprintln!("error: cannot list installed packages: {e}");
+                return EXIT_ERROR;
+            }
+        }
+    } else if packages.is_empty() {
+        eprintln!("error: specify a package to upgrade, or use --all");
+        return EXIT_ERROR;
+    } else {
+        // Explicit upgrade proceeds even if pinned (spec §9), with a note.
+        packages.iter().map(|n| (n.clone(), false)).collect()
+    };
+
+    let mut code = 0;
+    let mut results = Vec::new();
+    for (name, pinned_under_all) in &targets {
+        if all && *pinned_under_all {
+            if !json {
+                println!("{name}: pinned — skipped");
+            }
+            results.push(serde_json::json!({ "name": name, "status": "pinned" }));
+            continue;
+        }
+        // Explicit upgrade of a pinned package proceeds, with a note.
+        if !all {
+            let pinned = State::open(&Paths::at(&root).state_db())
+                .ok()
+                .and_then(|s| s.is_pinned(name).ok())
+                .unwrap_or(false);
+            if pinned && !json {
+                println!("note: {name} is pinned; upgrading anyway (explicit request)");
+            }
+        }
+
+        match upgrade(name, &root, &mut |s| upgrade_step(json, s)) {
+            Ok(UpgradeOutcome::UpToDate { version }) => {
+                if !json {
+                    println!("{name} is up to date ({version})");
+                }
+                results.push(
+                    serde_json::json!({ "name": name, "status": "up_to_date", "version": version }),
+                );
+            }
+            Ok(UpgradeOutcome::Upgraded(r)) => {
+                if !json {
+                    println!("upgraded {} {} -> {}", r.name, r.from_version, r.to_version);
+                }
+                results.push(serde_json::json!({
+                    "name": r.name,
+                    "status": "upgraded",
+                    "from": r.from_version,
+                    "to": r.to_version,
+                }));
+            }
+            Err(e) => {
+                if !json {
+                    eprintln!("error: upgrade '{name}' failed: {e}");
+                }
+                results.push(serde_json::json!({ "name": name, "status": "error", "message": e.to_string() }));
+                code = EXIT_ERROR;
+            }
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": code == 0,
+                "results": results,
+            }))
+            .unwrap()
+        );
+    }
+    code
+}
+
+/// One-line download note for an upgrade (human mode only). ponytail: upgrade
+/// prints a note rather than a live bar — the rich progress bar already exists
+/// for install and download is cache-aware/fast.
+fn upgrade_step(json: bool, step: Step) {
+    if json {
+        return;
+    }
+    if let Step::Downloading { name, version } = step {
+        println!("downloading {name} {version}...");
+    }
+}
+
+fn cmd_pin(package: &str, pin: bool) -> i32 {
+    let mut state = match State::open(&Paths::at(root()).state_db()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot open state db: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    match state.set_pinned(package, pin) {
+        Ok(true) => {
+            println!("{} {package}", if pin { "pinned" } else { "unpinned" });
+            0
+        }
+        Ok(false) => {
+            eprintln!("error: '{package}' is not installed");
+            EXIT_ERROR
+        }
+        Err(e) => {
+            eprintln!("error: cannot update pin: {e}");
+            EXIT_ERROR
+        }
+    }
+}
+
+/// `voli env <pkg>`: show the env vars a package set, from its ledger (spec §8).
+fn cmd_env(package: &str, json: bool) -> i32 {
+    let root = root();
+    let state = match State::open(&Paths::at(&root).state_db()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot open state db: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    if !state.is_installed(package).unwrap_or(false) {
+        eprintln!("error: '{package}' is not installed");
+        return EXIT_ERROR;
+    }
+    let actions = match state.actions_for(package) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: cannot read ledger: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let subkey = env_subkey();
+
+    let mut entries = Vec::new();
+    for a in &actions {
+        match a {
+            Action::EnvSet { key, value, .. } => {
+                let current = env::get(&subkey, key).ok().flatten();
+                entries.push((key.clone(), value.clone(), current));
+            }
+            Action::PathAdded { segment } => {
+                let present = env::get(&subkey, "Path")
+                    .ok()
+                    .flatten()
+                    .map(|p| env::path_has_segment(&p, segment))
+                    .unwrap_or(false);
+                entries.push((
+                    "PATH".to_string(),
+                    segment.clone(),
+                    present.then(|| segment.clone()),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if json {
+        let arr: Vec<_> = entries
+            .iter()
+            .map(|(k, v, cur)| serde_json::json!({ "key": k, "value": v, "current": cur }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&arr).unwrap());
+        return 0;
+    }
+    if entries.is_empty() {
+        println!("{package} set no environment variables");
+        return 0;
+    }
+    println!("{package} set:");
+    for (k, v, _cur) in &entries {
+        println!("  {k} = {v}");
+    }
+    0
+}
+
+/// `voli cleanup`: remove non-current version dirs, `bin\*.old` self-update
+/// leftovers, and cache entries older than `cache_days` (0 = all). Reports bytes
+/// freed. `--dry-run` prints without deleting. Never touches persist (spec §11).
+fn cmd_cleanup(cache_days: u64, dry_run: bool, json: bool) -> i32 {
+    use voli_core::cleanup_versions;
+
+    let root = root();
+    let paths = Paths::at(&root);
+    let state = match State::open(&paths.state_db()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot open state db: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let pkgs = match state.list() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: cannot list installed packages: {e}");
+            return EXIT_ERROR;
+        }
+    };
+
+    let mut removed_dirs: Vec<String> = Vec::new();
+    let mut freed: u64 = 0;
+
+    // 1. Non-current version dirs, per package.
+    for p in &pkgs {
+        if p.name == "@voli" {
+            continue;
+        }
+        match cleanup_versions(&root, &p.name, &p.version, dry_run) {
+            Ok((dirs, bytes)) => {
+                freed += bytes;
+                removed_dirs.extend(dirs.iter().map(|d| d.display().to_string()));
+            }
+            Err(e) => eprintln!("warning: cleanup of {} failed: {e}", p.name),
+        }
+    }
+
+    // 2. bin\*.old self-update leftovers.
+    let bin = root.join("bin");
+    if let Ok(entries) = std::fs::read_dir(&bin) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("old") {
+                freed += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                removed_dirs.push(path.display().to_string());
+                if !dry_run {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
+
+    // 3. Stale cache entries (mtime older than cache_days; 0 = all).
+    let cache = paths.cache();
+    let now = std::time::SystemTime::now();
+    let max_age = std::time::Duration::from_secs(cache_days * 24 * 60 * 60);
+    if let Ok(entries) = std::fs::read_dir(&cache) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let stale = cache_days == 0
+                || entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|mt| now.duration_since(mt).ok())
+                    .map(|age| age >= max_age)
+                    .unwrap_or(false);
+            if stale {
+                freed += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                removed_dirs.push(path.display().to_string());
+                if !dry_run {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "dry_run": dry_run,
+                "freed_bytes": freed,
+                "removed": removed_dirs,
+            }))
+            .unwrap()
+        );
+    } else {
+        let verb = if dry_run { "would remove" } else { "removed" };
+        if removed_dirs.is_empty() {
+            println!("cleanup: nothing to remove");
+        } else {
+            for d in &removed_dirs {
+                println!("  {verb}: {d}");
+            }
+            println!(
+                "cleanup: {verb} {} item(s), {} freed",
+                removed_dirs.len(),
+                human_bytes(freed)
+            );
+        }
+    }
+    0
+}
+
+/// Render a byte count as a short human string (KiB/MiB/GiB).
+fn human_bytes(n: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[i])
+    }
+}
+
+// Test hook shared by setup, doctor, and the env flows: point env mutations /
+// checks at a scratch subkey so tests and smoke runs never touch the real user
+// Environment. The real logic lives in `voli_core::env` so core flows resolve
+// the same subkey (spec §8).
 fn env_subkey() -> String {
-    std::env::var("VOLI_ENV_SUBKEY").unwrap_or_else(|_| env::ENVIRONMENT.to_string())
+    env::env_subkey()
 }
 
 fn cmd_setup() -> i32 {
@@ -478,7 +838,7 @@ fn cmd_doctor(json: bool) -> i32 {
                     if p.name == "@voli" {
                         continue; // synthetic self entry has no shims/junction
                     }
-                    check_package(&paths, &state, p, &mut add);
+                    check_package(&paths, &state, p, &env_subkey, &mut add);
                 }
             }
             Err(e) => add(
@@ -527,6 +887,7 @@ fn check_package(
     paths: &Paths,
     state: &State,
     pkg: &voli_core::InstalledPkg,
+    env_subkey: &str,
     add: &mut impl FnMut(Status, &str, String),
 ) {
     use voli_core::Action;
@@ -586,6 +947,31 @@ fn check_package(
                     "shim",
                     format!("{}: target of {} does not exist", pkg.name, shim.display()),
                 );
+            }
+        }
+    }
+
+    // Env drift (spec §8): if the live registry value differs from what we set,
+    // WARN — never auto-fix (the user may have edited it deliberately).
+    for a in &actions {
+        if let Action::EnvSet { key, value, .. } = a {
+            let current = env::get(env_subkey, key).ok().flatten();
+            match current.as_deref() {
+                Some(cur) if cur == value => add(
+                    Status::Pass,
+                    "env",
+                    format!("{}: {key} = {value}", pkg.name),
+                ),
+                Some(cur) => add(
+                    Status::Warn,
+                    "env drift",
+                    format!("{}: {key} is now '{cur}' (voli set '{value}')", pkg.name),
+                ),
+                None => add(
+                    Status::Warn,
+                    "env drift",
+                    format!("{}: {key} was removed (voli set '{value}')", pkg.name),
+                ),
             }
         }
     }

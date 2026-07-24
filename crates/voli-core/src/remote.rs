@@ -9,12 +9,13 @@
 //! the caller learns what succeeded from the [`Step`] callbacks it already
 //! received.
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::Path;
 
 use crate::fetch::{self, FetchError};
 use crate::index::{self, IndexError, Suggestion};
-use crate::install::{self, InstallError, InstallReport};
+use crate::install::{self, EnvConsent, InstallError, InstallReport, UpgradeReport};
 use crate::manifest::Manifest;
 use crate::paths::Paths;
 use crate::state::State;
@@ -73,6 +74,29 @@ pub fn install_remote(
     root: &Path,
     on_step: &mut dyn FnMut(Step),
 ) -> Result<RemoteReport, RemoteError> {
+    // Bare form: no env consent context, so `[env]` blocks are skipped. The CLI
+    // uses [`install_remote_env`] to drive the consent prompt (spec §8).
+    install_remote_env(
+        name,
+        version,
+        root,
+        crate::env::ENVIRONMENT,
+        &mut install::skip_env,
+        on_step,
+    )
+}
+
+/// Like [`install_remote`], but applies each package's `[env]` block subject to
+/// `consent` (spec §8). `env_subkey` is the registry subkey to write to
+/// ([`crate::env::env_subkey`] in production; a scratch subkey in tests).
+pub fn install_remote_env(
+    name: &str,
+    version: Option<&str>,
+    root: &Path,
+    env_subkey: &str,
+    consent: &mut EnvConsent,
+    on_step: &mut dyn FnMut(Step),
+) -> Result<RemoteReport, RemoteError> {
     // Resolve the whole chain up front (deps-first). This also surfaces a typo
     // (NotFound + suggestions) or an unknown dep before anything is downloaded.
     let plan = resolve_chain(root, name, version)?;
@@ -111,12 +135,70 @@ pub fn install_remote(
             on_step(Step::Progress { done, total })
         })?;
 
-        let installed = install::install_manifest(manifest, &archive, root)?;
+        let installed = install::install_manifest(manifest, &archive, root, env_subkey, consent)?;
         on_step(Step::Installed(&installed));
         report.installed.push(installed);
     }
 
     Ok(report)
+}
+
+/// Result of an [`upgrade`] attempt.
+#[derive(Debug)]
+pub enum UpgradeOutcome {
+    /// The installed version is already the newest in the index.
+    UpToDate { version: String },
+    /// A newer version was installed (junction flipped; old dir kept for cleanup).
+    Upgraded(UpgradeReport),
+}
+
+/// Upgrade one installed package to the newest version in the local index
+/// (spec §3, §9, §11 step 10).
+///
+/// Compares the installed version against the index's latest; if newer, it
+/// downloads (cache-aware, with progress via `on_step`) and performs the
+/// junction-flip upgrade. Env values carry forward (see [`install::upgrade_install`]).
+/// Pin policy is the caller's concern (the CLI skips pinned packages under
+/// `--all`).
+pub fn upgrade(
+    name: &str,
+    root: &Path,
+    on_step: &mut dyn FnMut(Step),
+) -> Result<UpgradeOutcome, RemoteError> {
+    let state = State::open(&Paths::at(root).state_db())
+        .map_err(|e| RemoteError::Install(InstallError::Sqlite(e)))?;
+    let current = state
+        .installed_version(name)
+        .map_err(|e| RemoteError::Install(InstallError::Sqlite(e)))?
+        .ok_or_else(|| RemoteError::Install(InstallError::NotInstalled(name.to_string())))?;
+    drop(state);
+
+    let latest = index::info(root, name)?.ok_or_else(|| RemoteError::NotFound {
+        name: name.to_string(),
+        suggestions: index::did_you_mean(root, name).unwrap_or_default(),
+    })?;
+
+    if index::cmp_version(&latest.version, &current) != Ordering::Greater {
+        return Ok(UpgradeOutcome::UpToDate { version: current });
+    }
+
+    let source = latest
+        .source
+        .x64
+        .as_ref()
+        .ok_or_else(|| RemoteError::NoArch(name.to_string()))?;
+
+    on_step(Step::Downloading {
+        name: &latest.name,
+        version: &latest.version,
+    });
+    let cache = Paths::at(root).cache();
+    let archive = fetch::download(&source.url, &source.sha256, &cache, &mut |done, total| {
+        on_step(Step::Progress { done, total })
+    })?;
+
+    let report = install::upgrade_install(&latest, &archive, root)?;
+    Ok(UpgradeOutcome::Upgraded(report))
 }
 
 /// Resolve `name`(@`version`) plus all transitive `[depends]` into a deps-first,

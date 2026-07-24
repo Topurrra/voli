@@ -9,11 +9,14 @@
 //! `--json` swaps the human output (progress bars + confirmations) for a single
 //! machine report.
 
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
-use voli_core::{RemoteError, RemoteReport, Step, install_local, install_remote};
+use voli_core::{
+    Manifest, RemoteError, RemoteReport, Step, env, install_manifest, install_remote_env,
+};
 
 use crate::cmd_index;
 
@@ -21,11 +24,48 @@ const EXIT_OK: i32 = 0;
 const EXIT_ERROR: i32 = 1;
 
 /// Entry point for the `install` subcommand.
-pub fn run(packages: &[String], archive: Option<&Path>, root: &Path, json: bool) -> i32 {
+pub fn run(
+    packages: &[String],
+    archive: Option<&Path>,
+    root: &Path,
+    json: bool,
+    yes: bool,
+    no_env: bool,
+) -> i32 {
+    // `--yes`, `--json`, or a non-TTY stdin all mean "don't wait for input":
+    // apply env without prompting (spec §8, §9).
+    let auto = yes || json || !std::io::stdin().is_terminal();
     if let Some((manifest, name)) = local_manifest(packages) {
-        return install_local_path(manifest, name, archive, root);
+        return install_local_path(manifest, name, archive, root, auto, no_env);
     }
-    install_network(packages, root, json)
+    install_network(packages, root, json, auto, no_env)
+}
+
+/// Build the per-package env consent closure (spec §8). Prints the requested
+/// vars, then applies without prompting when `auto`, skips entirely when
+/// `no_env`, and otherwise asks `Apply? [Y/n]` (default yes).
+fn env_consent(auto: bool, no_env: bool) -> impl FnMut(&str, &[(String, String)]) -> bool {
+    move |name: &str, resolved: &[(String, String)]| {
+        if no_env {
+            println!("{name} requested environment variables — skipped (--no-env)");
+            return false;
+        }
+        println!("{name} wants to set environment variables:");
+        for (k, v) in resolved {
+            println!("  {k} = {v}");
+        }
+        if auto {
+            return true;
+        }
+        print!("Apply? [Y/n] ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_err() {
+            return false;
+        }
+        let a = line.trim().to_ascii_lowercase();
+        a.is_empty() || a == "y" || a == "yes"
+    }
 }
 
 /// If this is the local-manifest form (exactly one `<name>.toml` file arg),
@@ -39,19 +79,41 @@ fn local_manifest(packages: &[String]) -> Option<(&Path, &str)> {
     (arg.ends_with(".toml") && p.is_file()).then_some((p, arg.as_str()))
 }
 
-fn install_local_path(manifest: &Path, _arg: &str, archive: Option<&Path>, root: &Path) -> i32 {
+fn install_local_path(
+    manifest: &Path,
+    _arg: &str,
+    archive: Option<&Path>,
+    root: &Path,
+    auto: bool,
+    no_env: bool,
+) -> i32 {
     let Some(archive) = archive else {
         eprintln!("error: --archive <path> is required to install from a local manifest");
         return EXIT_ERROR;
     };
-    match install_local(manifest, archive, root) {
+    let text = match std::fs::read_to_string(manifest) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {e}", manifest.display());
+            return EXIT_ERROR;
+        }
+    };
+    let parsed = match Manifest::from_toml_str(&text) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: invalid manifest: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let mut consent = env_consent(auto, no_env);
+    match install_manifest(&parsed, archive, root, &env::env_subkey(), &mut consent) {
         Ok(r) => {
             println!("installed {} {}", r.name, r.version);
             println!("  files: {}", r.version_dir.display());
             for shim in &r.shims {
                 println!("  shim:  {}", shim.display());
             }
-            print_env_note(&r.env_requested);
+            print_env_note(&r.env_applied);
             EXIT_OK
         }
         Err(e) => {
@@ -70,14 +132,18 @@ fn parse_spec(spec: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn install_network(packages: &[String], root: &Path, json: bool) -> i32 {
+fn install_network(packages: &[String], root: &Path, json: bool, auto: bool, no_env: bool) -> i32 {
     let mut agg = RemoteReport::default();
     let mut failure: Option<(String, RemoteError)> = None;
+    let subkey = env::env_subkey();
+    let mut consent = env_consent(auto, no_env);
 
     for spec in packages {
         let (name, version) = parse_spec(spec);
         let mut reporter = Reporter::new(json);
-        match install_remote(name, version, root, &mut |s| reporter.step(s)) {
+        match install_remote_env(name, version, root, &subkey, &mut consent, &mut |s| {
+            reporter.step(s)
+        }) {
             Ok(mut report) => {
                 agg.installed.append(&mut report.installed);
                 agg.skipped.append(&mut report.skipped);
@@ -156,7 +222,7 @@ impl Reporter {
                 for shim in &r.shims {
                     println!("  shim: {}", shim.display());
                 }
-                print_env_note(&r.env_requested);
+                print_env_note(&r.env_applied);
             }
             Step::Skipped { name, version } => {
                 if let Some(pb) = self.bar.take() {
@@ -168,20 +234,12 @@ impl Reporter {
     }
 }
 
-/// The `[env]` case is wired only as a message; consent + registry writes are
-/// step 10 (spec §8, §11 step 10).
-fn print_env_note(env_requested: &[(String, String)]) {
-    if env_requested.is_empty() {
-        return;
+/// Confirm the env vars that were actually applied (spec §8). Empty when the
+/// package set none or the user declined.
+fn print_env_note(env_applied: &[(String, String)]) {
+    for (k, v) in env_applied {
+        println!("  env:  {k} = {v}");
     }
-    let vars: Vec<String> = env_requested
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
-    println!(
-        "  requested env vars (not yet applied — coming in step 10): {}",
-        vars.join(", ")
-    );
 }
 
 fn print_error(name: &str, e: &RemoteError) {

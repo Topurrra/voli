@@ -19,3 +19,6 @@ indicatif = { workspace = true }
 [dev-dependencies]
 voli-core = { workspace = true }
 tempfile = { workspace = true }
+zip = { workspace = true }
+sha2 = { workspace = true }
+serde_json = { workspace = true }

@@ -185,13 +185,27 @@ impl Drop for FixtureServer {
     }
 }
 
+/// Fixed, obviously-fake ephemeral test secret — no key material lives in the
+/// repo. Verification works because `use_test_pubkey` points the client's
+/// `VOLI_INDEX_PUBKEY` override at the matching public key.
 fn dev_secret() -> [u8; 32] {
-    let hex = include_str!("../../../registry-dev/dev-signing-key.hex");
-    index::sign::secret_key_from_hex(hex).unwrap()
+    [42u8; 32]
 }
 
-/// Build a snapshot + its index.json + a valid dev-key signature.
+/// Point index verification at the test key (process-wide, set once).
+/// Concurrent tests may race here, but they all write the identical value.
+fn use_test_pubkey() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let pk = index::sign::public_key_hex(&dev_secret());
+        // SAFETY: single value, set before any reader in this test binary cares.
+        unsafe { std::env::set_var("VOLI_INDEX_PUBKEY", pk) };
+    });
+}
+
+/// Build a snapshot + its index.json + a valid test-key signature.
 fn make_publishable(epoch: u64) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    use_test_pubkey();
     let build_dir = tempfile::tempdir().unwrap();
     let db_path = build_dir.path().join("index.sqlite");
     index::build(&fixtures(), &db_path).unwrap();
