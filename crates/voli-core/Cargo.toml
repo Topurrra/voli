@@ -15,13 +15,17 @@ rusqlite = { workspace = true }
 zip = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
-junction = { workspace = true }
 tempfile = { workspace = true }
 ureq = { workspace = true }
 zstd = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 strsim = { workspace = true }
+
+# Windows-only: install engine (junctions), user env (registry), self-install.
+# Gated so cross-platform consumers (voli-index-tool on CI runners) can build.
+[target.'cfg(windows)'.dependencies]
+junction = { workspace = true }
 winreg = { workspace = true }
 windows-sys = { workspace = true }
 
@@ -29,5 +33,7 @@ windows-sys = { workspace = true }
 tempfile = { workspace = true }
 sha2 = { workspace = true }
 zip = { workspace = true }
-junction = { workspace = true }
 tiny_http = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+junction = { workspace = true }

@@ -4,19 +4,24 @@
 //! install/uninstall engine (§3, §11 step 3) and its state ledger. No network.
 
 pub mod config;
+#[cfg(windows)]
 pub mod env;
 pub mod index;
+#[cfg(windows)]
 pub mod install;
 pub mod manifest;
 pub mod paths;
+#[cfg(windows)]
 pub mod selfinstall;
 pub mod state;
 
 pub use config::Config;
+#[cfg(windows)]
 pub use install::{
     Action, DirRole, InstallError, InstallReport, UninstallReport, install_local, uninstall,
 };
 pub use manifest::{Bin, Kind, Manifest, ManifestError, Source};
 pub use paths::Paths;
+#[cfg(windows)]
 pub use selfinstall::{SelfInstallError, SelfInstallReport, self_install};
 pub use state::{InstalledPkg, State};
