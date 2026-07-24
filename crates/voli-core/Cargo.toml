@@ -2,6 +2,7 @@
 name = "voli-core"
 version.workspace = true
 edition.workspace = true
+description = "Core library for voli, the fast no-admin package manager for Windows"
 license.workspace = true
 repository.workspace = true
 
