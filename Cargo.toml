@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/voli", "crates/voli-core", "crates/voli-shim"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Topurrra/voli"
+
+[workspace.dependencies]
+voli-core = { path = "crates/voli-core" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+sha2 = "0.10"
+thiserror = "2"

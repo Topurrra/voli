@@ -1,0 +1,13 @@
+# build
+/target
+Cargo.lock.bak
+
+# internal docs — only README.md ships
+/docs/
+
+# crates.io name-reservation placeholders (throwaway)
+/reserve/
+
+# local junk
+*.log
+.DS_Store

@@ -1,0 +1,21 @@
+name = "ripgrep"
+version = "14.1.1"
+description = "Recursively search directories with a regex"
+homepage = "https://github.com/BurntSushi/ripgrep"
+license = "MIT OR Unlicense"
+kind = "app"
+extract_dir = "ripgrep-14.1.1-x86_64-pc-windows-msvc"
+bin = ["rg.exe"]
+persist = ["config", "data"]
+
+[source.x64]
+url = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip"
+sha256 = "ac8b58fdf375bef831c5b5b34d0e759d1a5c0a1a5c0d5c0e5f0a1b2c3d4e5f60"
+
+[source.arm64]
+url = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-aarch64-pc-windows-msvc.zip"
+sha256 = "def4560000000000000000000000000000000000000000000000000000000000"
+
+[autoupdate]
+checkver = { github = "BurntSushi/ripgrep" }
+url_template = "https://github.com/BurntSushi/ripgrep/releases/download/{version}/ripgrep-{version}-x86_64-pc-windows-msvc.zip"

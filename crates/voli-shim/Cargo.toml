@@ -1,0 +1,11 @@
+[package]
+name = "voli-shim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Per-bin shim stub for voli"
+
+[[bin]]
+name = "voli-shim"
+path = "src/main.rs"
