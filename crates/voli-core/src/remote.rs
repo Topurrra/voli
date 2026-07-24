@@ -131,11 +131,21 @@ pub fn install_remote_env(
             name: &manifest.name,
             version: &manifest.version,
         });
-        let archive = fetch::download(&source.url, &source.sha256, &cache, &mut |done, total| {
+        let archive = fetch::download(&source.url, source.hash(), &cache, &mut |done, total| {
             on_step(Step::Progress { done, total })
         })?;
 
-        let installed = install::install_manifest(manifest, &archive, root, env_subkey, consent)?;
+        // Download extra archives (multi-URL sources).
+        let mut extras: Vec<(std::path::PathBuf, String)> = Vec::new();
+        for ex in &source.extra {
+            let extra_path = fetch::download(&ex.url, &ex.sha256, &cache, &mut |done, total| {
+                on_step(Step::Progress { done, total })
+            })?;
+            extras.push((extra_path, ex.extract_to.clone()));
+        }
+
+        let installed =
+            install::install_manifest(manifest, &archive, &extras, root, env_subkey, consent)?;
         on_step(Step::Installed(&installed));
         report.installed.push(installed);
     }
@@ -193,11 +203,20 @@ pub fn upgrade(
         version: &latest.version,
     });
     let cache = Paths::at(root).cache();
-    let archive = fetch::download(&source.url, &source.sha256, &cache, &mut |done, total| {
+    let archive = fetch::download(&source.url, source.hash(), &cache, &mut |done, total| {
         on_step(Step::Progress { done, total })
     })?;
 
-    let report = install::upgrade_install(&latest, &archive, root)?;
+    // Download extra archives (multi-URL sources).
+    let mut extras: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for ex in &source.extra {
+        let extra_path = fetch::download(&ex.url, &ex.sha256, &cache, &mut |done, total| {
+            on_step(Step::Progress { done, total })
+        })?;
+        extras.push((extra_path, ex.extract_to.clone()));
+    }
+
+    let report = install::upgrade_install(&latest, &archive, &extras, root)?;
     Ok(UpgradeOutcome::Upgraded(report))
 }
 

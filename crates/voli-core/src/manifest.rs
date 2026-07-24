@@ -21,7 +21,38 @@ pub enum Kind {
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub url: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub sha512: Option<String>,
+    /// Additional archives extracted into subdirectories of the version dir.
+    #[serde(default)]
+    pub extra: Vec<ExtraSource>,
+}
+
+impl Source {
+    /// The primary hash value (sha256 or sha512, whichever is present).
+    /// Panics if neither is set — unreachable after validation.
+    pub fn hash(&self) -> &str {
+        self.sha256
+            .as_deref()
+            .or(self.sha512.as_deref())
+            .expect("validated: exactly one hash is present")
+    }
+
+    /// True when the primary hash is sha512 (false = sha256).
+    pub fn is_sha512(&self) -> bool {
+        self.sha512.is_some()
+    }
+}
+
+/// An extra download extracted into a subdirectory of the version dir.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtraSource {
+    pub url: String,
     pub sha256: String,
+    pub extract_to: String,
 }
 
 /// Sources keyed by architecture. At least one arch must be present.
@@ -44,6 +75,44 @@ pub enum Bin {
         #[serde(default)]
         args: Option<String>,
     },
+}
+
+/// A Start Menu shortcut. Either a bare relative exe path (`"myapp.exe"`) or
+/// the table form `{ target = "myapp.exe", name = "My App" }`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Shortcut {
+    Path(String),
+    Table { target: String, name: String },
+}
+
+impl Shortcut {
+    /// The archive-relative path this shortcut points at.
+    pub fn target(&self) -> &str {
+        match self {
+            Shortcut::Path(p) => p,
+            Shortcut::Table { target, .. } => target,
+        }
+    }
+
+    /// The display name for the `.lnk` file (without extension).
+    pub fn link_name(&self) -> String {
+        match self {
+            Shortcut::Table { name, .. } => name.clone(),
+            Shortcut::Path(p) => std::path::Path::new(p)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.clone()),
+        }
+    }
+}
+
+/// A file to write into the version dir during install (declarative, no code).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteFile {
+    pub path: String,
+    pub content: String,
 }
 
 impl Bin {
@@ -112,6 +181,13 @@ pub struct Manifest {
     pub persist: Vec<String>,
     #[serde(default)]
     pub gui: Option<bool>,
+
+    /// Start Menu shortcuts to create (spec §4).
+    #[serde(default)]
+    pub shortcuts: Vec<Shortcut>,
+    /// Files to write into the version dir after extraction.
+    #[serde(default)]
+    pub write_file: Vec<WriteFile>,
 }
 
 /// Errors from parsing or validating a manifest.
@@ -126,11 +202,18 @@ pub enum ManifestError {
     #[error("no source: at least one of [source.x64] or [source.arm64] is required")]
     NoSource,
 
-    #[error("invalid sha256 for {arch}: must be 64 hex characters")]
-    Sha256 { arch: &'static str },
+    #[error("source for {arch}: exactly one of sha256 or sha512 is required")]
+    HashRequired { arch: &'static str },
 
-    #[error("invalid bin path '{0}': must be relative (no absolute paths, no '..')")]
-    BinPath(String),
+    #[error("invalid {alg} for {arch}: must be {len} hex characters")]
+    BadHash {
+        alg: &'static str,
+        arch: &'static str,
+        len: usize,
+    },
+
+    #[error("invalid {field} path '{path}': must be relative (no absolute paths, no '..')")]
+    RelativePath { field: &'static str, path: String },
 
     #[error("invalid env value for '{key}': only the {{dir}} template variable is allowed")]
     EnvTemplate { key: String },
@@ -151,18 +234,28 @@ impl Manifest {
             return Err(ManifestError::NoSource);
         }
         if let Some(s) = &self.source.x64 {
-            check_sha256(&s.sha256, "x64")?;
+            check_source_hash(s, "x64")?;
+            check_extra_sources(s, "x64")?;
         }
         if let Some(s) = &self.source.arm64 {
-            check_sha256(&s.sha256, "arm64")?;
+            check_source_hash(s, "arm64")?;
+            check_extra_sources(s, "arm64")?;
         }
 
         for b in &self.bin {
-            check_bin_path(b.path())?;
+            check_relative(b.path(), "bin")?;
         }
 
         for (key, val) in &self.env {
             check_env_template(key, val)?;
+        }
+
+        for sc in &self.shortcuts {
+            check_relative(sc.target(), "shortcut")?;
+        }
+
+        for wf in &self.write_file {
+            check_relative(&wf.path, "write_file")?;
         }
 
         Ok(())
@@ -181,15 +274,36 @@ fn validate_name(name: &str) -> Result<(), ManifestError> {
     }
 }
 
-fn check_sha256(hash: &str, arch: &'static str) -> Result<(), ManifestError> {
-    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        Ok(())
-    } else {
-        Err(ManifestError::Sha256 { arch })
+fn check_source_hash(source: &Source, arch: &'static str) -> Result<(), ManifestError> {
+    match (&source.sha256, &source.sha512) {
+        (Some(h), None) => check_hex(h, 64, "sha256", arch),
+        (None, Some(h)) => check_hex(h, 128, "sha512", arch),
+        _ => Err(ManifestError::HashRequired { arch }),
     }
 }
 
-fn check_bin_path(path: &str) -> Result<(), ManifestError> {
+fn check_extra_sources(source: &Source, arch: &'static str) -> Result<(), ManifestError> {
+    for ex in &source.extra {
+        check_hex(&ex.sha256, 64, "sha256", arch)?;
+        check_relative(&ex.extract_to, "extra extract_to")?;
+    }
+    Ok(())
+}
+
+fn check_hex(
+    hash: &str,
+    len: usize,
+    alg: &'static str,
+    arch: &'static str,
+) -> Result<(), ManifestError> {
+    if hash.len() == len && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(ManifestError::BadHash { alg, arch, len })
+    }
+}
+
+fn check_relative(path: &str, field: &'static str) -> Result<(), ManifestError> {
     let p = std::path::Path::new(path);
     let absolute = p.is_absolute()
         || path.starts_with('/')
@@ -200,7 +314,10 @@ fn check_bin_path(path: &str) -> Result<(), ManifestError> {
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir));
     if absolute || has_parent {
-        Err(ManifestError::BinPath(path.to_string()))
+        Err(ManifestError::RelativePath {
+            field,
+            path: path.to_string(),
+        })
     } else {
         Ok(())
     }
@@ -311,7 +428,7 @@ sha256 = "abc123"
 "#;
         assert!(matches!(
             Manifest::from_toml_str(s),
-            Err(ManifestError::Sha256 { .. })
+            Err(ManifestError::BadHash { .. })
         ));
     }
 
@@ -330,7 +447,7 @@ sha256 = "{}"
         );
         assert!(matches!(
             Manifest::from_toml_str(&s),
-            Err(ManifestError::Sha256 { .. })
+            Err(ManifestError::BadHash { .. })
         ));
     }
 
@@ -339,7 +456,7 @@ sha256 = "{}"
         let s = minimal(r#"bin = ["C:\\windows\\rg.exe"]"#);
         assert!(matches!(
             Manifest::from_toml_str(&s),
-            Err(ManifestError::BinPath(_))
+            Err(ManifestError::RelativePath { .. })
         ));
     }
 
@@ -348,7 +465,7 @@ sha256 = "{}"
         let s = minimal(r#"bin = ["/usr/bin/rg"]"#);
         assert!(matches!(
             Manifest::from_toml_str(&s),
-            Err(ManifestError::BinPath(_))
+            Err(ManifestError::RelativePath { .. })
         ));
     }
 
@@ -357,7 +474,7 @@ sha256 = "{}"
         let s = minimal(r#"bin = ["../escape.exe"]"#);
         assert!(matches!(
             Manifest::from_toml_str(&s),
-            Err(ManifestError::BinPath(_))
+            Err(ManifestError::RelativePath { .. })
         ));
     }
 
@@ -402,6 +519,142 @@ kind = "app"
         assert!(matches!(
             Manifest::from_toml_str(s),
             Err(ManifestError::NoSource)
+        ));
+    }
+
+    #[test]
+    fn accepts_sha512_instead_of_sha256() {
+        let s = format!(
+            r#"
+name = "app"
+version = "1.0.0"
+kind = "app"
+[source.x64]
+url = "https://example.com/a.zip"
+sha512 = "{}"
+"#,
+            "a".repeat(128)
+        );
+        let m = Manifest::from_toml_str(&s).expect("sha512 should be accepted");
+        assert!(m.source.x64.as_ref().unwrap().is_sha512());
+        assert_eq!(m.source.x64.as_ref().unwrap().hash(), "a".repeat(128));
+    }
+
+    #[test]
+    fn rejects_both_sha256_and_sha512() {
+        let s = format!(
+            r#"
+name = "app"
+version = "1.0.0"
+kind = "app"
+[source.x64]
+url = "https://example.com/a.zip"
+sha256 = "{}"
+sha512 = "{}"
+"#,
+            "a".repeat(64),
+            "b".repeat(128)
+        );
+        assert!(matches!(
+            Manifest::from_toml_str(&s),
+            Err(ManifestError::HashRequired { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_neither_sha256_nor_sha512() {
+        let s = r#"
+name = "app"
+version = "1.0.0"
+kind = "app"
+[source.x64]
+url = "https://example.com/a.zip"
+"#;
+        assert!(matches!(
+            Manifest::from_toml_str(s),
+            Err(ManifestError::HashRequired { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_shortcuts_both_forms() {
+        let s =
+            minimal(r#"shortcuts = ["myapp.exe", { target = "sub/tool.exe", name = "My Tool" }]"#);
+        let m = Manifest::from_toml_str(&s).expect("shortcuts should parse");
+        assert_eq!(m.shortcuts.len(), 2);
+        assert_eq!(m.shortcuts[0].target(), "myapp.exe");
+        assert_eq!(m.shortcuts[0].link_name(), "myapp");
+        assert_eq!(m.shortcuts[1].target(), "sub/tool.exe");
+        assert_eq!(m.shortcuts[1].link_name(), "My Tool");
+    }
+
+    #[test]
+    fn rejects_shortcut_traversal() {
+        let s = minimal(r#"shortcuts = ["../evil.exe"]"#);
+        assert!(matches!(
+            Manifest::from_toml_str(&s),
+            Err(ManifestError::RelativePath { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_write_file() {
+        let s = minimal(
+            r#"write_file = [{ path = "portable.ini", content = "[settings]\nportable=true" }]"#,
+        );
+        let m = Manifest::from_toml_str(&s).expect("write_file should parse");
+        assert_eq!(m.write_file.len(), 1);
+        assert_eq!(m.write_file[0].path, "portable.ini");
+    }
+
+    #[test]
+    fn rejects_write_file_traversal() {
+        let s = minimal(r#"write_file = [{ path = "../evil.ini", content = "x" }]"#);
+        assert!(matches!(
+            Manifest::from_toml_str(&s),
+            Err(ManifestError::RelativePath { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_extra_sources() {
+        let s = format!(
+            r#"
+name = "app"
+version = "1.0.0"
+kind = "app"
+[source.x64]
+url = "https://example.com/a.zip"
+sha256 = "{}"
+extra = [{{ url = "https://example.com/b.zip", sha256 = "{}", extract_to = "plugins" }}]
+"#,
+            "a".repeat(64),
+            "b".repeat(64)
+        );
+        let m = Manifest::from_toml_str(&s).expect("extra sources should parse");
+        let src = m.source.x64.as_ref().unwrap();
+        assert_eq!(src.extra.len(), 1);
+        assert_eq!(src.extra[0].extract_to, "plugins");
+    }
+
+    #[test]
+    fn rejects_extra_extract_to_traversal() {
+        let s = format!(
+            r#"
+name = "app"
+version = "1.0.0"
+kind = "app"
+[source.x64]
+url = "https://example.com/a.zip"
+sha256 = "{}"
+extra = [{{ url = "https://example.com/b.zip", sha256 = "{}", extract_to = "../escape" }}]
+"#,
+            "a".repeat(64),
+            "b".repeat(64)
+        );
+        assert!(matches!(
+            Manifest::from_toml_str(&s),
+            Err(ManifestError::RelativePath { .. })
         ));
     }
 }

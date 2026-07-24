@@ -21,6 +21,7 @@ zstd = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 strsim = { workspace = true }
+sevenz-rust2 = { workspace = true }
 
 # Windows-only: install engine (junctions), user env (registry), self-install.
 # Gated so cross-platform consumers (voli-index-tool on CI runners) can build.
@@ -33,6 +34,7 @@ windows-sys = { workspace = true }
 tempfile = { workspace = true }
 sha2 = { workspace = true }
 zip = { workspace = true }
+sevenz-rust2 = { workspace = true }
 tiny_http = { workspace = true }
 
 [target.'cfg(windows)'.dev-dependencies]

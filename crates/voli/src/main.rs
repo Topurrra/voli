@@ -4,6 +4,7 @@
 mod cmd_index;
 mod cmd_install;
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
@@ -11,8 +12,6 @@ use voli_core::{
     Action, Paths, State, Step, UpgradeOutcome, config, env, self_install, uninstall, upgrade,
 };
 
-/// Exit code for a command that is not yet implemented.
-const EXIT_UNIMPLEMENTED: i32 = 2;
 /// Exit code for a runtime error (bad args, install failure, …).
 const EXIT_ERROR: i32 = 1;
 
@@ -177,10 +176,7 @@ fn main() {
         Command::Update => cmd_index::run_update(&root(), cli.json),
         Command::Search { query } => cmd_index::run_search(&root(), query, cli.json),
         Command::Info { package } => cmd_index::run_info(&root(), package, cli.json),
-        other => {
-            eprintln!("voli {}: not implemented yet", name_of(other));
-            EXIT_UNIMPLEMENTED
-        }
+        Command::SelfUpdate => cmd_self_update(),
     };
     std::process::exit(code);
 }
@@ -201,27 +197,6 @@ fn maybe_offer_setup() {
     if !running_in_bin {
         eprintln!("note: voli is not installed under {}", bin.display());
         eprintln!("      run `voli setup` to install it and add shims to your PATH.");
-    }
-}
-
-fn name_of(cmd: &Command) -> &'static str {
-    match cmd {
-        Command::Install { .. } => "install",
-        Command::Uninstall { .. } => "uninstall",
-        Command::Update => "update",
-        Command::Upgrade { .. } => "upgrade",
-        Command::List => "list",
-        Command::Search { .. } => "search",
-        Command::Info { .. } => "info",
-        Command::Pin { .. } => "pin",
-        Command::Unpin { .. } => "unpin",
-        Command::Env { .. } => "env",
-        Command::Cleanup { .. } => "cleanup",
-        Command::Setup => "setup",
-        Command::Config { .. } => "config",
-        Command::Doctor => "doctor",
-        Command::Which { .. } => "which",
-        Command::SelfUpdate => "self-update",
     }
 }
 
@@ -645,6 +620,196 @@ fn cmd_setup() -> i32 {
             EXIT_ERROR
         }
     }
+}
+
+const GITHUB_RELEASE_API: &str = "https://api.github.com/repos/Topurrra/voli/releases/latest";
+
+fn cmd_self_update() -> i32 {
+    use sha2::{Digest, Sha256};
+
+    let current = env!("CARGO_PKG_VERSION");
+    println!("voli {current}: checking for updates...");
+
+    // 1. Query GitHub API for the latest release.
+    let resp = match ureq::get(GITHUB_RELEASE_API)
+        .set("User-Agent", concat!("voli/", env!("CARGO_PKG_VERSION")))
+        .call()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: cannot reach GitHub API: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let body_str = match resp.into_string() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: reading API response: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let body: serde_json::Value = match serde_json::from_str(&body_str) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: bad API JSON: {e}");
+            return EXIT_ERROR;
+        }
+    };
+
+    let tag = body["tag_name"].as_str().unwrap_or("unknown");
+    let latest = tag.trim_start_matches('v');
+    if latest == current {
+        println!("already up to date ({current})");
+        return 0;
+    }
+    println!("updating {current} -> {latest}");
+
+    // 2. Find the zip asset (stable name uploaded by release.yml).
+    let asset_name = "voli-x64.zip";
+    let sha_name = format!("{asset_name}.sha256");
+    let mut zip_url = None;
+    let mut sha_url = None;
+    if let Some(assets) = body["assets"].as_array() {
+        for a in assets {
+            let name = a["name"].as_str().unwrap_or("");
+            let url = a["browser_download_url"].as_str().unwrap_or("");
+            if name == asset_name {
+                zip_url = Some(url.to_string());
+            } else if name == sha_name {
+                sha_url = Some(url.to_string());
+            }
+        }
+    }
+    let Some(zip_url) = zip_url else {
+        eprintln!("error: release {tag} has no {asset_name} asset");
+        return EXIT_ERROR;
+    };
+
+    // 3. Download the zip.
+    println!("downloading {zip_url} ...");
+    let zip_resp = match ureq::get(&zip_url)
+        .set("User-Agent", concat!("voli/", env!("CARGO_PKG_VERSION")))
+        .call()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: download failed: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let mut zip_bytes = Vec::new();
+    if let Err(e) = zip_resp.into_reader().read_to_end(&mut zip_bytes) {
+        eprintln!("error: reading download: {e}");
+        return EXIT_ERROR;
+    }
+
+    // 4. Verify sha256 if a checksums asset exists.
+    if let Some(sha_url) = sha_url {
+        if let Ok(sha_resp) = ureq::get(&sha_url)
+            .set("User-Agent", concat!("voli/", env!("CARGO_PKG_VERSION")))
+            .call()
+        {
+            let expected = sha_resp.into_string().unwrap_or_default();
+            let expected = expected
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let actual = hex::encode(Sha256::digest(&zip_bytes));
+            if actual != expected {
+                eprintln!("error: sha256 mismatch: expected {expected}, got {actual}");
+                return EXIT_ERROR;
+            }
+            println!("sha256 verified");
+        }
+    } else {
+        eprintln!("warning: no .sha256 asset found; skipping hash verification");
+    }
+
+    // 5. Extract to temp and swap binaries.
+    let td = match tempfile::tempdir() {
+        Ok(td) => td,
+        Err(e) => {
+            eprintln!("error: cannot create temp dir: {e}");
+            return EXIT_ERROR;
+        }
+    };
+    let zip_path = td.path().join("release.zip");
+    if let Err(e) = std::fs::write(&zip_path, &zip_bytes) {
+        eprintln!("error: writing temp zip: {e}");
+        return EXIT_ERROR;
+    }
+    let extract_dir = td.path().join("extracted");
+    std::fs::create_dir_all(&extract_dir).ok();
+    {
+        let file = match std::fs::File::open(&zip_path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("error: opening zip: {e}");
+                return EXIT_ERROR;
+            }
+        };
+        let mut archive = match zip::ZipArchive::new(file) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("error: reading zip: {e}");
+                return EXIT_ERROR;
+            }
+        };
+        if let Err(e) = archive.extract(&extract_dir) {
+            eprintln!("error: extracting zip: {e}");
+            return EXIT_ERROR;
+        }
+    }
+
+    // 6. Replace binaries in bin\ using the .new/.old rename dance.
+    let root = root();
+    let bin_dir = root.join("bin");
+    let mut updated = Vec::new();
+    for name in ["voli.exe", "voli-shim.exe", "voli-shim-gui.exe"] {
+        let src = extract_dir.join(name);
+        if src.is_file() {
+            let dst = bin_dir.join(name);
+            if let Err(e) = replace_binary(&src, &dst) {
+                eprintln!("error: replacing {name}: {e}");
+                return EXIT_ERROR;
+            }
+            updated.push(name.to_string());
+        }
+    }
+
+    if updated.is_empty() {
+        eprintln!("error: no binaries found in the release archive");
+        return EXIT_ERROR;
+    }
+    println!("updated to {latest}: {}", updated.join(", "));
+    0
+}
+
+/// Copy `src` over `dst`, coping with a locked running exe (.new/.old dance).
+fn replace_binary(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let staged = {
+        let mut s = dst.as_os_str().to_os_string();
+        s.push(".new");
+        PathBuf::from(s)
+    };
+    std::fs::copy(src, &staged)?;
+    if dst.exists() {
+        if std::fs::rename(&staged, dst).is_ok() {
+            return Ok(());
+        }
+        let old = {
+            let mut s = dst.as_os_str().to_os_string();
+            s.push(".old");
+            PathBuf::from(s)
+        };
+        let _ = std::fs::remove_file(&old);
+        std::fs::rename(dst, &old)?;
+        std::fs::rename(&staged, dst)?;
+    } else {
+        std::fs::rename(&staged, dst)?;
+    }
+    Ok(())
 }
 
 fn cmd_config(action: &ConfigAction, json: bool) -> i32 {

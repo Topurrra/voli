@@ -24,7 +24,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 
 use crate::manifest::{Manifest, ManifestError};
 use crate::paths::Paths;
@@ -74,6 +74,10 @@ pub enum Action {
     PathAdded {
         segment: String,
     },
+    /// A Start Menu shortcut we created.
+    ShortcutCreated {
+        path: PathBuf,
+    },
 }
 
 impl Action {
@@ -85,6 +89,7 @@ impl Action {
             Action::ShimWritten { .. } => "shim_written",
             Action::EnvSet { .. } => "env_set",
             Action::PathAdded { .. } => "path_added",
+            Action::ShortcutCreated { .. } => "shortcut_created",
         }
     }
 }
@@ -148,13 +153,15 @@ pub enum InstallError {
     Json(#[from] serde_json::Error),
     #[error("zip error: {0}")]
     Zip(#[from] zip::result::ZipError),
+    #[error("7z error: {0}")]
+    SevenZ(String),
     #[error("archive hash mismatch: manifest expected {expected}, archive is {actual}")]
     HashMismatch { expected: String, actual: String },
     #[error("no source for the current architecture (x64) in the manifest")]
     NoArchSource,
     #[error("unsafe archive entry (absolute path or '..'): {0}")]
     ZipSlip(String),
-    #[error("unsupported archive type: {0} (expected .zip or .tar.gz)")]
+    #[error("unsupported archive type: {0} (expected .zip, .tar.gz, or .7z)")]
     UnsupportedArchive(String),
     #[error("extract_dir '{0}' not found in archive after extraction")]
     ExtractDirMissing(String),
@@ -187,6 +194,7 @@ pub fn install_local(
     install_manifest(
         &manifest,
         archive_path,
+        &[],
         root,
         crate::env::ENVIRONMENT,
         &mut skip_env,
@@ -202,6 +210,7 @@ pub fn install_local(
 pub fn install_manifest(
     manifest: &Manifest,
     archive_path: &Path,
+    extras: &[(PathBuf, String)],
     root: &Path,
     env_subkey: &str,
     consent: &mut EnvConsent,
@@ -220,16 +229,16 @@ pub fn install_manifest(
         .x64
         .as_ref()
         .ok_or(InstallError::NoArchSource)?;
-    let actual = sha256_file(archive_path)?;
-    if !actual.eq_ignore_ascii_case(&source.sha256) {
+    let actual = hash_file(archive_path, source.is_sha512())?;
+    if !actual.eq_ignore_ascii_case(source.hash()) {
         return Err(InstallError::HashMismatch {
-            expected: source.sha256.clone(),
+            expected: source.hash().to_string(),
             actual,
         });
     }
 
     // Perform every filesystem mutation, rolling those back internally on error.
-    let (mut actions, mut report) = do_install_fs(&paths, manifest, archive_path)?;
+    let (mut actions, mut report) = do_install_fs(&paths, manifest, archive_path, extras)?;
 
     // Env consent flow (spec §8): resolve `{dir}` -> apps\<name>\current, prompt
     // (via `consent`), and — if applied — append EnvSet/PathAdded to the SAME
@@ -306,9 +315,10 @@ fn do_install_fs(
     paths: &Paths,
     manifest: &Manifest,
     archive_path: &Path,
+    extras: &[(PathBuf, String)],
 ) -> Result<(Vec<Action>, InstallReport)> {
     let mut actions: Vec<Action> = Vec::new();
-    match install_fs_inner(paths, manifest, archive_path, &mut actions) {
+    match install_fs_inner(paths, manifest, archive_path, extras, &mut actions) {
         Ok(report) => Ok((actions, report)),
         Err(e) => {
             // Only filesystem actions exist at this point (env is applied later,
@@ -323,6 +333,7 @@ fn install_fs_inner(
     paths: &Paths,
     manifest: &Manifest,
     archive_path: &Path,
+    extras: &[(PathBuf, String)],
     actions: &mut Vec<Action>,
 ) -> Result<InstallReport> {
     let name = &manifest.name;
@@ -434,6 +445,32 @@ fn install_fs_inner(
         shims.push(shim_exe);
     }
 
+    // 8. Extra archives: extract into subdirectories of the version dir.
+    for (extra_archive, extract_to) in extras {
+        let dest = version_dir.join(extract_to);
+        fs::create_dir_all(&dest)?;
+        extract_archive(extra_archive, &dest)?;
+    }
+
+    // 9. Declarative write_file: static files written into the version dir.
+    for wf in &manifest.write_file {
+        let target = version_dir.join(&wf.path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&target, &wf.content)?;
+    }
+
+    // 10. Start Menu shortcuts (.lnk via COM IShellLink).
+    for sc in &manifest.shortcuts {
+        let link_dir = shortcut_dir()?;
+        fs::create_dir_all(&link_dir)?;
+        let link_path = link_dir.join(format!("{}.lnk", sc.link_name()));
+        let target = current.join(sc.target());
+        create_shortcut(&link_path, &target, &current)?;
+        actions.push(Action::ShortcutCreated { path: link_path });
+    }
+
     Ok(InstallReport {
         name: name.clone(),
         version: version.clone(),
@@ -474,6 +511,9 @@ fn rollback(subkey: &str, actions: &[Action]) {
             Action::PathAdded { segment } => {
                 let _ = crate::env::remove_from_path(subkey, segment);
                 touched_env = true;
+            }
+            Action::ShortcutCreated { path } => {
+                let _ = fs::remove_file(path);
             }
         }
     }
@@ -566,6 +606,9 @@ pub fn uninstall_env(
                 let _ = crate::env::remove_from_path(env_subkey, segment);
                 touched_env = true;
             }
+            Action::ShortcutCreated { path } => {
+                let _ = fs::remove_file(path);
+            }
         }
     }
     if touched_env {
@@ -613,6 +656,7 @@ pub fn uninstall_env(
 pub fn upgrade_install(
     manifest_new: &Manifest,
     archive_path: &Path,
+    extras: &[(PathBuf, String)],
     root: &Path,
 ) -> Result<UpgradeReport> {
     let paths = Paths::at(root);
@@ -631,10 +675,10 @@ pub fn upgrade_install(
         .x64
         .as_ref()
         .ok_or(InstallError::NoArchSource)?;
-    let actual = sha256_file(archive_path)?;
-    if !actual.eq_ignore_ascii_case(&source.sha256) {
+    let actual = hash_file(archive_path, source.is_sha512())?;
+    if !actual.eq_ignore_ascii_case(source.hash()) {
         return Err(InstallError::HashMismatch {
-            expected: source.sha256.clone(),
+            expected: source.hash().to_string(),
             actual,
         });
     }
@@ -652,16 +696,17 @@ pub fn upgrade_install(
     // Install the new version's filesystem payload (version dir, persist
     // junctions, current junction -> new, shims). Reuses the install engine.
     let mut new_actions: Vec<Action> = Vec::new();
-    let new_report = match install_fs_inner(&paths, manifest_new, archive_path, &mut new_actions) {
-        Ok(r) => r,
-        Err(e) => {
-            // Undo the partial new install and put `current` back on the old
-            // version so running tools (and shims) keep resolving.
-            rollback("", &new_actions);
-            let _ = junction::create(&old_version_dir, &old_current);
-            return Err(e);
-        }
-    };
+    let new_report =
+        match install_fs_inner(&paths, manifest_new, archive_path, extras, &mut new_actions) {
+            Ok(r) => r,
+            Err(e) => {
+                // Undo the partial new install and put `current` back on the old
+                // version so running tools (and shims) keep resolving.
+                rollback("", &new_actions);
+                let _ = junction::create(&old_version_dir, &old_current);
+                return Err(e);
+            }
+        };
 
     // Remove shims for bins that vanished in the new version (bin-set change).
     let new_bases: std::collections::HashSet<String> =
@@ -807,11 +852,17 @@ fn resolve_stub() -> Result<PathBuf> {
     }
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+fn hash_file(path: &Path, sha512: bool) -> Result<String> {
     let mut f = File::open(path)?;
-    let mut hasher = Sha256::new();
-    io::copy(&mut f, &mut hasher)?;
-    Ok(hex(&hasher.finalize()))
+    if sha512 {
+        let mut hasher = Sha512::new();
+        io::copy(&mut f, &mut hasher)?;
+        Ok(hex(&hasher.finalize()))
+    } else {
+        let mut hasher = Sha256::new();
+        io::copy(&mut f, &mut hasher)?;
+        Ok(hex(&hasher.finalize()))
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -820,6 +871,44 @@ fn hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+// ---- Start Menu shortcuts (COM IShellLink) --------------------------------
+
+/// `%APPDATA%\Microsoft\Windows\Start Menu\Programs\voli\`
+fn shortcut_dir() -> io::Result<PathBuf> {
+    let appdata = std::env::var_os("APPDATA")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "APPDATA is not set"))?;
+    Ok(PathBuf::from(appdata)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs")
+        .join("voli"))
+}
+
+/// Create a `.lnk` shortcut via the WScript.Shell COM object (real .lnk, not .url).
+fn create_shortcut(link_path: &Path, target: &Path, working_dir: &Path) -> io::Result<()> {
+    let script = format!(
+        "$ws = New-Object -ComObject WScript.Shell\n\
+         $sc = $ws.CreateShortcut(\"{}\")\n\
+         $sc.TargetPath = \"{}\"\n\
+         $sc.WorkingDirectory = \"{}\"\n\
+         $sc.Save()",
+        link_path.display().to_string().replace('"', "`\""),
+        target.display().to_string().replace('"', "`\""),
+        working_dir.display().to_string().replace('"', "`\""),
+    );
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::other(format!(
+            "shortcut creation failed: {stderr}"
+        )));
+    }
+    Ok(())
 }
 
 // ---- archive extraction (zip-slip safe) ----------------------------------
@@ -834,6 +923,8 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
         extract_zip(archive, dest)
     } else if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
         extract_tar_gz(archive, dest)
+    } else if lower.ends_with(".7z") {
+        extract_7z(archive, dest)
     } else {
         Err(InstallError::UnsupportedArchive(lower))
     }
@@ -874,6 +965,36 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<()> {
         }
         entry.unpack(&out)?;
     }
+    Ok(())
+}
+
+fn extract_7z(archive: &Path, dest: &Path) -> Result<()> {
+    let mut reader = sevenz_rust2::ArchiveReader::open(archive, sevenz_rust2::Password::empty())
+        .map_err(|e| InstallError::SevenZ(e.to_string()))?;
+
+    // Validate every entry name before extracting anything (zip-slip, §10).
+    for entry in &reader.archive().files {
+        let raw = entry.name();
+        safe_rel(raw).ok_or_else(|| InstallError::ZipSlip(raw.to_string()))?;
+    }
+
+    reader
+        .for_each_entries(|entry, data| {
+            let rel = safe_rel(entry.name()).expect("all entries validated above");
+            let out = dest.join(&rel);
+            if entry.is_directory() {
+                fs::create_dir_all(&out)?;
+            } else {
+                if let Some(parent) = out.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let mut f = File::create(&out)?;
+                io::copy(data, &mut f)?;
+            }
+            Ok(true)
+        })
+        .map_err(|e| InstallError::SevenZ(e.to_string()))?;
+
     Ok(())
 }
 

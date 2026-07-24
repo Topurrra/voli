@@ -106,7 +106,14 @@ fn install_local_path(
         }
     };
     let mut consent = env_consent(auto, no_env);
-    match install_manifest(&parsed, archive, root, &env::env_subkey(), &mut consent) {
+    match install_manifest(
+        &parsed,
+        archive,
+        &[],
+        root,
+        &env::env_subkey(),
+        &mut consent,
+    ) {
         Ok(r) => {
             println!("installed {} {}", r.name, r.version);
             println!("  files: {}", r.version_dir.display());

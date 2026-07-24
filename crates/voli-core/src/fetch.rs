@@ -17,7 +17,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 
 const USER_AGENT: &str = concat!("voli/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -46,25 +46,27 @@ pub enum FetchError {
 
 type Result<T> = std::result::Result<T, FetchError>;
 
-/// Download `url` into `cache_dir`, verifying it hashes to `expected_sha256`.
+/// Download `url` into `cache_dir`, verifying it hashes to `expected_hash`
+/// (sha256 when 64 hex chars, sha512 when 128).
 ///
-/// Returns the path to the cached, verified file (`cache_dir\<sha256><ext>`).
+/// Returns the path to the cached, verified file (`cache_dir\<hash><ext>`).
 /// `progress` is called with `(bytes_done, total_opt)` as bytes arrive — `total`
 /// is `None` when the server sends no `Content-Length`. On a cache hit `progress`
 /// is invoked once with the final size.
 pub fn download(
     url: &str,
-    expected_sha256: &str,
+    expected_hash: &str,
     cache_dir: &Path,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<PathBuf> {
     fs::create_dir_all(cache_dir)?;
-    let expected = expected_sha256.trim().to_ascii_lowercase();
+    let expected = expected_hash.trim().to_ascii_lowercase();
+    let is_sha512 = expected.len() == 128;
     let final_path = cache_dir.join(cache_name(url, &expected));
 
     // 1. Cache hit: present and hashing correctly → no network.
     if final_path.exists() {
-        if hash_file(&final_path)? == expected {
+        if hash_file(&final_path, is_sha512)? == expected {
             let total = fs::metadata(&final_path)?.len();
             progress(total, Some(total));
             return Ok(final_path);
@@ -76,13 +78,13 @@ pub fn download(
     let part_path = cache_dir.join(format!("{}.part", cache_name(url, &expected)));
 
     // 2. Resume: re-hash any existing prefix so we can continue from its length.
-    let mut hasher = Sha256::new();
+    let mut hasher = Digester::new(is_sha512);
     let mut resume_from = 0u64;
     if part_path.exists() {
         match rehash_prefix(&part_path, &mut hasher) {
             Ok(n) => resume_from = n,
             Err(_) => {
-                hasher = Sha256::new();
+                hasher = Digester::new(is_sha512);
                 resume_from = 0;
             }
         }
@@ -99,7 +101,7 @@ pub fn download(
     let resp = match request(&agent, url, resume_from) {
         Ok(r) => r,
         Err(FetchError::Http { source, .. }) if is_status(&source, 416) && resume_from > 0 => {
-            hasher = Sha256::new();
+            hasher = Digester::new(is_sha512);
             resume_from = 0;
             request(&agent, url, 0)?
         }
@@ -115,7 +117,7 @@ pub fn download(
         let f = OpenOptions::new().append(true).open(&part_path)?;
         (f, resume_from, total)
     } else {
-        hasher = Sha256::new();
+        hasher = Digester::new(is_sha512);
         let total = content_length(&resp);
         let f = File::create(&part_path)?;
         (f, 0u64, total)
@@ -139,7 +141,7 @@ pub fn download(
     drop(file);
 
     // 6. Verify the whole file before it may enter the cache.
-    let actual = hex::encode(hasher.finalize());
+    let actual = hasher.finalize_hex();
     if actual != expected {
         let _ = fs::remove_file(&part_path);
         return Err(FetchError::HashMismatch {
@@ -198,7 +200,7 @@ fn archive_ext(url: &str) -> &'static str {
     ""
 }
 
-fn rehash_prefix(path: &Path, hasher: &mut Sha256) -> io::Result<u64> {
+fn rehash_prefix(path: &Path, hasher: &mut Digester) -> io::Result<u64> {
     let mut f = File::open(path)?;
     let mut buf = vec![0u8; BUF];
     let mut total = 0u64;
@@ -213,11 +215,48 @@ fn rehash_prefix(path: &Path, hasher: &mut Sha256) -> io::Result<u64> {
     Ok(total)
 }
 
-fn hash_file(path: &Path) -> io::Result<String> {
+fn hash_file(path: &Path, sha512: bool) -> io::Result<String> {
     let mut f = File::open(path)?;
-    let mut hasher = Sha256::new();
-    io::copy(&mut f, &mut hasher)?;
-    Ok(hex::encode(hasher.finalize()))
+    let mut hasher = Digester::new(sha512);
+    let mut buf = vec![0u8; BUF];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize_hex())
+}
+
+/// Runtime-selectable hash digest (sha256 or sha512).
+enum Digester {
+    Sha256(Sha256),
+    Sha512(Sha512),
+}
+
+impl Digester {
+    fn new(sha512: bool) -> Self {
+        if sha512 {
+            Digester::Sha512(Sha512::new())
+        } else {
+            Digester::Sha256(Sha256::new())
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        match self {
+            Digester::Sha256(h) => h.update(data),
+            Digester::Sha512(h) => h.update(data),
+        }
+    }
+
+    fn finalize_hex(self) -> String {
+        match self {
+            Digester::Sha256(h) => hex::encode(h.finalize()),
+            Digester::Sha512(h) => hex::encode(h.finalize()),
+        }
+    }
 }
 
 #[cfg(test)]

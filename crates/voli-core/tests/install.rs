@@ -11,6 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
+use sevenz_rust2::{ArchiveEntry, ArchiveWriter};
 use sha2::{Digest, Sha256};
 use voli_core::{InstallError, State, install_local, uninstall};
 use zip::write::SimpleFileOptions;
@@ -64,10 +65,41 @@ fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     buf
 }
 
+/// Build a 7z in memory from (entry-name, contents) pairs. A name ending in
+/// `/` is a directory entry.
+fn build_7z(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new())).unwrap();
+    for (name, data) in entries {
+        let is_dir = name.ends_with('/');
+        let entry = ArchiveEntry {
+            name: name.to_string(),
+            has_stream: !is_dir,
+            is_directory: is_dir,
+            ..Default::default()
+        };
+        if is_dir {
+            w.push_archive_entry::<&[u8]>(entry, None).unwrap();
+        } else {
+            w.push_archive_entry(entry, Some(*data)).unwrap();
+        }
+    }
+    w.finish().unwrap().into_inner()
+}
+
 /// A standard fixture: ripgrep 1.0.0, wrapper dir stripped, one bin, one persist
 /// dir carrying a file.
 fn ripgrep_zip() -> Vec<u8> {
     build_zip(&[
+        ("ripgrep-1.0.0/", b""),
+        ("ripgrep-1.0.0/rg.exe", b"fake rg binary"),
+        ("ripgrep-1.0.0/config/", b""),
+        ("ripgrep-1.0.0/config/settings.txt", b"user=neo"),
+    ])
+}
+
+/// Same fixture as [`ripgrep_zip`] but in 7z format.
+fn ripgrep_7z() -> Vec<u8> {
+    build_7z(&[
         ("ripgrep-1.0.0/", b""),
         ("ripgrep-1.0.0/rg.exe", b"fake rg binary"),
         ("ripgrep-1.0.0/config/", b""),
@@ -320,4 +352,70 @@ fn uninstall_unknown_package_errors() {
     let td = setup();
     let err = uninstall("nope", td.path(), false).unwrap_err();
     assert!(matches!(err, InstallError::NotInstalled(_)));
+}
+
+#[test]
+fn happy_path_install_7z() {
+    let td = setup();
+    let root = td.path();
+    let sz = ripgrep_7z();
+    let archive = root.join("rg.7z");
+    fs::write(&archive, &sz).unwrap();
+    let manifest = write_manifest(root, &sha256_hex(&sz));
+
+    let report = install_local(&manifest, &archive, root).expect("install should succeed");
+
+    let vdir = root.join("apps/ripgrep/1.0.0");
+    assert!(vdir.join("rg.exe").is_file());
+    assert_eq!(report.version_dir, vdir);
+
+    let current = root.join("apps/ripgrep/current");
+    assert!(junction::exists(&current).unwrap());
+    assert!(current.join("rg.exe").is_file());
+
+    let shim = root.join("shims/rg.shim");
+    let shim_exe = root.join("shims/rg.exe");
+    assert!(shim.is_file());
+    assert!(shim_exe.is_file());
+    let body = fs::read_to_string(&shim).unwrap();
+    let first = body.lines().next().unwrap();
+    assert!(
+        first.ends_with("current\\rg.exe"),
+        "shim target was {first}"
+    );
+
+    let persisted = root.join("apps/ripgrep/persist/config/settings.txt");
+    assert_eq!(fs::read_to_string(&persisted).unwrap(), "user=neo");
+    assert!(junction::exists(vdir.join("config")).unwrap());
+    assert_eq!(
+        fs::read_to_string(vdir.join("config/settings.txt")).unwrap(),
+        "user=neo"
+    );
+
+    let state = State::open(&root.join("db/state.sqlite")).unwrap();
+    let list = state.list().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].name, "ripgrep");
+
+    let staging: Vec<_> = fs::read_dir(root.join("cache")).unwrap().collect();
+    assert!(staging.is_empty(), "cache should have no staging dirs");
+}
+
+#[test]
+fn zip_slip_7z_rejected_mutates_nothing() {
+    let td = setup();
+    let root = td.path();
+    let sz = build_7z(&[("../evil.exe", b"pwned"), ("ripgrep-1.0.0/rg.exe", b"x")]);
+    let archive = root.join("rg.7z");
+    fs::write(&archive, &sz).unwrap();
+    let manifest = write_manifest(root, &sha256_hex(&sz));
+
+    let err = install_local(&manifest, &archive, root).unwrap_err();
+    assert!(matches!(err, InstallError::ZipSlip(_)), "got {err:?}");
+
+    assert!(!root.join("apps/ripgrep").exists());
+    assert!(!root.join("evil.exe").exists());
+    assert!(!root.parent().unwrap().join("evil.exe").exists());
+    let state = State::open(&root.join("db/state.sqlite")).unwrap();
+    assert!(state.list().unwrap().is_empty());
 }

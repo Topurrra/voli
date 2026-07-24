@@ -23,6 +23,12 @@ ed25519-dalek = { workspace = true }
 getrandom = { workspace = true }
 zstd = { workspace = true }
 anyhow = { workspace = true }
+ureq = { workspace = true }
+tempfile = { workspace = true }
+zip = { workspace = true }
+sevenz-rust2 = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
