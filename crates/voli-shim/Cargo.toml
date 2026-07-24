@@ -6,6 +6,29 @@ license.workspace = true
 repository.workspace = true
 description = "Per-bin shim stub for voli"
 
+# Performance note: the shim runs on every CLI invocation, so it must be tiny
+# and fast. Deps are windows-sys only (no allocation-heavy parsing). The
+# workspace root should carry a size/speed-tuned release profile, e.g.
+#   [profile.release]
+#   opt-level = "z"; lto = true; codegen-units = 1; panic = "abort"; strip = true
+# That belongs in the workspace Cargo.toml (not editable here — owned elsewhere).
+
+[lib]
+name = "voli_shim"
+path = "src/lib.rs"
+
 [[bin]]
 name = "voli-shim"
-path = "src/main.rs"
+path = "src/bin/voli-shim.rs"
+
+[[bin]]
+name = "voli-shim-gui"
+path = "src/bin/voli-shim-gui.rs"
+
+[[test]]
+name = "chain"
+path = "tests/chain.rs"
+harness = false
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }

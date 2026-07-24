@@ -5,10 +5,10 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Package kind. Only `App` is wired in v1; `Mcp`/`Skill` are v2 (spec §11 phase 3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     App,
@@ -17,7 +17,7 @@ pub enum Kind {
 }
 
 /// A per-architecture download source.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub url: String,
@@ -25,7 +25,7 @@ pub struct Source {
 }
 
 /// Sources keyed by architecture. At least one arch must be present.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Sources {
     pub x64: Option<Source>,
@@ -34,7 +34,7 @@ pub struct Sources {
 
 /// A shim to create. Either a bare relative path (`"rg.exe"`) or the table form
 /// `{ name = "t2", path = "tool2.exe", args = "--flag" }`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Bin {
     Path(String),
@@ -54,10 +54,30 @@ impl Bin {
             Bin::Table { path, .. } => path,
         }
     }
+
+    /// The base name for the generated `<name>.shim` / `<name>.exe` pair.
+    /// Table form uses its explicit `name`; bare paths use the file stem.
+    pub fn shim_name(&self) -> String {
+        match self {
+            Bin::Table { name, .. } => name.clone(),
+            Bin::Path(p) => std::path::Path::new(p)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.clone()),
+        }
+    }
+
+    /// Optional args to prepend, written as line 2 of the `.shim` file.
+    pub fn args(&self) -> Option<&str> {
+        match self {
+            Bin::Table { args, .. } => args.as_deref(),
+            Bin::Path(_) => None,
+        }
+    }
 }
 
 /// The full package manifest.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: String,
