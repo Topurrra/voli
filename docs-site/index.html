@@ -12,7 +12,7 @@
   <meta property="og:site_name" content="voli">
   <meta property="og:title" content="voli — the bear that delivers">
   <meta property="og:description"
-    content="A fast, no-admin package manager for Windows. One line to install, zero scripts, clean uninstalls, 950+ packages.">
+    content="A fast, no-admin package manager for Windows. One line to install, zero scripts, clean uninstalls, thousands of packages.">
   <meta property="og:url" content="https://volibear.dev/">
   <meta property="og:image" content="https://volibear.dev/assets/og.jpg">
   <meta property="og:image:width" content="1200">
@@ -1642,7 +1642,7 @@
       <div class="wrap">
         <div class="search-box">
           <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input class="search-input" id="pkg-search" type="text" placeholder="Search 900+ packages… ( / )" autocomplete="off" spellcheck="false" aria-label="Search packages">
+          <input class="search-input" id="pkg-search" type="text" placeholder="Search packages… ( / )" autocomplete="off" spellcheck="false" aria-label="Search packages">
         </div>
         <p class="search-hint" id="search-hint"></p>
         <div class="search-results" id="search-results"></div>
@@ -2099,10 +2099,9 @@
               </svg>
             </summary>
             <div class="a">
-              <p>Only if there's a portable build. Voli installs portable archives - no MSI/EXE
-                installers and no vendor scripts - so anything that ships as a self-contained zip works great
-                (CLIs, dev tools, portable apps). Big installer-only desktop apps like Chrome aren't a fit today. That's
-                a deliberate trade-off for the no-admin, no-scripts, zero-trace guarantees, not an oversight.</p>
+              <p>Yes, when the app has a portable build or its EXE/MSI can be safely extracted as an archive.
+                Installer archives require 7-Zip, are hash-verified, and are never executed. Apps that require
+                running an installer, a service, or admin access remain unsupported.</p>
             </div>
           </details>
 

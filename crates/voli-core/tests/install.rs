@@ -127,6 +127,38 @@ sha256 = "{sha256}"
     p
 }
 
+fn write_installer_manifest(dir: &Path, sha256: &str) -> PathBuf {
+    let toml = format!(
+        r#"
+name = "ripgrep"
+version = "1.0.0"
+kind = "app"
+extract_dir = "ripgrep-1.0.0"
+bin = ["rg.exe"]
+
+[source.x64]
+url = "https://example.com/setup.exe"
+sha256 = "{sha256}"
+kind = "installer-archive"
+"#
+    );
+    let p = dir.join("installer.toml");
+    fs::write(&p, toml).unwrap();
+    p
+}
+
+fn system_7z_available() -> bool {
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).any(|dir| dir.join("7z.exe").is_file()))
+        .unwrap_or(false)
+        || [
+            r"C:\Program Files\7-Zip\7z.exe",
+            r"C:\Program Files (x86)\7-Zip\7z.exe",
+        ]
+        .iter()
+        .any(|path| Path::new(path).is_file())
+}
+
 /// Recursively snapshot a tree as relative-path -> Some(bytes) for files or
 /// None for dirs. Used to prove rollback leaves the root byte-identical.
 fn snapshot(root: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
@@ -420,6 +452,28 @@ fn happy_path_install_7z() {
 
     let staging: Vec<_> = fs::read_dir(root.join("cache")).unwrap().collect();
     assert!(staging.is_empty(), "cache should have no staging dirs");
+}
+
+#[test]
+fn installer_archive_extracts_and_uninstalls_cleanly() {
+    if !system_7z_available() {
+        eprintln!("skipped: 7-Zip is not installed");
+        return;
+    }
+
+    let td = setup();
+    let root = td.path();
+    let archive_bytes = ripgrep_7z();
+    let archive = root.join("setup.exe");
+    fs::write(&archive, &archive_bytes).unwrap();
+    let manifest = write_installer_manifest(root, &sha256_hex(&archive_bytes));
+
+    install_local(&manifest, &archive, root).expect("installer archive should extract");
+    assert!(root.join("apps/ripgrep/current/rg.exe").is_file());
+
+    uninstall("ripgrep", root, true).unwrap();
+    assert!(!root.join("apps/ripgrep").exists());
+    assert!(!root.join("shims/rg.shim").exists());
 }
 
 #[test]

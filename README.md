@@ -18,9 +18,8 @@ The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else - read it first
 if you like: [`install.ps1`](install.ps1).
 
-> **Status: early development.** The core works - `voli install ripgrep`
-> downloads from the signed registry, installs, and runs - but nothing is
-> released yet and everything may change. Don't depend on it before v0.1.
+> **Status: v0.4.0, still pre-1.0.** The core workflow is released and working,
+> but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)
 
@@ -35,7 +34,7 @@ if you like: [`install.ps1`](install.ps1).
 ## Commands
 
 ```
-voli install ripgrep fd fzf     # from the registry (935 packages and growing)
+voli install ripgrep fd fzf     # from the signed registry
 voli install ripgrep@15.2.0     # pin a version
 voli uninstall ripgrep          # zero trace
 voli update                     # refresh the signed index (~250 KB)
@@ -50,13 +49,15 @@ voli doctor                     # health checks
 
 ## How it works
 
-Portable archives only - no MSI/EXE installers, no vendor install scripts.
-Apps live in versioned directories under your user profile; tiny shims on a
-single user-PATH entry point at the current version through a junction, so
-upgrades are an atomic flip and never break a running program. Every mutation
-(files, shims, env vars) is recorded in a local ledger, and uninstall replays
-it backwards - that's the zero-trace guarantee, by construction rather than
-by promise.
+Portable archives are extracted directly. Explicit `installer-archive` sources
+may use a locally installed 7-Zip to extract an EXE/MSI as a container; the
+installer is never executed. Vendor scripts and installers that must run remain
+unsupported. Apps live in versioned directories under your user profile; tiny
+shims on a single user-PATH entry point at the current version through a
+junction, so upgrades are an atomic flip and never break a running program.
+Every mutation (files, shims, env vars) is recorded in a local ledger, and
+uninstall replays it backwards - that's the zero-trace guarantee, by
+construction rather than by promise.
 
 The package index is a signed sqlite snapshot fetched over HTTP - updating it
 is one small download, not a git clone. Registry:

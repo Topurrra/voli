@@ -1,5 +1,4 @@
-//! voli CLI (spec §9). Phase 1 step 1: every v1 subcommand exists as a stub that
-//! prints "not implemented yet" and exits with code 2.
+//! voli command-line application.
 
 mod cmd_index;
 mod cmd_install;

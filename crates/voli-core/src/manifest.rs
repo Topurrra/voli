@@ -16,6 +16,18 @@ pub enum Kind {
     Skill,
 }
 
+/// How a source payload is handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceKind {
+    /// Regular archive (zip/7z/tar.gz) — extracted directly.
+    #[default]
+    Archive,
+    /// Installer binary (.exe/.msi) — extracted with 7-Zip (no-execute),
+    /// never run. Hash-verified before extraction.
+    InstallerArchive,
+}
+
 /// A per-architecture download source.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +40,9 @@ pub struct Source {
     /// Additional archives extracted into subdirectories of the version dir.
     #[serde(default)]
     pub extra: Vec<ExtraSource>,
+    /// How the payload is handled (default: archive).
+    #[serde(default)]
+    pub kind: SourceKind,
 }
 
 impl Source {
@@ -414,6 +429,21 @@ sha256 = "{hash}"
             hash = "c".repeat(64),
             extra = extra,
         )
+    }
+
+    #[test]
+    fn source_kind_defaults_and_parses_installer_archive() {
+        let regular = Manifest::from_toml_str(&minimal("")).unwrap();
+        assert_eq!(regular.source.x64.unwrap().kind, SourceKind::Archive);
+
+        let installer = Manifest::from_toml_str(&minimal(
+            "[source.arm64]\nurl = \"https://example.com/setup.exe\"\nsha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\nkind = \"installer-archive\"",
+        ))
+        .unwrap();
+        assert_eq!(
+            installer.source.arm64.unwrap().kind,
+            SourceKind::InstallerArchive
+        );
     }
 
     #[test]

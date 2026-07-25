@@ -26,7 +26,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
-use crate::manifest::{Manifest, ManifestError};
+use crate::manifest::{Manifest, ManifestError, SourceKind};
 use crate::paths::Paths;
 use crate::state::State;
 
@@ -168,6 +168,10 @@ pub enum InstallError {
     ZipSlip(String),
     #[error("unsupported archive type: {0} (expected .zip, .tar.gz, or .7z)")]
     UnsupportedArchive(String),
+    #[error(
+        "7-Zip not found — required to extract installer archives (.exe/.msi). Install 7-Zip or add it to PATH."
+    )]
+    SevenZipNotFound,
     #[error("extract_dir '{0}' not found in archive after extraction")]
     ExtractDirMissing(String),
     #[error("package '{0}' is already installed; uninstall it first")]
@@ -243,7 +247,8 @@ pub fn install_manifest(
     }
 
     // Perform every filesystem mutation, rolling those back internally on error.
-    let (mut actions, mut report) = do_install_fs(&paths, manifest, archive_path, extras)?;
+    let (mut actions, mut report) =
+        do_install_fs(&paths, manifest, source.kind, archive_path, extras)?;
 
     // Env consent flow (spec §8): resolve `{dir}` -> apps\<name>\current, prompt
     // (via `consent`), and — if applied — append EnvSet/PathAdded to the SAME
@@ -348,11 +353,19 @@ fn apply_env(
 fn do_install_fs(
     paths: &Paths,
     manifest: &Manifest,
+    source_kind: SourceKind,
     archive_path: &Path,
     extras: &[(PathBuf, String)],
 ) -> Result<(Vec<Action>, InstallReport)> {
     let mut actions: Vec<Action> = Vec::new();
-    match install_fs_inner(paths, manifest, archive_path, extras, &mut actions) {
+    match install_fs_inner(
+        paths,
+        manifest,
+        source_kind,
+        archive_path,
+        extras,
+        &mut actions,
+    ) {
         Ok(report) => Ok((actions, report)),
         Err(e) => {
             // Only filesystem actions exist at this point (env is applied later,
@@ -366,6 +379,7 @@ fn do_install_fs(
 fn install_fs_inner(
     paths: &Paths,
     manifest: &Manifest,
+    source_kind: SourceKind,
     archive_path: &Path,
     extras: &[(PathBuf, String)],
     actions: &mut Vec<Action>,
@@ -381,7 +395,11 @@ fn install_fs_inner(
         .tempdir_in(paths.cache())?;
     let extract_root = staging.path().join("x");
     fs::create_dir_all(&extract_root)?;
-    extract_archive(archive_path, &extract_root)?;
+    if source_kind == SourceKind::InstallerArchive {
+        extract_installer(archive_path, &extract_root)?;
+    } else {
+        extract_archive(archive_path, &extract_root)?;
+    }
 
     // 2. Apply extract_dir stripping.
     let move_src = match &manifest.extract_dir {
@@ -738,17 +756,23 @@ pub fn upgrade_install(
     // Install the new version's filesystem payload (version dir, persist
     // junctions, current junction -> new, shims). Reuses the install engine.
     let mut new_actions: Vec<Action> = Vec::new();
-    let new_report =
-        match install_fs_inner(&paths, manifest_new, archive_path, extras, &mut new_actions) {
-            Ok(r) => r,
-            Err(e) => {
-                // Undo the partial new install and put `current` back on the old
-                // version so running tools (and shims) keep resolving.
-                rollback("", &new_actions);
-                let _ = junction::create(&old_version_dir, &old_current);
-                return Err(e);
-            }
-        };
+    let new_report = match install_fs_inner(
+        &paths,
+        manifest_new,
+        source.kind,
+        archive_path,
+        extras,
+        &mut new_actions,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            // Undo the partial new install and put `current` back on the old
+            // version so running tools (and shims) keep resolving.
+            rollback("", &new_actions);
+            let _ = junction::create(&old_version_dir, &old_current);
+            return Err(e);
+        }
+    };
 
     // Remove shims for bins that vanished in the new version (bin-set change).
     let new_bases: std::collections::HashSet<String> =
@@ -984,6 +1008,83 @@ fn create_shortcut(link_path: &Path, target: &Path, working_dir: &Path) -> io::R
 
 // ---- archive extraction (zip-slip safe) ----------------------------------
 
+/// Find 7z.exe: PATH, then common install locations.
+fn find_7z() -> Option<PathBuf> {
+    // PATH lookup.
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join("7z.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    // Common install locations.
+    for dir in [r"C:\Program Files\7-Zip", r"C:\Program Files (x86)\7-Zip"] {
+        let candidate = Path::new(dir).join("7z.exe");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Extract an installer (.exe/.msi) using 7-Zip — pure-read, no execution.
+/// 7z opens NSIS, Inno Setup, and MSI containers as archives.
+fn extract_installer(installer: &Path, dest: &Path) -> Result<()> {
+    let sz = find_7z().ok_or(InstallError::SevenZipNotFound)?;
+
+    // Match the built-in extractors' containment rule before writing anything.
+    let listing = std::process::Command::new(&sz)
+        .args(["l", "-slt", "-ba", "-sccUTF-8"])
+        .arg(installer)
+        .output()?;
+    if !listing.status.success() {
+        return Err(InstallError::Io(io::Error::other(format!(
+            "7z listing failed: {}{}",
+            String::from_utf8_lossy(&listing.stderr),
+            String::from_utf8_lossy(&listing.stdout)
+        ))));
+    }
+    validate_installer_listing(&String::from_utf8_lossy(&listing.stdout))?;
+
+    let mut output_dir = std::ffi::OsString::from("-o");
+    output_dir.push(dest);
+    let output = std::process::Command::new(&sz)
+        .arg("x")
+        .arg(output_dir)
+        .arg("-y")
+        .arg(installer)
+        .output()?;
+    if !output.status.success() {
+        return Err(InstallError::Io(io::Error::other(format!(
+            "7z extraction failed: {}{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        ))));
+    }
+    Ok(())
+}
+
+fn validate_installer_listing(listing: &str) -> Result<()> {
+    let mut found = false;
+    for raw in listing
+        .lines()
+        .filter_map(|line| line.strip_prefix("Path = "))
+    {
+        found = true;
+        if safe_rel(raw).is_none() {
+            return Err(InstallError::ZipSlip(raw.to_string()));
+        }
+    }
+    if !found {
+        return Err(InstallError::Io(io::Error::other(
+            "7z listing returned no archive entries",
+        )));
+    }
+    Ok(())
+}
+
 fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
     let lower = archive
         .file_name()
@@ -1108,5 +1209,12 @@ mod tests {
         assert_eq!(safe_rel("/etc/passwd"), None);
         assert_eq!(safe_rel("C:\\windows\\x"), None);
         assert_eq!(safe_rel(""), None);
+    }
+
+    #[test]
+    fn installer_listing_rejects_unsafe_paths() {
+        validate_installer_listing("Path = app/app.exe\n").unwrap();
+        let err = validate_installer_listing("Path = ..\\escape.exe\n").unwrap_err();
+        assert!(matches!(err, InstallError::ZipSlip(_)));
     }
 }

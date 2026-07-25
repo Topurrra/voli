@@ -132,7 +132,7 @@ try {
 catch {
     Write-Host ''
     if ($_.Exception.Message -match '404' -or $_.Exception.Message -match 'Not Found') {
-        Write-Warn2 'No published voli release found yet (404). Try again once v0.1 ships.'
+        Write-Warn2 'No published voli release was found (404). Check https://github.com/Topurrra/voli/releases.'
     } else {
         Write-Host "Install failed: $($_.Exception.Message)" -ForegroundColor Red
     }

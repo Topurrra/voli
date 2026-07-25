@@ -29,7 +29,9 @@ pub use install::{
     cleanup_versions, dir_size, install_local, install_manifest, skip_env, uninstall,
     uninstall_env, upgrade_install,
 };
-pub use manifest::{Bin, ExtraSource, Kind, Manifest, ManifestError, Shortcut, Source, WriteFile};
+pub use manifest::{
+    Bin, ExtraSource, Kind, Manifest, ManifestError, Shortcut, Source, SourceKind, WriteFile,
+};
 pub use paths::Paths;
 #[cfg(windows)]
 pub use remote::{
