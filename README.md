@@ -2,7 +2,7 @@
   <img src="assets/logo-forest-git.png" width="420" alt="voli — the bear that delivers">
 </p>
 
-<h1 align="center">voli</h1>
+<h1 align="center">Voli · The Bear That Delivers</h1>
 
 <p align="center">⚡ A fast, no-admin package manager for Windows. One binary, clean uninstalls, zero scripts.</p>
 
