@@ -92,6 +92,25 @@ fn voli(root: &Path, subkey: &str, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn delete_commands_are_primary_and_old_names_remain_aliases() {
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path();
+    let subkey = "Software\\voli-test-cli\\delete-aliases";
+    let help = voli(root, subkey, &["--help"]);
+    let stdout = String::from_utf8_lossy(&help.stdout);
+
+    assert!(stdout.contains("\n  delete "));
+    assert!(stdout.contains("\n  self-delete "));
+    assert!(!stdout.contains("\n  uninstall "));
+    assert!(!stdout.contains("\n  self-uninstall "));
+
+    for command in ["delete", "uninstall", "self-delete", "self-uninstall"] {
+        let output = voli(root, subkey, &[command, "--help"]);
+        assert!(output.status.success(), "{command} should parse");
+    }
+}
+
+#[test]
 fn non_tty_install_auto_applies_env_and_uninstall_restores() {
     let td = tempfile::tempdir().unwrap();
     let root = td.path();
@@ -137,7 +156,7 @@ fn non_tty_install_auto_applies_env_and_uninstall_restores() {
     assert!(String::from_utf8_lossy(&env_out.stdout).contains("JAVA_HOME"));
 
     // Uninstall restores prior (JAVA_HOME was absent => deleted).
-    let un = voli(root, sk, &["uninstall", "app"]);
+    let un = voli(root, sk, &["delete", "app"]);
     assert!(un.status.success());
     assert_eq!(
         env::get(sk, "JAVA_HOME").unwrap(),

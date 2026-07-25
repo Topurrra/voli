@@ -41,8 +41,8 @@ struct Cli {
 enum Command {
     /// Install one or more packages (pkg[@version] …).
     ///
-    /// In this build only local installs are wired: pass a path to a
-    /// `<name>.toml` manifest together with `--archive <path>`.
+    /// Installs from the signed index by default. To use a local manifest, pass
+    /// `<name>.toml` together with `--archive <path>`.
     Install {
         #[arg(required = true)]
         packages: Vec<String>,
@@ -53,8 +53,9 @@ enum Command {
         #[arg(long)]
         no_env: bool,
     },
-    /// Uninstall one or more packages.
-    Uninstall {
+    /// Delete one or more packages.
+    #[command(alias = "uninstall")]
+    Delete {
         #[arg(required = true)]
         packages: Vec<String>,
         /// Also remove persist dirs (user data). Off by default.
@@ -122,8 +123,9 @@ enum Command {
     },
     /// Update voli itself.
     SelfUpdate,
-    /// Remove voli and all installed packages completely (zero trace).
-    SelfUninstall,
+    /// Delete voli and all installed packages completely (zero trace).
+    #[command(alias = "self-uninstall")]
+    SelfDelete,
 }
 
 #[derive(Subcommand)]
@@ -163,7 +165,7 @@ fn main() {
             cli.yes,
             *no_env,
         ),
-        Command::Uninstall { packages, purge } => cmd_uninstall(packages, *purge),
+        Command::Delete { packages, purge } => cmd_delete(packages, *purge),
         Command::List => cmd_list(cli.json),
         Command::Upgrade { packages, all } => cmd_upgrade(packages, *all, cli.json),
         Command::Pin { package } => cmd_pin(package, true),
@@ -181,7 +183,7 @@ fn main() {
         Command::Search { query } => cmd_index::run_search(&root(), query, cli.json),
         Command::Info { package } => cmd_index::run_info(&root(), package, cli.json),
         Command::SelfUpdate => cmd_self_update(),
-        Command::SelfUninstall => cmd_self_uninstall(cli.yes),
+        Command::SelfDelete => cmd_self_delete(cli.yes),
     };
     std::process::exit(code);
 }
@@ -215,19 +217,19 @@ fn root() -> PathBuf {
     }
 }
 
-fn cmd_uninstall(packages: &[String], purge: bool) -> i32 {
+fn cmd_delete(packages: &[String], purge: bool) -> i32 {
     let root = root();
     let mut code = 0;
     for name in packages {
         match uninstall(name, &root, purge) {
             Ok(r) => {
-                println!("uninstalled {} {}", r.name, r.version);
+                println!("deleted {} {}", r.name, r.version);
                 if r.kept_persist {
                     println!("  kept persist data (use --purge to remove it)");
                 }
             }
             Err(e) => {
-                eprintln!("error: uninstall '{name}' failed: {e}");
+                eprintln!("error: delete '{name}' failed: {e}");
                 code = EXIT_ERROR;
             }
         }
@@ -893,7 +895,7 @@ fn replace_binary(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn cmd_self_uninstall(auto_yes: bool) -> i32 {
+fn cmd_self_delete(auto_yes: bool) -> i32 {
     let root = root();
     let paths = Paths::at(&root);
 
@@ -962,8 +964,8 @@ fn cmd_self_uninstall(auto_yes: bool) -> i32 {
     let env_subkey = env_subkey();
     for name in &pkgs {
         match uninstall(name, &root, true) {
-            Ok(_) => println!("  uninstalled {name}"),
-            Err(e) => eprintln!("  warning: uninstall {name} failed: {e}"),
+            Ok(_) => println!("  deleted {name}"),
+            Err(e) => eprintln!("  warning: delete {name} failed: {e}"),
         }
     }
 

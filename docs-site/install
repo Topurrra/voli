@@ -11,7 +11,7 @@
 #
 #   No telemetry. No analytics. No hidden prompts. No writes anywhere except
 #   the temp dir and whatever `voli.exe setup` does (all under your user
-#   profile, all reversible with `voli uninstall`). Read it top to bottom —
+#   profile, all reversible with `voli delete`). Read it top to bottom —
 #   that is the whole thing.
 #
 # Usage:

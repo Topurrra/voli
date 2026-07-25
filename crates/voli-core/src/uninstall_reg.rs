@@ -3,7 +3,7 @@
 //! On every package install, writes a key under
 //! `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\voli.<name>`
 //! so the package appears in Windows Settings → Apps with a working
-//! Uninstall button that routes through `voli uninstall`.
+//! Uninstall button that routes through `voli delete`.
 //!
 //! The base subkey is injectable (`subkey` parameter): production passes
 //! [`UNINSTALL_BASE`]; tests pass a throwaway subkey so they never touch
@@ -44,7 +44,7 @@ pub fn write_key(
     let (key, _) =
         RegKey::predef(HKEY_CURRENT_USER).create_subkey_with_flags(&subkey, KEY_WRITE)?;
 
-    let uninstall = format!("\"{}\" uninstall {name}", voli_exe.display());
+    let uninstall = format!("\"{}\" delete {name}", voli_exe.display());
     let quiet = format!("{uninstall} --yes");
 
     key.set_value("DisplayName", &format!("{name} (voli)"))?;
@@ -151,6 +151,8 @@ mod tests {
         assert_eq!(no_mod, 1);
         let size: u32 = key.get_value("EstimatedSize").unwrap();
         assert_eq!(size, 4096);
+        let command: String = key.get_value("UninstallString").unwrap();
+        assert_eq!(command, r#""C:\voli\bin\voli.exe" delete ripgrep"#);
 
         delete_key(&base, "ripgrep").unwrap();
         assert!(!key_exists(&base, "ripgrep"));

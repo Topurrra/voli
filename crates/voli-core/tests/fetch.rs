@@ -25,6 +25,8 @@ enum RangeMode {
     Honour,
     /// Ignore `Range` and always return the full body with 200.
     Ignore,
+    /// Stream the body without a `Content-Length` header.
+    NoLength,
 }
 
 /// A one-file HTTP server. Serves `body` at `/file.bin`, counting requests.
@@ -71,6 +73,16 @@ impl Server {
                         let resp = tiny_http::Response::from_data(slice.to_vec())
                             .with_status_code(206)
                             .with_header(header("Content-Range", &cr));
+                        let _ = req.respond(resp);
+                    }
+                    (RangeMode::NoLength, _) => {
+                        let resp = tiny_http::Response::new(
+                            tiny_http::StatusCode(200),
+                            Vec::new(),
+                            std::io::Cursor::new(body.to_vec()),
+                            None,
+                            None,
+                        );
                         let _ = req.respond(resp);
                     }
                     _ => {
@@ -145,6 +157,26 @@ fn happy_path_downloads_and_verifies() {
         .filter(|n| n.to_string_lossy().ends_with(".part"))
         .collect();
     assert!(leftovers.is_empty(), "part file should be gone");
+}
+
+#[test]
+fn unknown_length_reports_final_size_at_eof() {
+    let body = body_fixture();
+    let sha = sha256_hex(&body);
+    let srv = Server::start(body.clone(), RangeMode::NoLength);
+    let cache = tempfile::tempdir().unwrap();
+    let mut progress = Vec::new();
+
+    download(&srv.url(), &sha, cache.path(), &mut |done, total| {
+        progress.push((done, total));
+    })
+    .unwrap();
+
+    assert!(progress.iter().any(|(_, total)| total.is_none()));
+    assert_eq!(
+        progress.last(),
+        Some(&(body.len() as u64, Some(body.len() as u64)))
+    );
 }
 
 #[test]

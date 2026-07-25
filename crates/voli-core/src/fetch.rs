@@ -151,6 +151,9 @@ pub fn download(
         done += n as u64;
         progress(done, total);
     }
+    if total.is_none() {
+        progress(done, Some(done));
+    }
     file.flush()?;
     drop(file);
 

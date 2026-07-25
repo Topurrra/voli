@@ -1717,8 +1717,8 @@
                 <circle cx="100" cy="48" r="4" fill="#ED5126"/>
               </svg>
             </div>
-            <h3>Zero-trace uninstall</h3>
-            <p><code>voli uninstall x</code> leaves nothing behind - directory, shims, env vars and PATH entries
+            <h3>Zero-trace removal</h3>
+            <p><code>voli delete x</code> leaves nothing behind - directory, shims, env vars and PATH entries
               all removed, replayed backwards from the ledger.</p>
           </div>
 
@@ -1832,7 +1832,7 @@
             <pre><span class="p">PS&gt;</span> voli install oven-sh.bun
   <span class="mut">env</span>  BUN_INSTALL  <span class="mut">&rarr; add to user PATH? [y/N]</span> y
   <span class="ok">&#10003;</span> set BUN_INSTALL <span class="mut">(user)</span>
-<span class="p">PS&gt;</span> voli uninstall oven-sh.bun
+<span class="p">PS&gt;</span> voli delete oven-sh.bun
   <span class="ok">&#10003;</span> removed BUN_INSTALL - <span class="mut">replayed from ledger</span></pre>
           </div>
         </div>
@@ -1840,7 +1840,7 @@
           <span class="eyebrow">Environment</span>
           <h2>Env vars with <span class="accent">consent</span> + cleanup.</h2>
           <p>When a package wants an environment variable, voli asks - it never edits your environment behind your
-            back. And because every change is written to the ledger, uninstall takes it back out again. Nothing lingers.
+            back. And because every change is written to the ledger, <code>delete</code> takes it back out again. Nothing lingers.
           </p>
           <div class="fx-btns">
             <a class="btn btn-cream btn-sm" href="#faq">How it works</a>
@@ -1874,7 +1874,7 @@
               Transactional per package.</span>
           </div>
           <div class="cmd-row">
-            <code><span class="tok">voli uninstall</span> <span class="arg">&lt;pkg&gt; &hellip;</span></code>
+            <code><span class="tok">voli delete</span> <span class="arg">&lt;pkg&gt; &hellip;</span></code>
             <span class="desc">Remove a package and everything it touched - zero trace, replayed from the
               ledger.</span>
           </div>
@@ -1926,8 +1926,9 @@
             <span class="desc">Read or set configuration such as the install root.</span>
           </div>
           <div class="cmd-row">
-            <code><span class="tok">voli setup</span> / <span class="tok">self-update</span></code>
-            <span class="desc">Self-install onto the user PATH, and keep voli itself up to date.</span>
+            <code><span class="tok">voli setup</span> / <span class="tok">self-update</span> /
+              <span class="tok">self-delete</span></code>
+            <span class="desc">Self-install onto the user PATH, keep voli up to date, or delete it completely.</span>
           </div>
         </div>
       </div>
@@ -2106,14 +2107,14 @@
           </details>
 
           <details class="qa">
-            <summary>How do I uninstall Voli itself?
+            <summary>How do I delete Voli itself?
               <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M6 9l6 6 6-6"></path>
               </svg>
             </summary>
             <div class="a">
-              <p>The same way it installs - cleanly. Voli tracks its own PATH entry and install directory in the
+              <p>Run <code>voli self-delete</code>. Voli tracks its own PATH entry and install directory in the
                 ledger, so removing its root folder and the single user-PATH entry it added takes everything with it. No
                 registry residue, nothing left in Program Files, because it was never there in the first place.</p>
             </div>

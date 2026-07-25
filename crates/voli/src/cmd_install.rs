@@ -9,6 +9,7 @@
 //! `--json` swaps the human output (progress bars + confirmations) for a single
 //! machine report.
 
+use std::cell::RefCell;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::time::Duration;
@@ -143,14 +144,27 @@ fn install_network(packages: &[String], root: &Path, json: bool, auto: bool, no_
     let mut agg = RemoteReport::default();
     let mut failure: Option<(String, RemoteError)> = None;
     let subkey = env::env_subkey();
-    let mut consent = env_consent(auto, no_env);
 
     for (i, spec) in packages.iter().enumerate() {
         let (name, version) = parse_spec(spec);
-        let mut reporter = Reporter::new(json, i + 1, packages.len());
-        match install_remote_env(name, version, root, &subkey, &mut consent, &mut |s| {
-            reporter.step(s)
-        }) {
+        let reporter = RefCell::new(Reporter::new(json, i + 1, packages.len()));
+        let result = {
+            let mut consent = env_consent(auto, no_env);
+            let mut visible_consent = |name: &str, resolved: &[(String, String)]| {
+                reporter.borrow_mut().pause_for_prompt();
+                consent(name, resolved)
+            };
+            install_remote_env(
+                name,
+                version,
+                root,
+                &subkey,
+                &mut visible_consent,
+                &mut |step| reporter.borrow_mut().step(step),
+            )
+        };
+        let mut reporter = reporter.into_inner();
+        match result {
             Ok(mut report) => {
                 agg.installed.append(&mut report.installed);
                 agg.skipped.append(&mut report.skipped);
@@ -305,6 +319,12 @@ impl Reporter {
                     self.prefix
                 );
             }
+        }
+    }
+
+    fn pause_for_prompt(&mut self) {
+        if let Some(pb) = self.bar.take() {
+            pb.finish_and_clear();
         }
     }
 }

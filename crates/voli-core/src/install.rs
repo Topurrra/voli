@@ -174,7 +174,7 @@ pub enum InstallError {
     SevenZipNotFound,
     #[error("extract_dir '{0}' not found in archive after extraction")]
     ExtractDirMissing(String),
-    #[error("package '{0}' is already installed; uninstall it first")]
+    #[error("package '{0}' is already installed; delete it first")]
     AlreadyInstalled(String),
     #[error("package '{0}' is not installed")]
     NotInstalled(String),
