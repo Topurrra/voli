@@ -115,7 +115,7 @@ fn install_local_path(
         &mut consent,
     ) {
         Ok(r) => {
-            println!("installed {} {}", r.name, r.version);
+            println!("✓ installed {} {}", r.name, r.version);
             println!("  files: {}", r.version_dir.display());
             for shim in &r.shims {
                 println!("  shim:  {}", shim.display());
@@ -145,9 +145,9 @@ fn install_network(packages: &[String], root: &Path, json: bool, auto: bool, no_
     let subkey = env::env_subkey();
     let mut consent = env_consent(auto, no_env);
 
-    for spec in packages {
+    for (i, spec) in packages.iter().enumerate() {
         let (name, version) = parse_spec(spec);
-        let mut reporter = Reporter::new(json);
+        let mut reporter = Reporter::new(json, i + 1, packages.len());
         match install_remote_env(name, version, root, &subkey, &mut consent, &mut |s| {
             reporter.step(s)
         }) {
@@ -156,6 +156,9 @@ fn install_network(packages: &[String], root: &Path, json: bool, auto: bool, no_
                 agg.skipped.append(&mut report.skipped);
             }
             Err(e) => {
+                if let Some(pb) = reporter.bar.take() {
+                    pb.finish_and_clear();
+                }
                 failure = Some((name.to_string(), e));
                 break; // a failure stops the chain (spec §9)
             }
@@ -178,12 +181,25 @@ fn install_network(packages: &[String], root: &Path, json: bool, auto: bool, no_
 /// In `--json` mode it does nothing — the report is printed once at the end.
 struct Reporter {
     json: bool,
+    prefix: String,
     bar: Option<ProgressBar>,
+    package: Option<String>,
+    installing: bool,
 }
 
 impl Reporter {
-    fn new(json: bool) -> Reporter {
-        Reporter { json, bar: None }
+    fn new(json: bool, position: usize, total: usize) -> Reporter {
+        Reporter {
+            json,
+            prefix: if total > 1 {
+                format!("[{position}/{total}] ")
+            } else {
+                String::new()
+            },
+            bar: None,
+            package: None,
+            installing: false,
+        }
     }
 
     fn step(&mut self, step: Step) {
@@ -192,20 +208,36 @@ impl Reporter {
         }
         match step {
             Step::Downloading { name, version } => {
+                let package = format!("{name} {version}");
                 let pb = ProgressBar::new_spinner();
                 pb.enable_steady_tick(Duration::from_millis(100));
                 pb.set_style(
                     ProgressStyle::with_template("{spinner} {msg}")
                         .unwrap_or_else(|_| ProgressStyle::default_spinner()),
                 );
-                pb.set_message(format!("downloading {name} {version}"));
+                pb.set_message(format!("{}downloading {package}", self.prefix));
                 self.bar = Some(pb);
+                self.package = Some(package);
+                self.installing = false;
             }
             Step::Progress { done, total } => {
                 if let Some(pb) = &self.bar {
                     match total {
                         Some(total) => {
-                            if pb.length() != Some(total) {
+                            if done >= total {
+                                if !self.installing {
+                                    pb.set_style(
+                                        ProgressStyle::with_template("{spinner} {msg}")
+                                            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+                                    );
+                                    pb.set_message(format!(
+                                        "{}installing {}",
+                                        self.prefix,
+                                        self.package.as_deref().unwrap_or("package")
+                                    ));
+                                    self.installing = true;
+                                }
+                            } else if self.installing || pb.length() != Some(total) {
                                 pb.set_length(total);
                                 pb.set_style(
                                     ProgressStyle::with_template(
@@ -214,10 +246,26 @@ impl Reporter {
                                     .unwrap_or_else(|_| ProgressStyle::default_bar())
                                     .progress_chars("=> "),
                                 );
+                                pb.set_message(format!(
+                                    "{}downloading {}",
+                                    self.prefix,
+                                    self.package.as_deref().unwrap_or("package")
+                                ));
+                                self.installing = false;
                             }
                             pb.set_position(done);
                         }
-                        None => pb.set_position(done),
+                        None => {
+                            if self.installing {
+                                pb.set_message(format!(
+                                    "{}downloading {}",
+                                    self.prefix,
+                                    self.package.as_deref().unwrap_or("package")
+                                ));
+                                self.installing = false;
+                            }
+                            pb.set_position(done);
+                        }
                     }
                 }
             }
@@ -225,7 +273,9 @@ impl Reporter {
                 if let Some(pb) = self.bar.take() {
                     pb.finish_and_clear();
                 }
-                println!("installed {} {}", r.name, r.version);
+                self.package = None;
+                self.installing = false;
+                println!("{}✓ installed {} {}", self.prefix, r.name, r.version);
                 for shim in &r.shims {
                     println!("  shim: {}", shim.display());
                 }
@@ -235,7 +285,12 @@ impl Reporter {
                 if let Some(pb) = self.bar.take() {
                     pb.finish_and_clear();
                 }
-                println!("{name} {version} already installed — skipped");
+                self.package = None;
+                self.installing = false;
+                println!(
+                    "{}✓ {name} {version} already installed - skipped",
+                    self.prefix
+                );
             }
         }
     }

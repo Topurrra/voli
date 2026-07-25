@@ -5,8 +5,10 @@ mod cmd_install;
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
 use voli_core::{
     Action, Paths, State, Step, UpgradeOutcome, config, env, self_install, uninstall, upgrade,
 };
@@ -333,7 +335,10 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool) -> i32 {
             }
             Ok(UpgradeOutcome::Upgraded(r)) => {
                 if !json {
-                    println!("upgraded {} {} -> {}", r.name, r.from_version, r.to_version);
+                    println!(
+                        "✓ upgraded {} {} -> {}",
+                        r.name, r.from_version, r.to_version
+                    );
                 }
                 results.push(serde_json::json!({
                     "name": r.name,
@@ -605,7 +610,7 @@ fn cmd_setup() -> i32 {
     let root = root();
     match self_install(&root, None, &env_subkey()) {
         Ok(r) => {
-            println!("voli installed to {}", r.bin_dir.display());
+            println!("✓ voli installed to {}", r.bin_dir.display());
             for f in &r.copied {
                 println!("  bin: {f}");
             }
@@ -614,6 +619,9 @@ fn cmd_setup() -> i32 {
                 println!("  open a new shell for the PATH change to take effect.");
             } else {
                 println!("  {} already on PATH", r.shims_dir.display());
+            }
+            if cmd_index::run_update(&root, false) != 0 {
+                eprintln!("voli is installed; run `voli update` once the index is reachable.");
             }
             0
         }
@@ -626,7 +634,20 @@ fn cmd_setup() -> i32 {
 
 const GITHUB_RELEASE_API: &str = "https://api.github.com/repos/Topurrra/voli/releases/latest";
 
+fn stage_spinner(message: String) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.enable_steady_tick(Duration::from_millis(100));
+    pb.set_style(
+        ProgressStyle::with_template("{spinner} {msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+    );
+    pb.set_message(message);
+    pb
+}
+
 fn cmd_self_update() -> i32 {
+    use std::cmp::Ordering;
+
     use sha2::{Digest, Sha256};
 
     let current = env!("CARGO_PKG_VERSION");
@@ -660,9 +681,16 @@ fn cmd_self_update() -> i32 {
 
     let tag = body["tag_name"].as_str().unwrap_or("unknown");
     let latest = tag.trim_start_matches('v');
-    if latest == current {
-        println!("already up to date ({current})");
-        return 0;
+    match voli_core::index::cmp_version(latest, current) {
+        Ordering::Less => {
+            println!("✓ local version {current} is newer than latest release {latest}");
+            return 0;
+        }
+        Ordering::Equal => {
+            println!("✓ already up to date ({current})");
+            return 0;
+        }
+        Ordering::Greater => {}
     }
     println!("updating {current} -> {latest}");
 
@@ -688,7 +716,6 @@ fn cmd_self_update() -> i32 {
     };
 
     // 3. Download the zip.
-    println!("downloading {zip_url} ...");
     let zip_resp = match ureq::get(&zip_url)
         .set("User-Agent", concat!("voli/", env!("CARGO_PKG_VERSION")))
         .call()
@@ -699,31 +726,70 @@ fn cmd_self_update() -> i32 {
             return EXIT_ERROR;
         }
     };
+    let total = zip_resp
+        .header("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok());
+    let download = total.map_or_else(ProgressBar::new_spinner, ProgressBar::new);
+    if total.is_some() {
+        download.set_style(
+            ProgressStyle::with_template("{msg} [{bar:30}] {bytes}/{total_bytes}")
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
+                .progress_chars("=> "),
+        );
+    } else {
+        download.enable_steady_tick(Duration::from_millis(100));
+        download.set_style(
+            ProgressStyle::with_template("{spinner} {msg} {bytes}")
+                .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+        );
+    }
+    download.set_message(format!("downloading voli {latest}"));
     let mut zip_bytes = Vec::new();
-    if let Err(e) = zip_resp.into_reader().read_to_end(&mut zip_bytes) {
+    let read = {
+        let mut reader = download.wrap_read(zip_resp.into_reader());
+        reader.read_to_end(&mut zip_bytes)
+    };
+    download.finish_and_clear();
+    if let Err(e) = read {
         eprintln!("error: reading download: {e}");
         return EXIT_ERROR;
     }
+    println!("✓ downloaded voli {latest}");
 
     // 4. Verify sha256 if a checksums asset exists.
     if let Some(sha_url) = sha_url {
-        if let Ok(sha_resp) = ureq::get(&sha_url)
+        let verifying = stage_spinner("verifying sha256".to_string());
+        let sha_resp = match ureq::get(&sha_url)
             .set("User-Agent", concat!("voli/", env!("CARGO_PKG_VERSION")))
             .call()
         {
-            let expected = sha_resp.into_string().unwrap_or_default();
-            let expected = expected
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let actual = hex::encode(Sha256::digest(&zip_bytes));
-            if actual != expected {
-                eprintln!("error: sha256 mismatch: expected {expected}, got {actual}");
+            Ok(response) => response,
+            Err(e) => {
+                verifying.finish_and_clear();
+                eprintln!("error: checksum download failed: {e}");
                 return EXIT_ERROR;
             }
-            println!("sha256 verified");
+        };
+        let expected = match sha_resp.into_string() {
+            Ok(value) => value,
+            Err(e) => {
+                verifying.finish_and_clear();
+                eprintln!("error: reading checksum: {e}");
+                return EXIT_ERROR;
+            }
+        };
+        let expected = expected
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let actual = hex::encode(Sha256::digest(&zip_bytes));
+        verifying.finish_and_clear();
+        if actual != expected {
+            eprintln!("error: sha256 mismatch: expected {expected}, got {actual}");
+            return EXIT_ERROR;
         }
+        println!("✓ sha256 verified");
     } else {
         eprintln!("warning: no .sha256 asset found; skipping hash verification");
     }
@@ -743,10 +809,12 @@ fn cmd_self_update() -> i32 {
     }
     let extract_dir = td.path().join("extracted");
     std::fs::create_dir_all(&extract_dir).ok();
+    let extracting = stage_spinner(format!("extracting voli {latest}"));
     {
         let file = match std::fs::File::open(&zip_path) {
             Ok(f) => f,
             Err(e) => {
+                extracting.finish_and_clear();
                 eprintln!("error: opening zip: {e}");
                 return EXIT_ERROR;
             }
@@ -754,25 +822,31 @@ fn cmd_self_update() -> i32 {
         let mut archive = match zip::ZipArchive::new(file) {
             Ok(a) => a,
             Err(e) => {
+                extracting.finish_and_clear();
                 eprintln!("error: reading zip: {e}");
                 return EXIT_ERROR;
             }
         };
         if let Err(e) = archive.extract(&extract_dir) {
+            extracting.finish_and_clear();
             eprintln!("error: extracting zip: {e}");
             return EXIT_ERROR;
         }
     }
+    extracting.finish_and_clear();
+    println!("✓ extracted voli {latest}");
 
     // 6. Replace binaries in bin\ using the .new/.old rename dance.
     let root = root();
     let bin_dir = root.join("bin");
     let mut updated = Vec::new();
+    let installing = stage_spinner(format!("installing voli {latest}"));
     for name in ["voli.exe", "voli-shim.exe", "voli-shim-gui.exe"] {
         let src = extract_dir.join(name);
         if src.is_file() {
             let dst = bin_dir.join(name);
             if let Err(e) = replace_binary(&src, &dst) {
+                installing.finish_and_clear();
                 eprintln!("error: replacing {name}: {e}");
                 return EXIT_ERROR;
             }
@@ -781,10 +855,12 @@ fn cmd_self_update() -> i32 {
     }
 
     if updated.is_empty() {
+        installing.finish_and_clear();
         eprintln!("error: no binaries found in the release archive");
         return EXIT_ERROR;
     }
-    println!("updated to {latest}: {}", updated.join(", "));
+    installing.finish_and_clear();
+    println!("✓ updated to {latest}: {}", updated.join(", "));
     0
 }
 

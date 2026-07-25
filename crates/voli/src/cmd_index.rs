@@ -6,7 +6,9 @@
 //! `i32` exit code returned).
 
 use std::path::Path;
+use std::time::Duration;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use voli_core::config::Config;
 use voli_core::index::{self, IndexError, UpdateOutcome};
 
@@ -30,7 +32,21 @@ fn fail(context: &str, e: IndexError) -> i32 {
 // ---- voli update ----------------------------------------------------------
 
 pub fn run_update(root: &Path, json: bool) -> i32 {
-    match index::update(root, &index_url(root)) {
+    let spinner = (!json).then(|| {
+        let pb = ProgressBar::new_spinner();
+        pb.enable_steady_tick(Duration::from_millis(100));
+        pb.set_style(
+            ProgressStyle::with_template("{spinner} {msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+        );
+        pb.set_message("refreshing package index");
+        pb
+    });
+    let result = index::update(root, &index_url(root));
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+    match result {
         Ok(outcome) => {
             print_update(&outcome, json);
             match outcome {
@@ -68,10 +84,10 @@ fn print_update(outcome: &UpdateOutcome, json: bool) {
     }
     match outcome {
         UpdateOutcome::UpToDate { epoch } => {
-            println!("index is already up to date (epoch {epoch})");
+            println!("✓ index is already up to date (epoch {epoch})");
         }
         UpdateOutcome::Updated { epoch, size } => {
-            println!("updated index to epoch {epoch} ({size} bytes)");
+            println!("✓ updated index to epoch {epoch} ({size} bytes)");
         }
         UpdateOutcome::Offline {
             local_epoch: Some(_),
