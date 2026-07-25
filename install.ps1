@@ -36,6 +36,28 @@ $ErrorActionPreference = 'Stop'
 
 $BaseUrl = 'https://github.com/Topurrra/voli/releases/latest/download'
 $ZipName = 'voli-x64.zip'
+$Banner = @'
+                          ---
+        -+              +-----
+       ------  -------------+-
+        --+-----+------------
+         -----###----###-----
+          ----#-###++#-#-------
+        ---------##+##+----------
+       ----------######----------
+       ----------#-----#---------
+        ----##+++##---##+++-------
+       --++#++##++--+-#+#+###-------
+      --+-++-------++------++#+------
+     ------------------------+#+------
+    ----------+-++++++++++++--##-#-----
+    ---------++++++++++++++++-+++#-#----
+   ----------+++++++##+++++++-#-+-##-----
+  --------------+++####++++-+-+#+--+#-----
+  ----------------+###++-----#-++---#-----
+  ---------------+++#+++--------#---------
+ ---------------+++++++++-----------------
+'@
 
 function Write-Info  { param($m) Write-Host $m -ForegroundColor Cyan }
 function Write-Ok    { param($m) Write-Host $m -ForegroundColor Green }
@@ -132,6 +154,7 @@ try {
     $version = (& $voliExe --version) -join ' '
 
     Write-Host ''
+    Write-Host $Banner -ForegroundColor Yellow
     Write-Ok  "Installed $version"
     Write-Host 'Ready in this terminal. Try:  voli install ripgrep'
 }
