@@ -35,7 +35,7 @@ jobs:
           $staging = "staging"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item "$bin/voli.exe","$bin/voli-shim.exe","$bin/voli-shim-gui.exe" $staging
-          Copy-Item "LICENSE-MIT","LICENSE-APACHE" $staging
+          Copy-Item "license/LICENSE-MIT","license/LICENSE-APACHE" $staging
 
           $versioned = "voli-$version-x64.zip"
           $stable    = "voli-x64.zip"
