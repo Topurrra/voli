@@ -24,7 +24,7 @@ jobs:
         run: cargo fmt --check
 
   # docs-site/install is a verbatim copy of install.ps1 (so `volibear.dev/install`
-  # serves the same script). Fail the build if they drift.
+  # serves the same script). Fails the build if they drift.
   installer-sync:
     runs-on: ubuntu-latest
     steps:

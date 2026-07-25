@@ -28,6 +28,12 @@ pub enum SourceKind {
     InstallerArchive,
 }
 
+impl SourceKind {
+    fn is_archive(&self) -> bool {
+        *self == Self::Archive
+    }
+}
+
 /// A per-architecture download source.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -41,7 +47,7 @@ pub struct Source {
     #[serde(default)]
     pub extra: Vec<ExtraSource>,
     /// How the payload is handled (default: archive).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "SourceKind::is_archive")]
     pub kind: SourceKind,
 }
 
@@ -434,15 +440,28 @@ sha256 = "{hash}"
     #[test]
     fn source_kind_defaults_and_parses_installer_archive() {
         let regular = Manifest::from_toml_str(&minimal("")).unwrap();
-        assert_eq!(regular.source.x64.unwrap().kind, SourceKind::Archive);
+        assert_eq!(
+            regular.source.x64.as_ref().unwrap().kind,
+            SourceKind::Archive
+        );
+        assert!(
+            !toml::to_string(&regular)
+                .unwrap()
+                .contains("kind = \"archive\"")
+        );
 
         let installer = Manifest::from_toml_str(&minimal(
             "[source.arm64]\nurl = \"https://example.com/setup.exe\"\nsha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\nkind = \"installer-archive\"",
         ))
         .unwrap();
         assert_eq!(
-            installer.source.arm64.unwrap().kind,
+            installer.source.arm64.as_ref().unwrap().kind,
             SourceKind::InstallerArchive
+        );
+        assert!(
+            toml::to_string(&installer)
+                .unwrap()
+                .contains("kind = \"installer-archive\"")
         );
     }
 

@@ -75,6 +75,20 @@ pub fn download(
         fs::remove_file(&final_path)?;
     }
 
+    // Older clients ignored Scoop's `#/name.ext` fragment and cached the same
+    // verified payload under its bare hash. Promote it instead of downloading
+    // a potentially large archive again.
+    let legacy_path = cache_dir.join(&expected);
+    if legacy_path != final_path && legacy_path.exists() {
+        if hash_file(&legacy_path, is_sha512)? == expected {
+            fs::rename(&legacy_path, &final_path)?;
+            let total = fs::metadata(&final_path)?.len();
+            progress(total, Some(total));
+            return Ok(final_path);
+        }
+        fs::remove_file(&legacy_path)?;
+    }
+
     let part_path = cache_dir.join(format!("{}.part", cache_name(url, &expected)));
 
     // 2. Resume: re-hash any existing prefix so we can continue from its length.
@@ -186,10 +200,15 @@ fn cache_name(url: &str, sha: &str) -> String {
 
 /// Recognised archive suffix of `url`'s path (`.zip`, `.tar.gz`, …), else empty.
 fn archive_ext(url: &str) -> &'static str {
-    let path = url
-        .split(['?', '#'])
+    let effective = url
+        .split_once('#')
+        .and_then(|(_, fragment)| fragment.strip_prefix('/'))
+        .filter(|fragment| !fragment.is_empty())
+        .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url));
+    let path = effective
+        .split('?')
         .next()
-        .unwrap_or(url)
+        .unwrap_or(effective)
         .to_ascii_lowercase();
     const EXTS: &[&str] = &[".tar.gz", ".tar.xz", ".tgz", ".zip", ".7z"];
     for ext in EXTS {
@@ -268,12 +287,38 @@ mod tests {
         assert_eq!(archive_ext("https://x/y/rg-1.0.0.zip"), ".zip");
         assert_eq!(archive_ext("https://x/y/a.tar.gz?token=1"), ".tar.gz");
         assert_eq!(archive_ext("https://x/y/a.tgz"), ".tgz");
+        assert_eq!(archive_ext("https://x/chrome_installer.exe#/dl.7z"), ".7z");
         assert_eq!(archive_ext("https://x/y/a"), "");
     }
 
     #[test]
     fn cache_name_keys_on_sha_with_ext() {
         assert_eq!(cache_name("https://x/a.zip", "deadbeef"), "deadbeef.zip");
+        assert_eq!(
+            cache_name("https://x/setup.exe#/dl.7z", "deadbeef"),
+            "deadbeef.7z"
+        );
         assert_eq!(cache_name("https://x/a", "deadbeef"), "deadbeef");
+    }
+
+    #[test]
+    fn promotes_legacy_extensionless_cache_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"cached archive";
+        let hash = hex::encode(Sha256::digest(bytes));
+        let legacy = dir.path().join(&hash);
+        fs::write(&legacy, bytes).unwrap();
+
+        let path = download(
+            "https://x/setup.exe#/dl.7z",
+            &hash,
+            dir.path(),
+            &mut |_, _| {},
+        )
+        .unwrap();
+
+        assert_eq!(path, dir.path().join(format!("{hash}.7z")));
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        assert!(!legacy.exists());
     }
 }
