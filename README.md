@@ -61,7 +61,7 @@ construction rather than by promise.
 
 The package index is a signed sqlite snapshot fetched over HTTP - updating it
 is one small download, not a git clone. Registry:
-[Topurrra/voli-registry](https://github.com/Topurrra/voli-registry).
+[Voli Registry](https://github.com/Topurrra/voli-registry).
 
 ## License
 
