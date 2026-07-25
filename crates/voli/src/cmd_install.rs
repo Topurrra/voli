@@ -185,6 +185,7 @@ struct Reporter {
     bar: Option<ProgressBar>,
     package: Option<String>,
     installing: bool,
+    showing_unknown_progress: bool,
 }
 
 impl Reporter {
@@ -199,6 +200,7 @@ impl Reporter {
             bar: None,
             package: None,
             installing: false,
+            showing_unknown_progress: false,
         }
     }
 
@@ -219,6 +221,7 @@ impl Reporter {
                 self.bar = Some(pb);
                 self.package = Some(package);
                 self.installing = false;
+                self.showing_unknown_progress = false;
             }
             Step::Progress { done, total } => {
                 if let Some(pb) = &self.bar {
@@ -241,7 +244,8 @@ impl Reporter {
                                 pb.set_length(total);
                                 pb.set_style(
                                     ProgressStyle::with_template(
-                                        "{msg} [{bar:30}] {bytes}/{total_bytes}",
+                                        "{msg} [{bar:30}] {bytes}/{total_bytes} {percent}% \
+                                         ({bytes_per_sec}, {eta})",
                                     )
                                     .unwrap_or_else(|_| ProgressStyle::default_bar())
                                     .progress_chars("=> "),
@@ -252,17 +256,25 @@ impl Reporter {
                                     self.package.as_deref().unwrap_or("package")
                                 ));
                                 self.installing = false;
+                                self.showing_unknown_progress = false;
                             }
                             pb.set_position(done);
                         }
                         None => {
-                            if self.installing {
+                            if self.installing || !self.showing_unknown_progress {
+                                pb.set_style(
+                                    ProgressStyle::with_template(
+                                        "{spinner} {msg} {bytes} ({bytes_per_sec})",
+                                    )
+                                    .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+                                );
                                 pb.set_message(format!(
                                     "{}downloading {}",
                                     self.prefix,
                                     self.package.as_deref().unwrap_or("package")
                                 ));
                                 self.installing = false;
+                                self.showing_unknown_progress = true;
                             }
                             pb.set_position(done);
                         }
@@ -275,6 +287,7 @@ impl Reporter {
                 }
                 self.package = None;
                 self.installing = false;
+                self.showing_unknown_progress = false;
                 println!("{}✓ installed {} {}", self.prefix, r.name, r.version);
                 for shim in &r.shims {
                     println!("  shim: {}", shim.display());

@@ -20,7 +20,7 @@
 //! engine can observe.
 
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -1141,7 +1141,10 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<()> {
 }
 
 fn extract_7z(archive: &Path, dest: &Path) -> Result<()> {
-    let mut reader = sevenz_rust2::ArchiveReader::open(archive, sevenz_rust2::Password::empty())
+    let file = File::open(archive)?;
+    let offset = embedded_7z_offset(file.try_clone()?)?;
+    let source = OffsetReader::new(file, offset)?;
+    let mut reader = sevenz_rust2::ArchiveReader::new(source, sevenz_rust2::Password::empty())
         .map_err(|e| InstallError::SevenZ(e.to_string()))?;
 
     // Validate every entry name before extracting anything (zip-slip, §10).
@@ -1170,6 +1173,67 @@ fn extract_7z(archive: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+const SEVEN_Z_SIGNATURE: [u8; 6] = [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c];
+
+fn embedded_7z_offset(mut file: File) -> Result<u64> {
+    let mut head = [0; 6];
+    file.read_exact(&mut head)?;
+    if head == SEVEN_Z_SIGNATURE {
+        return Ok(0);
+    }
+    if !head.starts_with(b"MZ") {
+        return Ok(0);
+    }
+
+    file.seek(SeekFrom::Start(0))?;
+    let mut window = [0; 6];
+    for (position, byte) in BufReader::new(file).bytes().enumerate() {
+        window.rotate_left(1);
+        window[5] = byte?;
+        if window == SEVEN_Z_SIGNATURE {
+            return Ok(position.saturating_sub(5) as u64);
+        }
+    }
+    Err(InstallError::SevenZ(
+        "self-extracting archive contains no 7z payload".to_string(),
+    ))
+}
+
+struct OffsetReader<R> {
+    inner: R,
+    offset: u64,
+}
+
+impl<R: Seek> OffsetReader<R> {
+    fn new(mut inner: R, offset: u64) -> io::Result<Self> {
+        inner.seek(SeekFrom::Start(offset))?;
+        Ok(Self { inner, offset })
+    }
+}
+
+impl<R: Read> Read for OffsetReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl<R: Seek> Seek for OffsetReader<R> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        let absolute = match position {
+            SeekFrom::Start(position) => SeekFrom::Start(
+                self.offset
+                    .checked_add(position)
+                    .ok_or_else(|| io::Error::other("embedded archive seek overflow"))?,
+            ),
+            other => other,
+        };
+        self.inner
+            .seek(absolute)?
+            .checked_sub(self.offset)
+            .ok_or_else(|| io::Error::other("seek before embedded archive"))
+    }
+}
+
 /// Validate an archive entry name and return it as a safe relative path.
 /// Rejects absolute paths and any `..` component (zip-slip protection, §10).
 fn safe_rel(raw: &str) -> Option<PathBuf> {
@@ -1195,6 +1259,7 @@ fn safe_rel(raw: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn safe_rel_accepts_nested() {
@@ -1216,5 +1281,21 @@ mod tests {
         validate_installer_listing("Path = app/app.exe\n").unwrap();
         let err = validate_installer_listing("Path = ..\\escape.exe\n").unwrap_err();
         assert!(matches!(err, InstallError::ZipSlip(_)));
+    }
+
+    #[test]
+    fn reads_7z_payload_after_self_extracting_header() {
+        let mut archive = tempfile::NamedTempFile::new().unwrap();
+        archive.write_all(b"MZstub").unwrap();
+        archive.write_all(&SEVEN_Z_SIGNATURE).unwrap();
+
+        let offset = embedded_7z_offset(archive.reopen().unwrap()).unwrap();
+        assert_eq!(offset, 6);
+
+        let mut reader = OffsetReader::new(archive.reopen().unwrap(), offset).unwrap();
+        let mut signature = [0; 6];
+        reader.read_exact(&mut signature).unwrap();
+        assert_eq!(signature, SEVEN_Z_SIGNATURE);
+        assert_eq!(reader.seek(SeekFrom::Start(0)).unwrap(), 0);
     }
 }

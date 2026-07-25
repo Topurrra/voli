@@ -19,6 +19,7 @@ const EXIT_ERROR: i32 = 1;
 #[derive(Parser)]
 #[command(
     name = "voli",
+    bin_name = "voli",
     version,
     about = "A fast, no-admin package manager for Windows",
     arg_required_else_help = true
@@ -732,14 +733,16 @@ fn cmd_self_update() -> i32 {
     let download = total.map_or_else(ProgressBar::new_spinner, ProgressBar::new);
     if total.is_some() {
         download.set_style(
-            ProgressStyle::with_template("{msg} [{bar:30}] {bytes}/{total_bytes}")
-                .unwrap_or_else(|_| ProgressStyle::default_bar())
-                .progress_chars("=> "),
+            ProgressStyle::with_template(
+                "{msg} [{bar:30}] {bytes}/{total_bytes} {percent}% ({bytes_per_sec}, {eta})",
+            )
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("=> "),
         );
     } else {
         download.enable_steady_tick(Duration::from_millis(100));
         download.set_style(
-            ProgressStyle::with_template("{spinner} {msg} {bytes}")
+            ProgressStyle::with_template("{spinner} {msg} {bytes} ({bytes_per_sec})")
                 .unwrap_or_else(|_| ProgressStyle::default_spinner()),
         );
     }
@@ -1015,7 +1018,7 @@ fn cleanup_root(root: &Path) -> i32 {
             let fallback = root.with_extension("voli-selfdelete.exe");
             if std::fs::rename(&me, &fallback).is_ok() {
                 let _ = std::fs::remove_dir_all(root);
-                schedule_temp_delete(&fallback);
+                schedule_temp_delete(root, &fallback);
                 println!();
                 println!("voli removed itself. The bear waves goodbye. \u{1F43B}");
                 return 0;
@@ -1036,38 +1039,47 @@ fn cleanup_root(root: &Path) -> i32 {
     }
 
     // 3b. Nothing in root is locked now — synchronous, verifiable removal.
-    if let Err(e) = std::fs::remove_dir_all(root) {
-        eprintln!("warning: could not fully remove {}: {e}", root.display());
-    }
+    let root_removed = std::fs::remove_dir_all(root).is_ok() || !root.exists();
 
-    // 3c. Best-effort background delete of the parked exe after we exit.
-    schedule_temp_delete(&parked);
+    // 3c. The invoking shim may still lock the root until this process exits.
+    schedule_temp_delete(root, &parked);
 
     println!();
+    if !root_removed {
+        println!("finishing locked-file cleanup in the background...");
+    }
     println!("voli removed itself. The bear waves goodbye. \u{1F43B}");
     0
 }
 
-/// Best-effort detached delete of the parked (still-running) exe copy.
+/// Best-effort detached delete of the root and parked executable.
 /// Breakaway first so tree-killing Job Objects don't reap the helper; if even
 /// that dies, one orphan file in %TEMP% is the accepted worst case.
-fn schedule_temp_delete(parked: &Path) {
+fn schedule_temp_delete(root: &Path, parked: &Path) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        use std::process::Stdio;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        let target = parked.to_string_lossy().replace('/', "\\");
-        let cmd = format!(
-            "for /l %n in (1,1,15) do (del /f /q \"{target}\" 2>nul & \
-             if not exist \"{target}\" exit 0 & ping -n 2 127.0.0.1 >nul)"
-        );
+        let cmd = "for /l %n in (1,1,15) do (\
+            rmdir /s /q \"%VOLI_DELETE_ROOT%\" 2>nul & \
+            del /f /q \"%VOLI_DELETE_EXE%\" 2>nul & \
+            if not exist \"%VOLI_DELETE_ROOT%\" if not exist \"%VOLI_DELETE_EXE%\" exit 0 & \
+            ping -n 2 127.0.0.1 >nul)";
         let spawn = |flags: u32| {
-            std::process::Command::new("cmd")
-                .args(["/c", &cmd])
-                .creation_flags(flags)
-                .spawn()
+            let mut command = std::process::Command::new("cmd");
+            command
+                .args(["/d", "/q", "/c"])
+                .raw_arg(cmd)
+                .env("VOLI_DELETE_ROOT", root)
+                .env("VOLI_DELETE_EXE", parked)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(flags);
+            command.spawn()
         };
         if spawn(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB).is_err() {
             let _ = spawn(CREATE_NO_WINDOW | DETACHED_PROCESS);
@@ -1075,6 +1087,7 @@ fn schedule_temp_delete(parked: &Path) {
     }
     #[cfg(not(windows))]
     {
+        let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_file(parked);
     }
 }

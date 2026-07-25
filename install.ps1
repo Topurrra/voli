@@ -123,11 +123,17 @@ try {
         throw "voli setup failed (exit $LASTEXITCODE)"
     }
 
+    $shims = Join-Path $root 'shims'
+    $pathParts = @($env:PATH -split ';' | Where-Object { $_ })
+    if (-not ($pathParts | Where-Object { $_.TrimEnd('\') -ieq $shims.TrimEnd('\') })) {
+        $env:PATH = "$shims;$env:PATH"
+    }
+
     $version = (& $voliExe --version) -join ' '
 
     Write-Host ''
     Write-Ok  "Installed $version"
-    Write-Host 'Open a new terminal and run:  voli install ripgrep'
+    Write-Host 'Ready in this terminal. Try:  voli install ripgrep'
 }
 catch {
     Write-Host ''

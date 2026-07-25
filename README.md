@@ -18,7 +18,7 @@ The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else - read it first
 if you like: [`install.ps1`](install.ps1).
 
-> **Status: v0.5.1, still pre-1.0.** The core workflow is released and working,
+> **Status: v0.5.2, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)
