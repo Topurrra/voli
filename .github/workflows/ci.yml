@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    paths-ignore: ["**/*.md", "assets/**", "docs-site/assets/**"]
+    paths-ignore: ["**/*.md", "assets/**", "docs-site/**", "license/**"]
   pull_request:
     paths-ignore: ["**/*.md", "assets/**", "docs-site/assets/**"]
 
