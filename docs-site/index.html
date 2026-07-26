@@ -142,10 +142,11 @@
     }
 
     .nav {
-      max-width: 1100px;
+      max-width: 1280px;
       margin: 0 auto;
       padding: .7rem 1.5rem;
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(260px, 360px) minmax(0, 1fr);
       align-items: center;
       gap: 1rem;
     }
@@ -197,8 +198,9 @@
     .nav-links {
       display: flex;
       gap: .2rem;
-      margin-left: auto;
+      margin-left: 0;
       align-items: center;
+      justify-self: end;
     }
 
     .nav-links a.navlink {
@@ -1420,141 +1422,210 @@
       }
     }
 
-    /* ---------- package search ---------- */
-    .search-band {
-      padding: 3.5rem 0 2.5rem;
-      background: var(--bg-dark);
-      border-bottom: 1px solid var(--border);
-    }
-
-    .search-box {
+    /* ---------- header package search ---------- */
+    .header-search {
       position: relative;
-      max-width: 640px;
-      margin: 0 auto;
+      width: 100%;
+      max-width: 300px;
     }
 
-    .search-input {
+    .header-search-field {
+      position: relative;
+    }
+
+    .header-search-input {
       width: 100%;
-      padding: .85rem 1.1rem .85rem 2.6rem;
-      background: var(--bg);
+      padding: .68rem 2.6rem .68rem 2.35rem;
+      background: color-mix(in srgb, var(--bg-dark) 88%, transparent);
       color: var(--cream);
       border: 1px solid var(--border-strong);
-      border-radius: 12px;
-      font: .95rem var(--mono);
+      border-radius: 10px;
+      font: .84rem var(--mono);
       outline: none;
       transition: border-color .15s, box-shadow .15s;
     }
 
-    .search-input::placeholder {
+    .header-search-input::placeholder {
       color: var(--sage);
-      opacity: .7;
+      opacity: .8;
     }
 
-    .search-input:focus {
+    .header-search-input:focus {
       border-color: var(--verm);
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--verm) 22%, transparent);
     }
 
-    .search-icon {
+    .header-search-icon {
       position: absolute;
-      left: .85rem;
+      left: .75rem;
       top: 50%;
       transform: translateY(-50%);
       color: var(--sage);
       pointer-events: none;
     }
 
-    .search-hint {
-      text-align: center;
-      color: var(--sage);
-      font-size: .82rem;
-      margin-top: .6rem;
-      min-height: 1.4em;
-    }
-
-    .search-hint a {
-      color: var(--verm-bright);
-      text-decoration: none;
-    }
-
-    .search-hint a:hover {
-      text-decoration: underline;
-    }
-
-    .search-results {
-      max-width: 640px;
-      margin: 1rem auto 0;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .sr-row {
-      display: flex;
-      align-items: baseline;
-      gap: .6rem;
-      padding: .55rem .8rem;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: background .1s;
-    }
-
-    .sr-row:hover,
-    .sr-row.active {
-      background: color-mix(in srgb, var(--cream) 7%, transparent);
-    }
-
-    .sr-name {
-      font: 600 .88rem var(--mono);
-      color: var(--cream);
-      white-space: nowrap;
-    }
-
-    .sr-ver {
-      font: .76rem var(--mono);
-      color: var(--sage);
-      white-space: nowrap;
-    }
-
-    .sr-desc {
-      flex: 1;
-      font-size: .82rem;
-      color: var(--cream-muted);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .sr-copy {
-      display: inline-flex;
-      align-items: center;
-      gap: .3rem;
-      background: color-mix(in srgb, var(--cream) 8%, transparent);
-      color: var(--sage);
+    .header-search-key {
+      position: absolute;
+      right: .7rem;
+      top: 50%;
+      transform: translateY(-50%);
       border: 1px solid var(--border);
-      border-radius: 6px;
-      font: 500 .72rem var(--mono);
-      padding: .25rem .5rem;
+      border-radius: 5px;
+      padding: .08rem .35rem;
+      color: var(--sage);
+      background: color-mix(in srgb, var(--panel) 55%, transparent);
+      font: .68rem var(--mono);
+      pointer-events: none;
+    }
+
+    .header-search-popover {
+      position: absolute;
+      top: calc(100% + .55rem);
+      left: 0;
+      right: 0;
+      overflow: hidden;
+      background: color-mix(in srgb, var(--bg-dark) 96%, var(--panel));
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .38);
+      z-index: 70;
+    }
+
+    .header-search-popover[hidden] {
+      display: none;
+    }
+
+    .quick-status {
+      margin: 0;
+      padding: .7rem .8rem;
+      color: var(--sage);
+      font-size: .78rem;
+    }
+
+    .quick-status a {
+      color: var(--verm-bright);
+    }
+
+    .quick-result {
+      display: grid;
+      grid-template-columns: 32px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: .65rem;
+      width: 100%;
+      padding: .62rem .72rem;
+      border: 0;
+      border-top: 1px solid var(--border);
+      background: transparent;
+      color: inherit;
+      text-align: left;
       cursor: pointer;
+      font: inherit;
+      transition: background .12s;
+    }
+
+    .quick-result:hover,
+    .quick-result.active {
+      background: color-mix(in srgb, var(--cream) 8%, transparent);
+    }
+
+    .quick-icon {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      color: var(--verm-bright);
+      background: color-mix(in srgb, var(--verm) 15%, var(--panel));
+      border: 1px solid color-mix(in srgb, var(--verm) 36%, transparent);
+      font: 700 .8rem var(--mono);
+      text-transform: uppercase;
+      overflow: hidden;
+    }
+
+    .quick-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .quick-icon.has-image .icon-fallback {
+      display: none;
+    }
+
+    .quick-copy {
+      color: var(--sage);
+      font: .68rem var(--mono);
       white-space: nowrap;
-      transition: border-color .12s, color .12s;
+      text-decoration: none;
+      padding: .45rem .75rem;
+      border-radius: 8px;
     }
 
-    .sr-copy:hover {
-      border-color: var(--verm);
+    .quick-copy:hover {
       color: var(--cream);
+      background: color-mix(in srgb, var(--panel) 60%, transparent);
     }
 
-    .sr-copy.copied {
-      border-color: var(--pos);
+    .quick-result.copied .quick-copy {
       color: var(--pos);
     }
 
-    .sr-more {
-      text-align: center;
+    .quick-name {
+      display: block;
+      color: var(--cream);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font: 600 .82rem var(--mono);
+      white-space: nowrap;
+    }
+
+    .quick-meta {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
       color: var(--sage);
-      font-size: .8rem;
-      padding: .5rem;
+      font-size: .72rem;
+      white-space: nowrap;
+    }
+
+    .quick-all {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: .72rem .8rem;
+      border-top: 1px solid var(--border);
+      color: var(--verm-bright);
+      text-decoration: none;
+      font-size: .78rem;
+    }
+
+    .quick-all:hover {
+      background: color-mix(in srgb, var(--cream) 5%, transparent);
+    }
+
+    @media (max-width: 1180px) {
+      .nav-links .navlink {
+        display: none;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .55rem;
+      }
+
+      .brand {
+        margin-right: auto;
+      }
+
+      .header-search {
+        order: 3;
+        flex-basis: 100%;
+        max-width: none;
+        margin-left: 0;
+      }
     }
   </style>
 </head>
@@ -1568,6 +1639,26 @@
         <img src="assets/logo.png" alt="" width="30" height="30">
         Voli<span class="brand-tag"><span class="brand-dot">·</span><code>The Bear That Delivers</code></span>
       </a>
+      <form class="header-search" id="header-search" action="search.html" role="search">
+        <div class="header-search-field">
+          <svg class="header-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input class="header-search-input" id="pkg-search" name="q" type="search" placeholder="Search packages"
+            autocomplete="off" spellcheck="false" aria-label="Search packages" aria-controls="search-popover"
+            aria-expanded="false" aria-autocomplete="list">
+          <kbd class="header-search-key" aria-hidden="true">/</kbd>
+        </div>
+        <div class="header-search-popover" id="search-popover" hidden>
+          <p class="quick-status" id="search-status" aria-live="polite"></p>
+          <div id="search-results" role="listbox" aria-label="Package suggestions"></div>
+          <a class="quick-all" id="search-all" href="search.html">
+            <span>View all results</span><span aria-hidden="true">→</span>
+          </a>
+        </div>
+      </form>
       <div class="nav-links">
         <a class="navlink" href="#why">Why</a>
         <a class="navlink" href="#commands">Commands</a>
@@ -1634,18 +1725,6 @@
             <path d="m19 12-7 7-7-7"></path>
           </svg>
         </div>
-      </div>
-    </section>
-
-    <!-- ---------- PACKAGE SEARCH ---------- -->
-    <section class="search-band" id="search">
-      <div class="wrap">
-        <div class="search-box">
-          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input class="search-input" id="pkg-search" type="text" placeholder="Search packages… ( / )" autocomplete="off" spellcheck="false" aria-label="Search packages">
-        </div>
-        <p class="search-hint" id="search-hint"></p>
-        <div class="search-results" id="search-results"></div>
       </div>
     </section>
 
@@ -2158,6 +2237,7 @@
     </div>
   </footer>
 
+  <script src="assets/catalog.js"></script>
   <script>
     // ---- Copy the install one-liner ----
     (function () {
@@ -2351,111 +2431,105 @@
       ids.forEach(function (id) { io.observe(document.getElementById(id)); });
     })();
 
-    // ---- Package search (lazy-loaded from packages.json) ----
+    // ---- Header package search ----
     (function () {
+      var form = document.getElementById('header-search');
       var input = document.getElementById('pkg-search');
       var results = document.getElementById('search-results');
-      var hint = document.getElementById('search-hint');
+      var popover = document.getElementById('search-popover');
+      var status = document.getElementById('search-status');
+      var all = document.getElementById('search-all');
       var pkgs = null;
       var active = -1;
       var rendered = [];
-      var DEBOUNCE = 80;
-      var MAX_ROWS = 30;
       var timer = null;
 
-      var DATA_URL = 'https://raw.githubusercontent.com/Topurrra/voli-registry/main/packages.json';
-
-      function load(cb) {
-        if (pkgs) return cb();
-        var cached = sessionStorage.getItem('voli-pkgs');
-        if (cached) { try { pkgs = JSON.parse(cached); return cb(); } catch (e) { /* fall through */ } }
-        hint.textContent = 'Loading catalog…';
-        fetch(DATA_URL).then(function (r) {
-          if (!r.ok) throw new Error(r.status);
-          return r.json();
-        }).then(function (data) {
-          pkgs = data;
-          try { sessionStorage.setItem('voli-pkgs', JSON.stringify(data)); } catch (e) { /* quota */ }
-          hint.textContent = '';
-          cb();
-        }).catch(function () {
-          hint.innerHTML = 'Search unavailable offline — <a href="https://github.com/Topurrra/voli-registry/tree/main/manifests" rel="noopener">browse the registry on GitHub</a>';
-        });
+      function open() {
+        popover.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
       }
 
-      function match(p, q) {
-        var name = p.n.toLowerCase();
-        var bins = (p.b || []).join(' ').toLowerCase();
-        var desc = (p.d || '').toLowerCase();
-        var prefix = name.indexOf(q) === 0 ? 0 : 1;
-        if (name.indexOf(q) !== -1) return prefix;
-        if (bins.indexOf(q) !== -1) return 2;
-        var words = desc.split(/\s+/).slice(0, 12).join(' ');
-        if (words.indexOf(q) !== -1) return 3;
-        return -1;
+      function close() {
+        popover.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+        setActive(-1);
       }
 
       function render() {
-        var q = input.value.trim().toLowerCase();
+        var query = input.value.trim();
         active = -1;
         rendered = [];
         results.innerHTML = '';
-        if (!pkgs || !q) { hint.textContent = pkgs ? '' : hint.textContent; return; }
-        var scored = [];
-        for (var i = 0; i < pkgs.length; i++) {
-          var rank = match(pkgs[i], q);
-          if (rank >= 0) scored.push({ p: pkgs[i], r: rank });
+        if (!query) {
+          close();
+          return;
         }
-        scored.sort(function (a, b) { return a.r - b.r || a.p.n.localeCompare(b.p.n); });
-        var total = scored.length;
-        var show = scored.slice(0, MAX_ROWS);
+
+        var matches = VoliCatalog.search(pkgs, query);
+        var total = matches.length;
+        var show = matches.slice(0, 5);
+        status.textContent = total
+          ? total + ' package' + (total === 1 ? '' : 's') + ' found'
+          : 'No matching packages';
+        all.href = 'search.html?q=' + encodeURIComponent(query);
+        all.firstElementChild.textContent = total ? 'View all ' + total + ' results' : 'Search the full catalog';
+
         for (var j = 0; j < show.length; j++) {
           (function (item) {
             var p = item.p;
-            var row = document.createElement('div');
-            row.className = 'sr-row';
+            var row = document.createElement('button');
+            var command = VoliCatalog.command(p.n);
+            row.type = 'button';
+            row.className = 'quick-result';
             row.setAttribute('role', 'option');
-            var cmd = 'voli install ' + p.n;
+            row.setAttribute('aria-selected', 'false');
+            row.setAttribute('aria-label', 'Copy ' + command);
             row.innerHTML =
-              '<span class="sr-name">' + esc(p.n) + '</span>' +
-              '<span class="sr-ver">' + esc(p.v) + '</span>' +
-              '<span class="sr-desc">' + esc(p.d || '') + '</span>' +
-              '<button class="sr-copy" type="button" aria-label="Copy install command">' + esc(cmd) + '</button>';
-            var btn = row.querySelector('.sr-copy');
-            btn.addEventListener('click', function (e) {
-              e.stopPropagation();
-              copyText(cmd, btn);
-            });
-            row.addEventListener('click', function () { copyText(cmd, btn); });
+              VoliCatalog.icon(p, 'quick-icon') +
+              '<span><span class="quick-name">' + VoliCatalog.escape(p.n) + '</span>' +
+              '<span class="quick-meta">' + VoliCatalog.escape(p.v + ' · ' + (p.d || 'No description')) + '</span></span>' +
+              '<span class="quick-copy">Copy</span>';
+            VoliCatalog.wireIcon(row.querySelector('.quick-icon'));
+            row.addEventListener('click', function () { copyText(command, row); });
             results.appendChild(row);
             rendered.push(row);
           })(show[j]);
         }
-        if (total > MAX_ROWS) {
-          var more = document.createElement('div');
-          more.className = 'sr-more';
-          more.textContent = (total - MAX_ROWS) + ' more…';
-          results.appendChild(more);
+        open();
+      }
+
+      function loadAndRender() {
+        if (!input.value.trim()) {
+          close();
+          return;
         }
-        hint.textContent = total ? total + ' package' + (total === 1 ? '' : 's') : 'No matches';
+        status.textContent = 'Loading catalog...';
+        results.innerHTML = '';
+        open();
+        VoliCatalog.load().then(function (data) {
+          pkgs = data;
+          render();
+        }).catch(function () {
+          status.innerHTML = 'Search unavailable: <a href="https://github.com/Topurrra/voli-registry/tree/main/manifests" rel="noopener">browse the registry on GitHub</a>';
+        });
       }
 
-      function esc(s) {
-        var d = document.createElement('div');
-        d.textContent = s;
-        return d.innerHTML;
-      }
-
-      function copyText(text, btn) {
+      function copyText(text, row) {
         function done() {
-          btn.classList.add('copied');
-          var orig = btn.textContent;
-          btn.textContent = 'Copied!';
-          setTimeout(function () { btn.classList.remove('copied'); btn.textContent = orig; }, 1400);
+          var label = row.querySelector('.quick-copy');
+          row.classList.add('copied');
+          label.textContent = 'Copied';
+          setTimeout(function () {
+            row.classList.remove('copied');
+            label.textContent = 'Copy';
+          }, 1400);
         }
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(text).then(done, function () { fb(text); done(); });
-        } else { fb(text); done(); }
+        } else {
+          fb(text);
+          done();
+        }
       }
 
       function fb(text) {
@@ -2467,29 +2541,45 @@
       }
 
       function setActive(idx) {
-        if (active >= 0 && active < rendered.length) rendered[active].classList.remove('active');
+        if (active >= 0 && active < rendered.length) {
+          rendered[active].classList.remove('active');
+          rendered[active].setAttribute('aria-selected', 'false');
+        }
         active = idx;
         if (active >= 0 && active < rendered.length) {
           rendered[active].classList.add('active');
-          rendered[active].scrollIntoView({ block: 'nearest' });
+          rendered[active].setAttribute('aria-selected', 'true');
         }
       }
 
-      input.addEventListener('focus', function () { load(render); });
+      form.addEventListener('submit', function (e) {
+        if (!input.value.trim()) e.preventDefault();
+      });
+
+      input.addEventListener('focus', function () {
+        if (input.value.trim()) loadAndRender();
+      });
       input.addEventListener('input', function () {
         clearTimeout(timer);
-        timer = setTimeout(function () { load(render); }, DEBOUNCE);
+        timer = setTimeout(loadAndRender, 80);
       });
 
       input.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') { input.value = ''; render(); input.blur(); return; }
+        if (e.key === 'Escape') {
+          close();
+          input.blur();
+          return;
+        }
         if (e.key === 'ArrowDown') { e.preventDefault(); setActive(Math.min(active + 1, rendered.length - 1)); return; }
         if (e.key === 'ArrowUp') { e.preventDefault(); setActive(Math.max(active - 1, 0)); return; }
         if (e.key === 'Enter' && active >= 0 && active < rendered.length) {
           e.preventDefault();
-          var btn = rendered[active].querySelector('.sr-copy');
-          if (btn) btn.click();
+          rendered[active].click();
         }
+      });
+
+      document.addEventListener('click', function (e) {
+        if (!form.contains(e.target)) close();
       });
 
       document.addEventListener('keydown', function (e) {

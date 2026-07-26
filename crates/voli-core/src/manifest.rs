@@ -177,6 +177,8 @@ pub struct Manifest {
     #[serde(default)]
     pub homepage: Option<String>,
     #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
     pub license: Option<String>,
     pub kind: Kind,
 
@@ -238,6 +240,9 @@ pub enum ManifestError {
 
     #[error("invalid env value for '{key}': only the {{dir}} template variable is allowed")]
     EnvTemplate { key: String },
+
+    #[error("invalid icon URL '{0}': must be an HTTPS URL")]
+    IconUrl(String),
 }
 
 impl Manifest {
@@ -250,6 +255,10 @@ impl Manifest {
 
     fn validate(&self) -> Result<(), ManifestError> {
         validate_name(&self.name)?;
+
+        if let Some(icon) = &self.icon {
+            check_icon_url(icon)?;
+        }
 
         if self.source.x64.is_none() && self.source.arm64.is_none() {
             return Err(ManifestError::NoSource);
@@ -280,6 +289,18 @@ impl Manifest {
         }
 
         Ok(())
+    }
+}
+
+fn check_icon_url(url: &str) -> Result<(), ManifestError> {
+    let valid = url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next())
+        .is_some_and(|host| !host.is_empty() && !host.chars().any(char::is_whitespace));
+    if valid {
+        Ok(())
+    } else {
+        Err(ManifestError::IconUrl(url.to_string()))
     }
 }
 
@@ -373,6 +394,7 @@ name = "ripgrep"
 version = "14.1.1"
 description = "Recursively search directories with a regex"
 homepage = "https://github.com/BurntSushi/ripgrep"
+icon = "https://example.com/ripgrep.svg"
 license = "MIT OR Unlicense"
 kind = "app"
 extract_dir = "ripgrep-14.1.1-x86_64-pc-windows-msvc"
@@ -403,6 +425,7 @@ checkver = { github = "BurntSushi/ripgrep" }
         let m = Manifest::from_toml_str(FULL).expect("should parse");
         assert_eq!(m.name, "ripgrep");
         assert_eq!(m.version, "14.1.1");
+        assert_eq!(m.icon.as_deref(), Some("https://example.com/ripgrep.svg"));
         assert_eq!(m.kind, Kind::App);
         assert!(m.source.x64.is_some());
         assert!(m.source.arm64.is_some());
@@ -478,6 +501,15 @@ sha256 = "abc123"
         assert!(matches!(
             Manifest::from_toml_str(s),
             Err(ManifestError::BadHash { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_non_https_icon() {
+        let s = minimal(r#"icon = "http://example.com/app.png""#);
+        assert!(matches!(
+            Manifest::from_toml_str(&s),
+            Err(ManifestError::IconUrl(_))
         ));
     }
 

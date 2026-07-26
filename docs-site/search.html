@@ -1,0 +1,737 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Search packages | Voli</title>
+  <meta name="description" content="Search the Voli package catalog and copy install commands.">
+  <meta name="theme-color" content="#001C16">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="assets/favicon-64.png">
+
+  <style>
+    @font-face {
+      font-family: "Space Grotesk";
+      font-style: normal;
+      font-weight: 400 700;
+      font-display: swap;
+      src: url("assets/fonts/space-grotesk-latin.woff2") format("woff2");
+    }
+
+    :root {
+      --bg: #001C16;
+      --bg-dark: #00120E;
+      --panel: #023A2E;
+      --border: rgba(233, 226, 210, .14);
+      --border-strong: rgba(233, 226, 210, .24);
+      --cream: #EEE3CE;
+      --cream-muted: #D1C8B4;
+      --verm: #ED5126;
+      --verm-bright: #FF5526;
+      --sage: #8BA399;
+      --sage-bright: #A7BDB3;
+      --pos: #6ED08C;
+      --mono: "Cascadia Code", "Cascadia Mono", "SF Mono", ui-monospace, Consolas, monospace;
+      --sans: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--cream);
+      font: 16px/1.65 var(--sans);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 240px 240px;
+      mix-blend-mode: overlay;
+    }
+
+    ::selection {
+      background: var(--verm);
+      color: #fff;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--verm-bright);
+      outline-offset: 3px;
+      border-radius: 6px;
+    }
+
+    /* ---------- nav ---------- */
+    header.site {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: saturate(140%) blur(14px);
+      background: color-mix(in srgb, var(--bg) 74%, transparent);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: .7rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: .55rem;
+      font-weight: 700;
+      color: var(--cream);
+      text-decoration: none;
+      font-size: 1.35rem;
+    }
+
+    .brand img {
+      width: 60px;
+      height: 60px;
+      border-radius: 50px;
+    }
+
+    /* mono tagline next to the wordmark */
+    .brand-tag {
+      display: inline-flex;
+      align-items: baseline;
+      gap: .5rem;
+      margin-left: .1rem;
+      font-weight: 400;
+    }
+
+    .brand-dot {
+      color: var(--vermilion);
+      font-weight: 700;
+    }
+
+    .brand-tag code {
+      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      font-size: .78em;
+      letter-spacing: -.01em;
+      color: var(--sage-bright);
+      background: none;
+      padding: 0;
+      font-style: oblique;
+    }
+
+    @media (max-width: 720px) {
+      .brand-tag { display: none; }
+    }
+
+    .nav-links {
+      display: flex;
+      gap: .2rem;
+      margin-left: auto;
+      align-items: center;
+    }
+
+    .nav-links a.navlink {
+      color: var(--sage-bright);
+      text-decoration: none;
+      font-size: .92rem;
+      padding: .45rem .75rem;
+      border-radius: 8px;
+      white-space: nowrap;
+    }
+
+    .nav-links a.navlink:hover {
+      color: var(--cream);
+      background: color-mix(in srgb, var(--panel) 60%, transparent);
+    }
+
+    .icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      color: var(--cream);
+      text-decoration: none;
+      transition: border-color .15s, transform .15s;
+    }
+
+    .icon-btn:hover {
+      border-color: var(--verm);
+      transform: translateY(-1px);
+    }
+
+    .icon-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .nav-cta {
+      margin-left: .35rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .68rem 1.3rem;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: .95rem;
+      font-weight: 500;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: transform .15s, background .15s, border-color .15s, color .15s;
+    }
+
+    .btn-cream {
+      color: var(--bg);
+      background: var(--cream);
+    }
+
+    .btn-cream:hover {
+      background: #fff;
+      transform: translateY(-2px);
+    }
+
+    .btn-sm {
+      padding: .5rem 1rem;
+      font-size: .88rem;
+    }
+
+    @media (max-width: 1180px) {
+      .nav-links .navlink {
+        display: none;
+      }
+    }
+
+    main {
+      width: min(100% - 3rem, 980px);
+      margin: 0 auto;
+      padding-bottom: 6rem;
+    }
+
+    .intro {
+      padding: 4.5rem 0 2rem;
+      text-align: center;
+    }
+
+    .eyebrow {
+      color: var(--verm-bright);
+      font: 700 .76rem var(--mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 720px;
+      margin: .55rem auto .7rem;
+      font-size: clamp(2.3rem, 6vw, 4.4rem);
+      line-height: 1;
+      letter-spacing: -.055em;
+      text-wrap: balance;
+    }
+
+    .intro p {
+      max-width: 620px;
+      margin: 0 auto;
+      color: var(--sage-bright);
+    }
+
+    .search-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: .7rem;
+      margin: 1.6rem auto 0;
+      max-width: 780px;
+    }
+
+    .search-field {
+      position: relative;
+    }
+
+    .search-field svg {
+      position: absolute;
+      left: 1rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--sage);
+      pointer-events: none;
+    }
+
+    .search-input,
+    .sort-select {
+      min-height: 52px;
+      color: var(--cream);
+      background: color-mix(in srgb, var(--bg-dark) 92%, var(--panel));
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      outline: none;
+      font: .92rem var(--mono);
+    }
+
+    .search-input {
+      width: 100%;
+      padding: .85rem 1rem .85rem 3rem;
+    }
+
+    .sort-select {
+      padding: .75rem 2rem .75rem .9rem;
+    }
+
+    .search-input:focus,
+    .sort-select:focus {
+      border-color: var(--verm);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--verm) 22%, transparent);
+    }
+
+    .results-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      min-height: 3rem;
+      margin-top: 2rem;
+      color: var(--sage-bright);
+      font-size: .88rem;
+    }
+
+    .results {
+      display: grid;
+      gap: .7rem;
+    }
+
+    .result-card {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 1rem;
+      padding: 1rem;
+      background: color-mix(in srgb, var(--panel) 64%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      transition: border-color .15s, transform .15s, background .15s;
+    }
+
+    .result-card:hover {
+      transform: translateY(-1px);
+      border-color: var(--border-strong);
+      background: color-mix(in srgb, var(--panel) 78%, transparent);
+    }
+
+    .package-icon {
+      display: grid;
+      place-items: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      color: var(--verm-bright);
+      background: color-mix(in srgb, var(--verm) 14%, var(--panel));
+      border: 1px solid color-mix(in srgb, var(--verm) 38%, transparent);
+      font: 700 1rem var(--mono);
+      text-transform: uppercase;
+      overflow: hidden;
+    }
+
+    .package-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .package-icon.has-image .icon-fallback {
+      display: none;
+    }
+
+    .package-title {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: .6rem;
+      margin: 0;
+      font: 650 1rem var(--mono);
+    }
+
+    .package-version {
+      color: var(--sage);
+      font-size: .75rem;
+      font-weight: 400;
+    }
+
+    .package-description {
+      margin: .35rem 0 0;
+      color: var(--cream-muted);
+      font-size: .87rem;
+    }
+
+    .package-bins {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .35rem;
+      margin-top: .55rem;
+    }
+
+    .package-bins code {
+      padding: .15rem .42rem;
+      border-radius: 5px;
+      color: var(--sage-bright);
+      background: color-mix(in srgb, var(--bg-dark) 74%, transparent);
+      font: .7rem var(--mono);
+    }
+
+    mark {
+      padding: 0 .05em;
+      border-radius: 3px;
+      color: var(--cream);
+      background: color-mix(in srgb, var(--verm) 58%, transparent);
+    }
+
+    .install-copy {
+      min-width: 176px;
+      padding: .58rem .75rem;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      color: var(--cream);
+      background: color-mix(in srgb, var(--bg-dark) 70%, transparent);
+      cursor: pointer;
+      font: .75rem var(--mono);
+      transition: border-color .12s, color .12s;
+    }
+
+    .install-copy:hover {
+      border-color: var(--verm);
+    }
+
+    .install-copy.copied {
+      color: var(--pos);
+      border-color: var(--pos);
+    }
+
+    .empty {
+      padding: 4rem 1rem;
+      border: 1px dashed var(--border-strong);
+      border-radius: 14px;
+      color: var(--sage);
+      text-align: center;
+    }
+
+    .empty strong {
+      display: block;
+      margin-bottom: .35rem;
+      color: var(--cream);
+      font-size: 1.05rem;
+    }
+
+    .fallback-link {
+      color: var(--verm-bright);
+    }
+
+    /* ---------- footer ---------- */
+    footer.site {
+      background: var(--bg-darker);
+      border-top: 1px solid var(--border);
+    }
+
+    .foot {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2.6rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      flex-wrap: wrap;
+      color: var(--sage);
+      font-size: .9rem;
+    }
+
+    .foot .brand {
+      font-size: 1.05rem;
+    }
+
+    .foot-links {
+      display: flex;
+      gap: 1.4rem;
+      flex-wrap: wrap;
+    }
+
+    .foot-links a {
+      color: var(--sage-bright);
+      text-decoration: none;
+    }
+
+    .foot-links a:hover {
+      color: var(--cream);
+    }
+
+    .made {
+      width: 100%;
+      color: var(--sage);
+      font-size: .85rem;
+    }
+
+    @media (max-width: 720px) {
+      main {
+        width: min(100% - 2rem, 980px);
+      }
+
+      .intro {
+        padding-top: 3rem;
+      }
+
+      .search-form {
+        grid-template-columns: 1fr;
+      }
+
+      .result-card {
+        grid-template-columns: 42px minmax(0, 1fr);
+        align-items: start;
+      }
+
+      .package-icon {
+        width: 42px;
+        height: 42px;
+      }
+
+      .install-copy {
+        grid-column: 1 / -1;
+        width: 100%;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * {
+        scroll-behavior: auto !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <header class="site">
+    <nav class="nav" aria-label="Primary">
+      <a class="brand" href="./index.html#top">
+        <img src="assets/logo.png" alt="" width="30" height="30">
+        Voli<span class="brand-tag"><span class="brand-dot">·</span><code>The Bear That Delivers</code></span>
+      </a>
+      <div class="nav-links">
+        <a class="navlink" href="./index.html#why">Why</a>
+        <a class="navlink" href="./index.html#commands">Commands</a>
+        <a class="navlink" href="./index.html#add">Add your app</a>
+        <a class="navlink" href="./index.html#faq">FAQ</a>
+        <a class="icon-btn" href="https://github.com/Topurrra/voli" aria-label="voli on GitHub" rel="noopener">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z">
+            </path>
+          </svg>
+        </a>
+        <a class="btn btn-cream btn-sm nav-cta" href="./index.html#install">Install</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="intro">
+      <span class="eyebrow">Package catalog</span>
+      <h1>Find your next tool.</h1>
+      <p>Search every package in the Voli registry, then copy a ready-to-run install command.</p>
+
+      <form class="search-form" id="catalog-search" role="search">
+        <div class="search-field">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input class="search-input" id="search-input" type="search" name="q" placeholder="Search names, commands, or descriptions"
+            autocomplete="off" spellcheck="false" aria-label="Search package catalog">
+        </div>
+        <select class="sort-select" id="sort" aria-label="Sort results">
+          <option value="relevance">Relevance</option>
+          <option value="name">Name A-Z</option>
+        </select>
+      </form>
+    </section>
+
+    <div class="results-head">
+      <span id="result-status" aria-live="polite">Loading catalog...</span>
+    </div>
+    <section class="results" id="results" aria-label="Package results"></section>
+  </main>
+
+  <footer class="site">
+    <div class="foot">
+      <div class="foot-links">
+        <a href="https://github.com/Topurrra/voli" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/Topurrra/voli-registry" target="_blank" rel="noopener noreferrer">Registry</a>
+        <a href="https://github.com/Topurrra/voli/tree/main/license" target="_blank" rel="noopener noreferrer">License</a>
+        <p class="made">
+          Made with &#128059;
+          <a href="https://github.com/Topurrra" target="_blank" rel="noopener noreferrer">By Topurrra</a>
+          &middot; a fast, no-admin package manager for Windows.
+        </p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/catalog.js"></script>
+  <script>
+    (function () {
+      'use strict';
+
+      var form = document.getElementById('catalog-search');
+      var input = document.getElementById('search-input');
+      var sort = document.getElementById('sort');
+      var status = document.getElementById('result-status');
+      var results = document.getElementById('results');
+      var packages = null;
+      var timer = null;
+      var query = new URLSearchParams(window.location.search).get('q') || '';
+
+      input.value = query;
+
+      function render() {
+        query = input.value.trim();
+        results.innerHTML = '';
+
+        if (!packages) {
+          status.textContent = 'Loading catalog...';
+          return;
+        }
+
+        if (!query) {
+          updateUrl('');
+          status.textContent = packages.length + ' packages ready to search';
+          results.innerHTML =
+            '<div class="empty"><strong>Start with a package, command, or keyword.</strong>' +
+            'Try chrome, rust, editor, database, or any executable name.</div>';
+          return;
+        }
+
+        var matches = VoliCatalog.search(packages, query);
+        if (sort.value === 'name') {
+          matches.sort(function (a, b) { return a.p.n.localeCompare(b.p.n); });
+        }
+
+        status.textContent = matches.length + ' result' + (matches.length === 1 ? '' : 's') +
+          ' for "' + query + '"';
+        updateUrl(query);
+
+        if (!matches.length) {
+          results.innerHTML =
+            '<div class="empty"><strong>No packages matched.</strong>' +
+            'Try a shorter name or a command the package might provide.</div>';
+          return;
+        }
+
+        var fragment = document.createDocumentFragment();
+        for (var i = 0; i < matches.length; i++) {
+          fragment.appendChild(resultCard(matches[i].p));
+        }
+        results.appendChild(fragment);
+      }
+
+      function resultCard(pkg) {
+        var card = document.createElement('article');
+        var command = VoliCatalog.command(pkg.n);
+        var bins = (pkg.b || []).slice(0, 4).map(function (bin) {
+          return '<code>' + VoliCatalog.highlight(bin, query) + '</code>';
+        }).join('');
+
+        card.className = 'result-card';
+        card.innerHTML =
+          VoliCatalog.icon(pkg, 'package-icon') +
+          '<div><h2 class="package-title"><span>' + VoliCatalog.highlight(pkg.n, query) + '</span>' +
+          '<span class="package-version">' + VoliCatalog.escape(pkg.v) + '</span></h2>' +
+          '<p class="package-description">' + VoliCatalog.highlight(pkg.d || 'No description available.', query) + '</p>' +
+          (bins ? '<div class="package-bins" aria-label="Provided commands">' + bins + '</div>' : '') + '</div>' +
+          '<button class="install-copy" type="button">' + VoliCatalog.escape(command) + '</button>';
+
+        VoliCatalog.wireIcon(card.querySelector('.package-icon'));
+        var button = card.querySelector('.install-copy');
+        button.addEventListener('click', function () {
+          copyText(command, button);
+        });
+        return card;
+      }
+
+      function updateUrl(value) {
+        var url = new URL(window.location.href);
+        if (value) url.searchParams.set('q', value);
+        else url.searchParams.delete('q');
+        history.replaceState(null, '', url);
+      }
+
+      function copyText(text, button) {
+        function done() {
+          var original = button.textContent;
+          button.classList.add('copied');
+          button.textContent = 'Copied';
+          setTimeout(function () {
+            button.classList.remove('copied');
+            button.textContent = original;
+          }, 1400);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () { fallback(text); done(); });
+        } else {
+          fallback(text);
+          done();
+        }
+      }
+
+      function fallback(text) {
+        var textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try { document.execCommand('copy'); } catch (e) { }
+        document.body.removeChild(textarea);
+      }
+
+      form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        render();
+      });
+
+      input.addEventListener('input', function () {
+        clearTimeout(timer);
+        timer = setTimeout(render, 80);
+      });
+
+      sort.addEventListener('change', render);
+
+      VoliCatalog.load().then(function (data) {
+        packages = data;
+        render();
+        if (!query && window.matchMedia('(pointer: fine)').matches) input.focus();
+      }).catch(function () {
+        status.innerHTML =
+          'Catalog unavailable. <a class="fallback-link" href="https://github.com/Topurrra/voli-registry/tree/main/manifests" rel="noopener">Browse manifests on GitHub</a>.';
+      });
+    })();
+  </script>
+</body>
+
+</html>

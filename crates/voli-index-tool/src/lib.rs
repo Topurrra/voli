@@ -232,12 +232,16 @@ pub fn build(
             .values()
             .map(|m| {
                 let bins: Vec<&str> = m.bin.iter().map(|b| b.path()).collect();
-                serde_json::json!({
+                let mut package = serde_json::json!({
                     "n": m.name,
                     "v": m.version,
                     "d": m.description.as_deref().unwrap_or(""),
                     "b": bins,
-                })
+                });
+                if let Some(icon) = &m.icon {
+                    package["i"] = serde_json::json!(icon);
+                }
+                package
             })
             .collect();
         let minified = serde_json::to_string(&pkgs).context("serializing packages.json")?;
@@ -500,6 +504,9 @@ fn emit_bumped(
     if let Some(h) = &m.homepage {
         o.push_str(&format!("homepage = \"{h}\"\n"));
     }
+    if let Some(icon) = &m.icon {
+        o.push_str(&format!("icon = \"{icon}\"\n"));
+    }
     if let Some(l) = &m.license {
         o.push_str(&format!("license = \"{l}\"\n"));
     }
@@ -602,6 +609,7 @@ mod tests {
             r#"name = "{name}"
 version = "{version}"
 description = "test package {name}"
+icon = "https://example.com/{name}.svg"
 kind = "app"
 bin = ["{bin}"]
 
@@ -764,6 +772,11 @@ sha256 = "{hash}"
         let remote: RemoteIndex = serde_json::from_str(&json).unwrap();
         assert_eq!(remote.sha256, meta.sha256);
         assert_eq!(remote.size, meta.size);
+
+        let packages: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(out.path().join("packages.json")).unwrap())
+                .unwrap();
+        assert_eq!(packages[0]["i"], "https://example.com/fd.svg");
 
         // Decompress .zst → must match sha + size in index.json.
         let zst = fs::read(out.path().join("index.sqlite.zst")).unwrap();
