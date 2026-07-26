@@ -6,6 +6,10 @@
 
 <p align="center">⚡ A fast, no-admin package manager for Windows. One binary, clean uninstalls, zero scripts.</p>
 
+<p align="center">
+  <img src="assets/Voli.gif" width="400" alt="Voli the bear in the forest">
+</p>
+
 ## Install
 
 One line in PowerShell (no admin):
@@ -18,7 +22,7 @@ The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else - read it first
 if you like: [`install.ps1`](install.ps1).
 
-> **Status: v0.5.6, still pre-1.0.** The core workflow is released and working,
+> **Status: v0.5.7, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)
