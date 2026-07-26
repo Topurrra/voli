@@ -3,14 +3,14 @@ resolver = "2"
 members = ["crates/voli", "crates/voli-core", "crates/voli-shim", "crates/voli-index-tool"]
 
 [workspace.package]
-version = "0.5.4"
+version = "0.5.5"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Topurrra/voli"
 authors = ["Nika Topuria"]
 
 [workspace.dependencies]
-voli-core = { path = "crates/voli-core", version = "0.5.4" }
+voli-core = { path = "crates/voli-core", version = "0.5.5" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
