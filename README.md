@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/Voli.gif" width="400" alt="Voli the bear in the forest">
+  <img src="assets/Voli.gif" width="800" alt="Voli the bear in the forest">
 </p>
 
 <h1 align="center">Voli · The Bear That Delivers</h1>
