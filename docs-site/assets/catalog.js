@@ -9,31 +9,11 @@
     if (packages) return Promise.resolve(packages);
     if (pending) return pending;
 
-    var cached = null;
-    try {
-      cached = sessionStorage.getItem('voli-pkgs');
-    } catch (e) {
-      // Continue without browser storage.
-    }
-    if (cached) {
-      try {
-        packages = JSON.parse(cached);
-        return Promise.resolve(packages);
-      } catch (e) {
-        sessionStorage.removeItem('voli-pkgs');
-      }
-    }
-
     pending = fetch(DATA_URL).then(function (response) {
       if (!response.ok) throw new Error(String(response.status));
       return response.json();
     }).then(function (data) {
       packages = data;
-      try {
-        sessionStorage.setItem('voli-pkgs', JSON.stringify(data));
-      } catch (e) {
-        // The catalog still works when browser storage is unavailable.
-      }
       return data;
     }).finally(function () {
       pending = null;
@@ -95,11 +75,21 @@
 
   function icon(pkg, className) {
     var initial = (pkg.n.match(/[a-z0-9]/i) || ['?'])[0];
-    var image = pkg.i
-      ? '<img src="' + escapeHtml(pkg.i) + '" alt="" loading="lazy" referrerpolicy="no-referrer" hidden>'
+    var source = pkg.i || favicon(pkg.h);
+    var image = source
+      ? '<img src="' + escapeHtml(source) + '" alt="" loading="lazy" referrerpolicy="no-referrer" hidden>'
       : '';
     return '<span class="' + className + '" aria-hidden="true">' +
       '<span class="icon-fallback">' + escapeHtml(initial) + '</span>' + image + '</span>';
+  }
+
+  function favicon(homepage) {
+    try {
+      var url = new URL(homepage);
+      return url.protocol === 'https:' ? url.origin + '/favicon.ico' : '';
+    } catch (e) {
+      return '';
+    }
   }
 
   function wireIcon(root) {

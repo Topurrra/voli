@@ -238,6 +238,9 @@ pub fn build(
                     "d": m.description.as_deref().unwrap_or(""),
                     "b": bins,
                 });
+                if let Some(homepage) = &m.homepage {
+                    package["h"] = serde_json::json!(homepage);
+                }
                 if let Some(icon) = &m.icon {
                     package["i"] = serde_json::json!(icon);
                 }
@@ -609,6 +612,7 @@ mod tests {
             r#"name = "{name}"
 version = "{version}"
 description = "test package {name}"
+homepage = "https://example.com/{name}"
 icon = "https://example.com/{name}.svg"
 kind = "app"
 bin = ["{bin}"]
@@ -777,6 +781,7 @@ sha256 = "{hash}"
             serde_json::from_str(&fs::read_to_string(out.path().join("packages.json")).unwrap())
                 .unwrap();
         assert_eq!(packages[0]["i"], "https://example.com/fd.svg");
+        assert_eq!(packages[0]["h"], "https://example.com/fd");
 
         // Decompress .zst → must match sha + size in index.json.
         let zst = fs::read(out.path().join("index.sqlite.zst")).unwrap();
