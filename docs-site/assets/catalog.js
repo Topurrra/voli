@@ -104,10 +104,7 @@
     }
     image.addEventListener('load', loaded);
     image.addEventListener('error', failed);
-    if (image.complete) {
-      if (image.naturalWidth) loaded();
-      else failed();
-    }
+    if (image.complete && image.naturalWidth) loaded();
   }
 
   window.VoliCatalog = {
