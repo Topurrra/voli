@@ -1662,7 +1662,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voli"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "clap",
  "hex",
@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "voli-core"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "ed25519-dalek",
  "flate2",
@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "voli-index-tool"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -1731,7 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "voli-shim"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "ico",
  "image",
