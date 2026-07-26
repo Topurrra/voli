@@ -55,7 +55,7 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Check GitHub releases for newer versions and emit updated manifests.
+    /// Check supported release endpoints and emit updated manifests.
     Bump {
         /// The `manifests/` directory.
         dir: PathBuf,

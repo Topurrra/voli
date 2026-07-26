@@ -77,7 +77,7 @@
     var initial = (pkg.n.match(/[a-z0-9]/i) || ['?'])[0];
     var source = pkg.i || favicon(pkg.h);
     var image = source
-      ? '<img src="' + escapeHtml(source) + '" alt="" loading="lazy" referrerpolicy="no-referrer" hidden>'
+      ? '<img src="' + escapeHtml(source) + '" alt="" loading="lazy" referrerpolicy="no-referrer">'
       : '';
     return '<span class="' + className + '" aria-hidden="true">' +
       '<span class="icon-fallback">' + escapeHtml(initial) + '</span>' + image + '</span>';
@@ -96,7 +96,6 @@
     var image = root.querySelector('img');
     if (!image) return;
     function loaded() {
-      image.hidden = false;
       root.classList.add('has-image');
     }
     function failed() {
@@ -107,6 +106,18 @@
     if (image.complete && image.naturalWidth) loaded();
   }
 
+  function updated(pkg) {
+    var value = pkg.u;
+    if (typeof value === 'number') return value < 1000000000000 ? value * 1000 : value;
+    var parsed = Date.parse(value || '');
+    return isNaN(parsed) ? 0 : parsed;
+  }
+
+  function provenance(pkg) {
+    var value = String(pkg.p || '').toLowerCase();
+    return value === 'official' || value === 'community' ? value : '';
+  }
+
   window.VoliCatalog = {
     load: load,
     search: search,
@@ -114,6 +125,8 @@
     highlight: highlight,
     icon: icon,
     wireIcon: wireIcon,
+    updated: updated,
+    provenance: provenance,
     command: function (name) { return 'voli install ' + name; }
   };
 })();

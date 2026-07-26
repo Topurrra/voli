@@ -1543,9 +1543,19 @@
     }
 
     .quick-icon img {
+      grid-area: 1 / 1;
       width: 100%;
       height: 100%;
       object-fit: contain;
+      opacity: 0;
+    }
+
+    .quick-icon .icon-fallback {
+      grid-area: 1 / 1;
+    }
+
+    .quick-icon.has-image img {
+      opacity: 1;
     }
 
     .quick-icon.has-image .icon-fallback {
@@ -1647,8 +1657,8 @@
             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
           <input class="header-search-input" id="pkg-search" name="q" type="search" placeholder="Search packages"
-            autocomplete="off" spellcheck="false" aria-label="Search packages" aria-controls="search-popover"
-            aria-expanded="false" aria-autocomplete="list">
+            autocomplete="off" spellcheck="false" role="combobox" aria-label="Search packages"
+            aria-controls="search-results" aria-expanded="false" aria-autocomplete="list" aria-haspopup="listbox">
           <kbd class="header-search-key" aria-hidden="true">/</kbd>
         </div>
         <div class="header-search-popover" id="search-popover" hidden>
@@ -2457,7 +2467,7 @@
 
       function render() {
         var query = input.value.trim();
-        active = -1;
+        setActive(-1);
         rendered = [];
         results.innerHTML = '';
         if (!query) {
@@ -2480,6 +2490,7 @@
             var row = document.createElement('button');
             var command = VoliCatalog.command(p.n);
             row.type = 'button';
+            row.id = 'search-option-' + rendered.length;
             row.className = 'quick-result';
             row.setAttribute('role', 'option');
             row.setAttribute('aria-selected', 'false');
@@ -2504,6 +2515,8 @@
           return;
         }
         status.textContent = 'Loading catalog...';
+        setActive(-1);
+        rendered = [];
         results.innerHTML = '';
         open();
         VoliCatalog.load().then(function (data) {
@@ -2549,6 +2562,9 @@
         if (active >= 0 && active < rendered.length) {
           rendered[active].classList.add('active');
           rendered[active].setAttribute('aria-selected', 'true');
+          input.setAttribute('aria-activedescendant', rendered[active].id);
+        } else {
+          input.removeAttribute('aria-activedescendant');
         }
       }
 

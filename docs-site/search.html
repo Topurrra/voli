@@ -303,6 +303,36 @@
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--verm) 22%, transparent);
     }
 
+    .source-filters {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: .4rem;
+      color: var(--sage);
+      font: .76rem var(--mono);
+    }
+
+    .source-filters[hidden] {
+      display: none;
+    }
+
+    .source-filter {
+      padding: .38rem .68rem;
+      color: var(--sage-bright);
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .source-filter[aria-pressed="true"] {
+      color: var(--cream);
+      background: color-mix(in srgb, var(--verm) 18%, transparent);
+      border-color: color-mix(in srgb, var(--verm) 52%, transparent);
+    }
+
     .results-head {
       display: flex;
       justify-content: space-between;
@@ -352,9 +382,19 @@
     }
 
     .package-icon img {
+      grid-area: 1 / 1;
       width: 100%;
       height: 100%;
       object-fit: contain;
+      opacity: 0;
+    }
+
+    .package-icon .icon-fallback {
+      grid-area: 1 / 1;
+    }
+
+    .package-icon.has-image img {
+      opacity: 1;
     }
 
     .package-icon.has-image .icon-fallback {
@@ -568,7 +608,14 @@
         <select class="sort-select" id="sort" aria-label="Sort results">
           <option value="relevance">Relevance</option>
           <option value="name">Name A-Z</option>
+          <option value="updated" id="sort-updated" hidden>Recently updated</option>
         </select>
+        <div class="source-filters" id="source-filters" hidden role="group" aria-label="Filter by package source">
+          <span>Source:</span>
+          <button class="source-filter" type="button" data-source="" aria-pressed="true">All</button>
+          <button class="source-filter" type="button" data-source="official" aria-pressed="false">Official</button>
+          <button class="source-filter" type="button" data-source="community" aria-pressed="false">Community</button>
+        </div>
       </form>
     </section>
 
@@ -601,11 +648,15 @@
       var form = document.getElementById('catalog-search');
       var input = document.getElementById('search-input');
       var sort = document.getElementById('sort');
+      var sortUpdated = document.getElementById('sort-updated');
+      var sourceFilters = document.getElementById('source-filters');
+      var sourceButtons = sourceFilters.querySelectorAll('.source-filter');
       var status = document.getElementById('result-status');
       var results = document.getElementById('results');
       var packages = null;
       var timer = null;
       var query = new URLSearchParams(window.location.search).get('q') || '';
+      var source = '';
 
       input.value = query;
 
@@ -628,12 +679,22 @@
         }
 
         var matches = VoliCatalog.search(packages, query);
+        if (source) {
+          matches = matches.filter(function (item) {
+            return VoliCatalog.provenance(item.p) === source;
+          });
+        }
         if (sort.value === 'name') {
           matches.sort(function (a, b) { return a.p.n.localeCompare(b.p.n); });
+        } else if (sort.value === 'updated') {
+          matches.sort(function (a, b) {
+            return VoliCatalog.updated(b.p) - VoliCatalog.updated(a.p) ||
+              a.p.n.localeCompare(b.p.n);
+          });
         }
 
         status.textContent = matches.length + ' result' + (matches.length === 1 ? '' : 's') +
-          ' for "' + query + '"';
+          ' for "' + query + '"' + (source ? ' from ' + source + ' packages' : '');
         updateUrl(query);
 
         if (!matches.length) {
@@ -721,9 +782,31 @@
       });
 
       sort.addEventListener('change', render);
+      sourceButtons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          source = button.getAttribute('data-source');
+          sourceButtons.forEach(function (item) {
+            item.setAttribute('aria-pressed', String(item === button));
+          });
+          render();
+        });
+      });
 
       VoliCatalog.load().then(function (data) {
         packages = data;
+        sortUpdated.hidden = !packages.some(function (pkg) {
+          return VoliCatalog.updated(pkg) > 0;
+        });
+        var availableSources = {};
+        packages.forEach(function (pkg) {
+          var value = VoliCatalog.provenance(pkg);
+          if (value) availableSources[value] = true;
+        });
+        sourceButtons.forEach(function (button) {
+          var value = button.getAttribute('data-source');
+          if (value) button.hidden = !availableSources[value];
+        });
+        sourceFilters.hidden = !Object.keys(availableSources).length;
         render();
         if (!query && window.matchMedia('(pointer: fine)').matches) input.focus();
       }).catch(function () {
