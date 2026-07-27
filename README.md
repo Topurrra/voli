@@ -18,7 +18,7 @@ The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else - read it first
 if you like: [`install.ps1`](install.ps1).
 
-> **Status: v0.6.0, still pre-1.0.** The core workflow is released and working,
+> **Status: v0.8.0, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)
@@ -45,6 +45,7 @@ Global options:
 | `voli install skill/<name> --for <agent>` | Install a published skill for one or more supported agents. |
 | `voli delete <pkg> ...` | Delete packages by replaying their ledger. Persist data is kept by default. |
 | `voli delete skill/<name> --for <agent>` | Delete one or more target-scoped skill mappings. |
+| `voli memory <cmd>` | Encrypted, local memory for AI agents - see [Agent memory](#agent-memory). |
 | `voli update` | Refresh the local signed package index. |
 | `voli upgrade [pkg ...]` | Upgrade named packages. Use `--all` to upgrade everything except pinned packages. |
 | `voli list` | List installed packages and versions. |
@@ -132,6 +133,26 @@ Without `--for`, an interactive terminal offers a filtered multi-select and
 remembers the last successful selection. Non-interactive commands must provide
 an explicit target. Targets that share one physical directory are installed
 once and reference-counted for safe deletion. Link mode remains deferred.
+
+## Agent memory
+
+`voli memory` is a persistent, encrypted, on-disk memory for AI agents - one
+store that outlives restarts, context resets, and model changes. Zero network,
+like the rest of Voli: every record is encrypted at rest (XChaCha20-Poly1305,
+key from the OS keychain or an Argon2id passphrase) and hash-chained, so
+tampering is caught by `voli memory verify`.
+
+```powershell
+voli memory read --task "<what you're doing>"   # load context - run first
+voli memory note "<one line>"                    # record a fact or decision
+voli memory search "<question>"                  # best-match retrieval
+voli memory verify                               # prove nothing was altered
+```
+
+Recall is firewalled - secrets (keys, cards, SSNs) are masked before an agent
+sees them and `--private` notes are withheld. `voli memory prompt` prints the
+setup prompt that wires an agent to the whole workflow. Bitemporal validity,
+supersession, contradiction warnings, and passphrase recovery are built in.
 
 ## How it works
 

@@ -1,16 +1,17 @@
 [workspace]
 resolver = "2"
-members = ["crates/voli", "crates/voli-core", "crates/voli-shim", "crates/voli-index-tool"]
+members = ["crates/voli", "crates/voli-core", "crates/voli-shim", "crates/voli-index-tool", "crates/stela"]
 
 [workspace.package]
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Topurrra/voli"
 authors = ["Nika Topuria"]
 
 [workspace.dependencies]
-voli-core = { path = "crates/voli-core", version = "0.7.1" }
+voli-core = { path = "crates/voli-core", version = "0.8.0" }
+stela = { path = "crates/stela", version = "0.8.0" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -40,9 +41,16 @@ indicatif = "0.17"
 anyhow = "1"
 tiny_http = "0.12"
 winreg = "0.52"
+# stela (voli memory) — encrypted agent-memory engine.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+argon2 = "0.5"
+blake2 = "0.10"
+zeroize = "1"
+keyring = "3"
 windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
     "Win32_System_Com",
+    "Win32_System_LibraryLoader",
     "Win32_Foundation",
 ] }

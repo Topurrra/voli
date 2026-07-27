@@ -1,0 +1,36 @@
+[package]
+name = "stela"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "STELA: permanent, verifiable, encrypted memory for AI agents (the voli memory engine)"
+
+[lib]
+name = "stela"
+path = "src/lib.rs"
+
+[dependencies]
+# Per-record authenticated encryption at rest. default-features off so we supply
+# our own nonces (no OsRng/rand pathway); `alloc` gives Aead::encrypt/decrypt.
+chacha20poly1305 = { workspace = true }
+# Passphrase key custody (Argon2id). Pulls blake2 in transitively, so the hash
+# chain below reuses it at zero extra crate cost.
+argon2 = { workspace = true }
+# blake2b hash chain (STELA's tamper-evidence). Already compiled via argon2.
+blake2 = { workspace = true }
+zeroize = { workspace = true }
+getrandom = { workspace = true }
+hex = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# OS keychain custody is Windows-only here (Credential Manager). Gated so the
+# crate stays green on non-Windows CI; passphrase custody is the portable default.
+[target.'cfg(windows)'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

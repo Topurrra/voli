@@ -2,6 +2,7 @@
 
 mod cmd_index;
 mod cmd_install;
+mod cmd_memory;
 mod skill_cli;
 
 use std::io::{IsTerminal, Read, Write};
@@ -149,6 +150,11 @@ enum Command {
     /// Delete voli and all installed packages completely (zero trace).
     #[command(alias = "self-uninstall")]
     SelfDelete,
+    /// Permanent, verifiable, encrypted memory for AI agents (STELA).
+    Memory {
+        #[command(subcommand)]
+        action: cmd_memory::MemoryCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -232,6 +238,7 @@ fn main() {
         Command::Info { package } => cmd_index::run_info(&root(), package, cli.json),
         Command::SelfUpdate => cmd_self_update(),
         Command::SelfDelete => cmd_self_delete(cli.yes),
+        Command::Memory { action } => cmd_memory::run(action),
     };
     std::process::exit(code);
 }
