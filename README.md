@@ -42,9 +42,9 @@ Global options:
 | Command | Purpose |
 |---|---|
 | `voli install <pkg>[@version] ...` | Install one or more packages from the signed registry. |
-| `voli install skill/<name> --for <agent>` | Install a published skill globally for one supported agent. |
+| `voli install skill/<name> --for <agent>` | Install a published skill for one or more supported agents. |
 | `voli delete <pkg> ...` | Delete packages by replaying their ledger. Persist data is kept by default. |
-| `voli delete skill/<name> --for <agent>` | Delete one target-scoped skill installation. |
+| `voli delete skill/<name> --for <agent>` | Delete one or more target-scoped skill mappings. |
 | `voli update` | Refresh the local signed package index. |
 | `voli upgrade [pkg ...]` | Upgrade named packages. Use `--all` to upgrade everything except pinned packages. |
 | `voli list` | List installed packages and versions. |
@@ -73,6 +73,9 @@ voli install ripgrep@15.2.0
 voli install .\local-package.toml --archive .\local-package.zip
 voli install googlechrome --no-env
 voli install skill/tdd --for codex
+voli install skill/tdd --for codex --for cursor
+voli install skill/tdd --for detected --global
+voli install skill/tdd --for all --project
 
 voli list
 voli info ripgrep
@@ -87,6 +90,7 @@ voli upgrade --all
 voli delete ripgrep
 voli delete ripgrep --purge
 voli delete skill/tdd --for codex
+voli delete skill/tdd --for codex --for cursor --global
 
 voli cleanup --dry-run
 voli cleanup --cache-days 7
@@ -122,10 +126,12 @@ voli list
 voli delete skill/example-skill --for codex
 ```
 
-Current skill installation is global, uses a direct copy, and accepts one
-`--for` target. Interactive agent selection, repeatable targets,
-`--for detected`, `--for all`, project scope, and optional link mode are
-planned for a future release.
+Skill installation uses direct copies and supports repeatable `--for` targets,
+`--for detected`, `--for all`, and explicit `--project` or `--global` scope.
+Without `--for`, an interactive terminal offers a filtered multi-select and
+remembers the last successful selection. Non-interactive commands must provide
+an explicit target. Targets that share one physical directory are installed
+once and reference-counted for safe deletion. Link mode remains deferred.
 
 ## How it works
 

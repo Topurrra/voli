@@ -118,6 +118,22 @@
     return value === 'official' || value === 'community' ? value : '';
   }
 
+  function kind(pkg) {
+    return String(pkg && pkg.k || 'app').toLowerCase();
+  }
+
+  function filterKind(data, selected) {
+    return data.filter(function (pkg) { return kind(pkg) === selected; });
+  }
+
+  function command(pkg, agent) {
+    if (typeof pkg === 'string') return 'voli install ' + pkg;
+    if (kind(pkg) === 'skill') {
+      return 'voli install skill/' + pkg.n + ' --for ' + (agent || 'codex');
+    }
+    return 'voli install ' + pkg.n;
+  }
+
   window.VoliCatalog = {
     load: load,
     search: search,
@@ -127,6 +143,8 @@
     wireIcon: wireIcon,
     updated: updated,
     provenance: provenance,
-    command: function (name) { return 'voli install ' + name; }
+    kind: kind,
+    filterKind: filterKind,
+    command: command
   };
 })();

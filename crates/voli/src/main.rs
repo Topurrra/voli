@@ -2,6 +2,7 @@
 
 mod cmd_index;
 mod cmd_install;
+mod skill_cli;
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -10,8 +11,8 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use voli_core::{
-    Action, FetchError, InstallError, Kind, PackageRef, Paths, RemoteError, SkillTarget, State,
-    UpgradeOutcome, config, env, uninstall, uninstall_skill, upgrade,
+    Action, FetchError, InstallError, Kind, PackageRef, Paths, RemoteError, State, UpgradeOutcome,
+    config, env, uninstall, uninstall_installed_skill, uninstall_skill_scoped, upgrade,
 };
 
 /// Exit code for a runtime error (bad args, install failure, …).
@@ -55,7 +56,13 @@ enum Command {
         no_env: bool,
         /// Install a skill for this agent.
         #[arg(long = "for")]
-        for_agent: Option<String>,
+        for_agent: Vec<String>,
+        /// Install a skill relative to the current project.
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+        /// Install a skill under the user profile.
+        #[arg(long)]
+        global: bool,
         /// Download requested app packages concurrently, then install safely in order.
         #[arg(short = 'p', long)]
         parallel: bool,
@@ -70,7 +77,13 @@ enum Command {
         purge: bool,
         /// Delete a skill from this agent.
         #[arg(long = "for")]
-        for_agent: Option<String>,
+        for_agent: Vec<String>,
+        /// Delete a project-scoped skill.
+        #[arg(long, conflicts_with = "global")]
+        project: bool,
+        /// Delete a global skill.
+        #[arg(long)]
+        global: bool,
     },
     /// Refresh the local package index.
     Update,
@@ -169,6 +182,8 @@ fn main() {
             archive,
             no_env,
             for_agent,
+            project,
+            global,
             parallel,
         } => cmd_install::run(
             packages,
@@ -178,7 +193,9 @@ fn main() {
                 json: cli.json,
                 yes: cli.yes,
                 no_env: *no_env,
-                for_agent: for_agent.as_deref(),
+                for_agents: for_agent,
+                project: *project,
+                global: *global,
                 parallel: *parallel,
             },
         ),
@@ -186,7 +203,17 @@ fn main() {
             packages,
             purge,
             for_agent,
-        } => cmd_delete(packages, *purge, for_agent.as_deref()),
+            project,
+            global,
+        } => cmd_delete(
+            packages,
+            *purge,
+            for_agent,
+            *project,
+            *global,
+            cli.yes || cli.json,
+            cli.json,
+        ),
         Command::List => cmd_list(cli.json),
         Command::Upgrade { packages, all } => cmd_upgrade(packages, *all, cli.json),
         Command::Pin { package } => cmd_pin(package, true),
@@ -248,7 +275,15 @@ pub(crate) fn user_home() -> Option<PathBuf> {
         })
 }
 
-fn cmd_delete(packages: &[String], purge: bool, for_agent: Option<&str>) -> i32 {
+fn cmd_delete(
+    packages: &[String],
+    purge: bool,
+    for_agents: &[String],
+    project_scope: bool,
+    global_scope: bool,
+    noninteractive: bool,
+    json: bool,
+) -> i32 {
     let root = root();
     let mut parsed = Vec::with_capacity(packages.len());
     for package in packages {
@@ -269,29 +304,14 @@ fn cmd_delete(packages: &[String], purge: bool, for_agent: Option<&str>) -> i32 
         eprintln!("error: MCP deletion is not available yet");
         return EXIT_ERROR;
     }
-    if kind == Kind::App && for_agent.is_some() {
-        eprintln!("error: --for is only valid for skill packages");
+    if kind == Kind::App && (!for_agents.is_empty() || project_scope || global_scope) {
+        eprintln!("error: --for, --project, and --global are only valid for skill packages");
         return EXIT_ERROR;
     }
     if kind == Kind::Skill && purge {
         eprintln!("error: --purge is only valid for app packages");
         return EXIT_ERROR;
     }
-    let target = if kind == Kind::Skill {
-        let Some(value) = for_agent else {
-            eprintln!("error: skill packages require --for <agent>");
-            return EXIT_ERROR;
-        };
-        match value.parse::<SkillTarget>() {
-            Ok(target) => Some(target),
-            Err(error) => {
-                eprintln!("error: {error}");
-                return EXIT_ERROR;
-            }
-        }
-    } else {
-        None
-    };
     let home = if kind == Kind::Skill {
         let Some(home) = user_home() else {
             return EXIT_ERROR;
@@ -300,31 +320,74 @@ fn cmd_delete(packages: &[String], purge: bool, for_agent: Option<&str>) -> i32 
     } else {
         None
     };
+    let selection = if kind == Kind::Skill {
+        match skill_cli::resolve(
+            for_agents,
+            project_scope,
+            global_scope,
+            noninteractive,
+            home.as_deref().expect("skill home resolved"),
+            &root,
+        ) {
+            Ok(selection) => {
+                skill_cli::print_plan(
+                    &parsed
+                        .iter()
+                        .map(|package| package.name.clone())
+                        .collect::<Vec<_>>(),
+                    &selection,
+                    home.as_deref().expect("skill home resolved"),
+                    json,
+                );
+                if !skill_cli::confirm(noninteractive, json) {
+                    println!("aborted.");
+                    return 0;
+                }
+                Some(selection)
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                return EXIT_ERROR;
+            }
+        }
+    } else {
+        None
+    };
 
     let mut code = 0;
     for package in parsed {
         if package.kind == Kind::Skill {
-            let activity = pulse_bar(format!("deleting skill/{}", package.name));
-            let result = uninstall_skill(
-                &package.name,
-                target.expect("skill target validated"),
-                home.as_deref().expect("skill home resolved"),
-                &root,
-            );
-            activity.finish_and_clear();
-            match result {
-                Ok(report) => println!(
-                    "deleted skill/{} from {}",
-                    report.name,
-                    report.target.as_str()
-                ),
-                Err(error) => {
-                    print_remote_error(
-                        "delete",
-                        &format!("skill/{}", package.name),
-                        &RemoteError::Skill(error),
-                    );
-                    code = EXIT_ERROR;
+            let selection = selection.as_ref().expect("skill selection resolved");
+            for target in &selection.targets {
+                let activity = pulse_bar(format!(
+                    "deleting skill/{} from {}",
+                    package.name,
+                    target.as_str()
+                ));
+                let result = uninstall_skill_scoped(
+                    &package.name,
+                    *target,
+                    selection.scope,
+                    home.as_deref().expect("skill home resolved"),
+                    &selection.project,
+                    &root,
+                );
+                activity.finish_and_clear();
+                match result {
+                    Ok(report) => println!(
+                        "deleted skill/{} from {} ({})",
+                        report.name,
+                        report.target.as_str(),
+                        report.scope.as_str()
+                    ),
+                    Err(error) => {
+                        print_remote_error(
+                            "delete",
+                            &format!("skill/{}", package.name),
+                            &RemoteError::Skill(error),
+                        );
+                        code = EXIT_ERROR;
+                    }
                 }
             }
             continue;
@@ -389,6 +452,7 @@ fn cmd_list(json: bool) -> i32 {
                 "name": skill.name,
                 "version": skill.version,
                 "target": skill.target,
+                "scope": skill.scope,
                 "installed_at": skill.installed_at,
             })
         }));
@@ -401,8 +465,8 @@ fn cmd_list(json: bool) -> i32 {
         }
         for skill in &skills {
             println!(
-                "skill/{}  {}  [{}]",
-                skill.name, skill.version, skill.target
+                "skill/{}  {}  [{}:{}]",
+                skill.name, skill.version, skill.target, skill.scope
             );
         }
     }
@@ -1427,24 +1491,16 @@ fn cmd_self_delete(auto_yes: bool) -> i32 {
             return EXIT_ERROR;
         };
         for skill in &skills {
-            let target = match skill.target.parse::<SkillTarget>() {
-                Ok(target) => target,
+            match uninstall_installed_skill(skill, &home, &root) {
+                Ok(_) => println!(
+                    "  deleted skill/{} [{}:{}]",
+                    skill.name, skill.target, skill.scope
+                ),
                 Err(error) => {
                     skill_delete_failed = true;
                     eprintln!(
-                        "  warning: delete skill/{} failed: invalid ledger target: {error}",
-                        skill.name
-                    );
-                    continue;
-                }
-            };
-            match uninstall_skill(&skill.name, target, &home, &root) {
-                Ok(_) => println!("  deleted skill/{} [{}]", skill.name, skill.target),
-                Err(error) => {
-                    skill_delete_failed = true;
-                    eprintln!(
-                        "  warning: delete skill/{} [{}] failed: {error}",
-                        skill.name, skill.target
+                        "  warning: delete skill/{} [{}:{}] failed: {error}",
+                        skill.name, skill.target, skill.scope
                     );
                 }
             }

@@ -1,0 +1,7 @@
+[
+  {"n":"ripgrep","v":"14.1.1","d":"Search files","b":["rg.exe"],"k":"app"},
+  {"n":"legacy-app","v":"1.0.0","d":"Legacy app row","b":[]},
+  {"n":"tdd","v":"2026.7.27","d":"Test-driven development","b":[],"k":"skill"},
+  {"n":"frontend-design","v":"2026.7.27","d":"Build polished interfaces","b":[],"k":"skill"},
+  {"n":"future-server","v":"1.0.0","d":"Future catalog kind","b":[],"k":"mcp"}
+]

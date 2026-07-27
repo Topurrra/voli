@@ -7,26 +7,78 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillScope {
+    Global,
+    Project,
+}
+
+impl SkillScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Project => "project",
+        }
+    }
+}
+
 /// Agent installations supported by the skill installer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SkillTarget {
     id: &'static str,
+    project_dir: &'static str,
     global_dir: &'static str,
+    marker: &'static str,
+    appdata_marker: Option<&'static str>,
 }
 
 impl SkillTarget {
-    pub(crate) const fn new(id: &'static str, global_dir: &'static str) -> Self {
-        Self { id, global_dir }
+    pub(crate) const fn new_full(
+        id: &'static str,
+        project_dir: &'static str,
+        global_dir: &'static str,
+        marker: &'static str,
+    ) -> Self {
+        Self {
+            id,
+            project_dir,
+            global_dir,
+            marker,
+            appdata_marker: None,
+        }
+    }
+
+    pub(crate) const fn new_full_with_appdata(
+        id: &'static str,
+        project_dir: &'static str,
+        global_dir: &'static str,
+        marker: &'static str,
+        appdata_marker: &'static str,
+    ) -> Self {
+        Self {
+            id,
+            project_dir,
+            global_dir,
+            marker,
+            appdata_marker: Some(appdata_marker),
+        }
     }
 
     #[allow(non_upper_case_globals)]
-    pub const ClaudeCode: Self = Self::new("claude-code", ".claude/skills");
+    pub const ClaudeCode: Self =
+        Self::new_full("claude-code", ".claude/skills", ".claude/skills", ".claude");
     #[allow(non_upper_case_globals)]
-    pub const Codex: Self = Self::new("codex", ".agents/skills");
+    pub const Codex: Self = Self::new_full("codex", ".agents/skills", ".agents/skills", ".codex");
     #[allow(non_upper_case_globals)]
-    pub const Cursor: Self = Self::new("cursor", ".cursor/skills");
+    pub const Cursor: Self =
+        Self::new_full("cursor", ".agents/skills", ".cursor/skills", ".cursor");
     #[allow(non_upper_case_globals)]
-    pub const Windsurf: Self = Self::new("windsurf", ".codeium/windsurf/skills");
+    pub const Windsurf: Self = Self::new_full(
+        "windsurf",
+        ".windsurf/skills",
+        ".codeium/windsurf/skills",
+        ".codeium/windsurf",
+    );
 
     pub fn as_str(self) -> &'static str {
         self.id
@@ -35,6 +87,38 @@ impl SkillTarget {
     /// Resolve an agent's global skills directory from an explicit home path.
     pub fn global_skills_dir(self, home: &Path) -> PathBuf {
         home.join(self.global_dir)
+    }
+
+    pub fn project_skills_dir(self, project: &Path) -> PathBuf {
+        project.join(self.project_dir)
+    }
+
+    pub fn skills_dir(self, scope: SkillScope, home: &Path, project: &Path) -> PathBuf {
+        match scope {
+            SkillScope::Global => self.global_skills_dir(home),
+            SkillScope::Project => self.project_skills_dir(project),
+        }
+    }
+
+    pub fn marker_path(self, home: &Path) -> PathBuf {
+        home.join(self.marker)
+    }
+
+    pub fn is_detected(self, home: &Path) -> bool {
+        let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+        self.is_detected_in(home, appdata.as_deref())
+    }
+
+    pub fn is_detected_in(self, home: &Path, appdata: Option<&Path>) -> bool {
+        self.marker_path(home).exists()
+            || self
+                .appdata_marker
+                .zip(appdata)
+                .is_some_and(|(marker, base)| base.join(marker).exists())
+    }
+
+    pub fn all() -> &'static [SkillTarget] {
+        GENERATED_SKILL_TARGETS
     }
 }
 

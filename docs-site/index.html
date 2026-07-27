@@ -910,6 +910,15 @@
       color: var(--ink-muted);
     }
 
+    .agent-blurb {
+      margin: 3rem 0 0;
+    }
+
+    .agent-blurb a {
+      color: var(--verm-deep);
+      font-weight: 650;
+    }
+
     .g-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
@@ -1848,6 +1857,13 @@
               the signature doesn't check out.</p>
           </div>
         </div>
+        <div class="sec-head agent-blurb reveal">
+          <span class="eyebrow on-cream">For AI agents</span>
+          <h2 class="h-sec">Skills that leave <span class="accent on-cream">no surprises.</span></h2>
+          <p class="sub">Voli installs Agent Skills into your agent's directory with the same signed, no-scripts,
+            zero-trace rigor as apps. <a href="search.html?kind=skill">Browse skills and copy the command for your
+              agent.</a></p>
+        </div>
       </div>
     </section>
 
@@ -2475,7 +2491,11 @@
           return;
         }
 
-        var matches = VoliCatalog.search(pkgs, query);
+        var searchable = pkgs.filter(function (pkg) {
+          var kind = VoliCatalog.kind(pkg);
+          return kind === 'app' || kind === 'skill';
+        });
+        var matches = VoliCatalog.search(searchable, query);
         var total = matches.length;
         var show = matches.slice(0, 5);
         status.textContent = total
@@ -2488,7 +2508,7 @@
           (function (item) {
             var p = item.p;
             var row = document.createElement('button');
-            var command = VoliCatalog.command(p.n);
+            var command = VoliCatalog.command(p);
             row.type = 'button';
             row.id = 'search-option-' + rendered.length;
             row.className = 'quick-result';

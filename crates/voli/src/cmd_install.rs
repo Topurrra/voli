@@ -18,8 +18,8 @@ use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
 use voli_core::remote::{PrefetchStep, prefetch_remote};
 use voli_core::{
     Kind, Manifest, PackageRef, RemoteError, RemoteReport, SkillInstallReport, SkillRemoteReport,
-    SkillStep, SkillTarget, Step, env, install_manifest, install_remote_env, install_skill_archive,
-    install_skill_remote,
+    SkillStep, SkillTarget, Step, env, install_manifest, install_remote_env,
+    install_skill_archive_many, install_skill_remote_many,
 };
 
 const EXIT_OK: i32 = 0;
@@ -30,7 +30,9 @@ pub struct Options<'a> {
     pub json: bool,
     pub yes: bool,
     pub no_env: bool,
-    pub for_agent: Option<&'a str>,
+    pub for_agents: &'a [String],
+    pub project: bool,
+    pub global: bool,
     pub parallel: bool,
 }
 
@@ -41,7 +43,9 @@ pub fn run(packages: &[String], archive: Option<&Path>, options: Options<'_>) ->
         json,
         yes,
         no_env,
-        for_agent,
+        for_agents,
+        project,
+        global,
         parallel,
     } = options;
     // `--yes`, `--json`, or a non-TTY stdin all mean "don't wait for input":
@@ -52,9 +56,13 @@ pub fn run(packages: &[String], archive: Option<&Path>, options: Options<'_>) ->
             eprintln!("error: --parallel is only available for registry app packages");
             return EXIT_ERROR;
         }
-        return install_local_path(manifest, archive, root, json, auto, no_env, for_agent);
+        return install_local_path(
+            manifest, archive, root, json, auto, no_env, for_agents, project, global,
+        );
     }
-    install_network(packages, root, json, auto, no_env, for_agent, parallel)
+    install_network(
+        packages, root, json, auto, no_env, for_agents, project, global, parallel,
+    )
 }
 
 /// Build the per-package env consent closure (spec §8). Prints the requested
@@ -95,6 +103,7 @@ fn local_manifest(packages: &[String]) -> Option<&Path> {
     (arg.ends_with(".toml") && p.is_file()).then_some(p)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_local_path(
     manifest: &Path,
     archive: Option<&Path>,
@@ -102,7 +111,9 @@ fn install_local_path(
     json: bool,
     auto: bool,
     no_env: bool,
-    for_agent: Option<&str>,
+    for_agents: &[String],
+    project_scope: bool,
+    global_scope: bool,
 ) -> i32 {
     let Some(archive) = archive else {
         eprintln!("error: --archive <path> is required to install from a local manifest");
@@ -123,33 +134,61 @@ fn install_local_path(
         }
     };
     if parsed.kind == Kind::Skill {
-        let Some(target) = parse_target(for_agent) else {
-            return EXIT_ERROR;
-        };
         let Some(home) = crate::user_home() else {
             return EXIT_ERROR;
         };
-        return match install_skill_archive(&parsed, archive, target, &home, root) {
-            Ok(report) => {
+        let selection = match crate::skill_cli::resolve(
+            for_agents,
+            project_scope,
+            global_scope,
+            auto,
+            &home,
+            root,
+        ) {
+            Ok(selection) => selection,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return EXIT_ERROR;
+            }
+        };
+        crate::skill_cli::print_plan(std::slice::from_ref(&parsed.name), &selection, &home, json);
+        if !crate::skill_cli::confirm(auto, json) {
+            println!("aborted.");
+            return 0;
+        }
+        return match install_skill_archive_many(
+            &parsed,
+            archive,
+            &selection.targets,
+            selection.scope,
+            &home,
+            &selection.project,
+            root,
+        ) {
+            Ok(reports) => {
                 if json {
                     println!(
                         "{}",
                         serde_json::json!({
                             "ok": true,
-                            "installed": [{
+                            "installed": reports.iter().map(|report| serde_json::json!({
                                 "kind": "skill",
                                 "name": report.name,
                                 "version": report.version,
                                 "target": report.target.as_str(),
+                                "scope": report.scope.as_str(),
                                 "install_dir": report.install_dir.display().to_string(),
                                 "files": report.files,
-                            }],
+                            })).collect::<Vec<_>>(),
                             "skipped": [],
                         })
                     );
                 } else {
-                    print_skill_installed(&report);
+                    for report in &reports {
+                        print_skill_installed(report);
+                    }
                 }
+                crate::skill_cli::remember(&selection, root);
                 EXIT_OK
             }
             Err(error) => {
@@ -162,8 +201,8 @@ fn install_local_path(
         eprintln!("error: MCP installation is not available yet");
         return EXIT_ERROR;
     }
-    if for_agent.is_some() {
-        eprintln!("error: --for is only valid for skill packages");
+    if !for_agents.is_empty() || project_scope || global_scope {
+        eprintln!("error: --for, --project, and --global are only valid for skill packages");
         return EXIT_ERROR;
     }
     let mut consent = env_consent(auto, no_env);
@@ -331,13 +370,16 @@ fn row_style(color: &str) -> ProgressStyle {
     ProgressStyle::with_template(template).unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_network(
     packages: &[String],
     root: &Path,
     json: bool,
     auto: bool,
     no_env: bool,
-    for_agent: Option<&str>,
+    for_agents: &[String],
+    project_scope: bool,
+    global_scope: bool,
     parallel: bool,
 ) -> i32 {
     let mut parsed = Vec::with_capacity(packages.len());
@@ -361,27 +403,52 @@ fn install_network(
         eprintln!("error: MCP installation is not available yet");
         return EXIT_ERROR;
     }
-    if kind == Kind::App && for_agent.is_some() {
-        eprintln!("error: --for is only valid for skill packages");
+    if kind == Kind::App && (!for_agents.is_empty() || project_scope || global_scope) {
+        eprintln!("error: --for, --project, and --global are only valid for skill packages");
         return EXIT_ERROR;
     }
     if parallel && kind != Kind::App {
         eprintln!("error: --parallel is only available for app packages");
         return EXIT_ERROR;
     }
-    let target = if kind == Kind::Skill {
-        let Some(target) = parse_target(for_agent) else {
-            return EXIT_ERROR;
-        };
-        Some(target)
-    } else {
-        None
-    };
     let home = if kind == Kind::Skill {
         let Some(home) = crate::user_home() else {
             return EXIT_ERROR;
         };
         Some(home)
+    } else {
+        None
+    };
+    let selection = if kind == Kind::Skill {
+        match crate::skill_cli::resolve(
+            for_agents,
+            project_scope,
+            global_scope,
+            auto,
+            home.as_deref().expect("skill home resolved"),
+            root,
+        ) {
+            Ok(selection) => {
+                crate::skill_cli::print_plan(
+                    &parsed
+                        .iter()
+                        .map(|(package, _)| package.name.clone())
+                        .collect::<Vec<_>>(),
+                    &selection,
+                    home.as_deref().expect("skill home resolved"),
+                    json,
+                );
+                if !crate::skill_cli::confirm(auto, json) {
+                    println!("aborted.");
+                    return 0;
+                }
+                Some(selection)
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                return EXIT_ERROR;
+            }
+        }
     } else {
         None
     };
@@ -464,27 +531,49 @@ fn install_network(
                 }
             }
         } else {
-            let target = target.expect("skill target validated");
-            let result = install_skill_remote(
+            let selection = selection.as_ref().expect("skill selection resolved");
+            let result = install_skill_remote_many(
                 &package.name,
                 *version,
-                target,
+                &selection.targets,
+                selection.scope,
                 home.as_deref().expect("skill home resolved"),
+                &selection.project,
                 root,
                 &mut |step| reporter.borrow_mut().skill_step(step),
             );
             let mut reporter = reporter.into_inner();
             match result {
-                Ok(SkillRemoteReport::Installed(report)) => {
-                    reporter.finish_skill_installed(&report);
+                Ok(reports) => {
+                    for report in reports {
+                        match report {
+                            SkillRemoteReport::Installed(report) => {
+                                reporter.finish_skill_installed(&report);
+                                installed_skills.push(report);
+                            }
+                            SkillRemoteReport::Skipped {
+                                name,
+                                version,
+                                target,
+                            } => {
+                                reporter.finish_skill_skipped(
+                                    &name,
+                                    &version,
+                                    target,
+                                    selection.scope.as_str(),
+                                );
+                                skipped_skills.push((
+                                    name,
+                                    version,
+                                    target.as_str().to_string(),
+                                    selection.scope.as_str().to_string(),
+                                ));
+                            }
+                        }
+                    }
                     let (installed_count, bytes) = reporter.stats();
                     total_installed += installed_count;
                     total_bytes = total_bytes.saturating_add(bytes);
-                    installed_skills.push(report);
-                }
-                Ok(SkillRemoteReport::Skipped { name, version }) => {
-                    reporter.finish_skill_skipped(&name, &version, target);
-                    skipped_skills.push((name, version, target.as_str().to_string()));
                 }
                 Err(error) => {
                     reporter.fail_row(&format!("skill/{}", package.name));
@@ -516,6 +605,9 @@ fn install_network(
     if failure.is_some() {
         EXIT_ERROR
     } else {
+        if let Some(selection) = &selection {
+            crate::skill_cli::remember(selection, root);
+        }
         EXIT_OK
     }
 }
@@ -788,12 +880,13 @@ impl Reporter {
             return;
         }
         let status = format!(
-            "{}{} installed skill/{} {} for {}",
+            "{}{} installed skill/{} {} for {} ({})",
             self.prefix,
             crate::success_mark(),
             report.name,
             report.version,
-            report.target.as_str()
+            report.target.as_str(),
+            report.scope.as_str()
         );
         if self.retain_line {
             if let Some(pb) = self.bar.take() {
@@ -808,7 +901,13 @@ impl Reporter {
         }
     }
 
-    fn finish_skill_skipped(&mut self, name: &str, version: &str, target: SkillTarget) {
+    fn finish_skill_skipped(
+        &mut self,
+        name: &str,
+        version: &str,
+        target: SkillTarget,
+        scope: &str,
+    ) {
         self.installing = false;
         crate::set_taskbar_progress(crate::TaskbarProgress::Clear);
         if self.json {
@@ -816,7 +915,7 @@ impl Reporter {
             return;
         }
         let status = format!(
-            "{}{} skill/{name} {version} already installed for {} - skipped",
+            "{}{} skill/{name} {version} already installed for {} ({scope}) - skipped",
             self.prefix,
             crate::success_mark(),
             target.as_str()
@@ -845,27 +944,14 @@ impl Reporter {
     }
 }
 
-fn parse_target(value: Option<&str>) -> Option<SkillTarget> {
-    let Some(value) = value else {
-        eprintln!("error: skill packages require --for <agent>");
-        return None;
-    };
-    match value.parse() {
-        Ok(target) => Some(target),
-        Err(error) => {
-            eprintln!("error: {error}");
-            None
-        }
-    }
-}
-
 fn print_skill_installed(report: &SkillInstallReport) {
     println!(
-        "{} installed skill/{} {} for {}",
+        "{} installed skill/{} {} for {} ({})",
         crate::success_mark(),
         report.name,
         report.version,
-        report.target.as_str()
+        report.target.as_str(),
+        report.scope.as_str()
     );
     println!("  files: {}", report.install_dir.display());
 }
@@ -881,7 +967,7 @@ fn print_env_note(env_applied: &[(String, String)]) {
 fn print_json(
     agg: &RemoteReport,
     installed_skills: &[SkillInstallReport],
-    skipped_skills: &[(String, String, String)],
+    skipped_skills: &[(String, String, String, String)],
     failure: Option<&(String, RemoteError)>,
 ) {
     let mut installed: Vec<_> = agg
@@ -906,6 +992,7 @@ fn print_json(
             "name": report.name,
             "version": report.version,
             "target": report.target.as_str(),
+            "scope": report.scope.as_str(),
             "install_dir": report.install_dir.display().to_string(),
             "files": report.files,
         })
@@ -915,12 +1002,13 @@ fn print_json(
         .iter()
         .map(|(n, v)| serde_json::json!({ "kind": "app", "name": n, "version": v }))
         .collect();
-    skipped.extend(skipped_skills.iter().map(|(name, version, target)| {
+    skipped.extend(skipped_skills.iter().map(|(name, version, target, scope)| {
         serde_json::json!({
             "kind": "skill",
             "name": name,
             "version": version,
             "target": target,
+            "scope": scope,
         })
     }));
 

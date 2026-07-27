@@ -29,21 +29,23 @@ CREATE TABLE IF NOT EXISTS actions (
 );
 CREATE TABLE IF NOT EXISTS installed_skills (
     target        TEXT NOT NULL,
+    scope         TEXT NOT NULL,
     name          TEXT NOT NULL,
     version       TEXT NOT NULL,
     description   TEXT NOT NULL,
     manifest_json TEXT NOT NULL,
     install_dir   TEXT NOT NULL,
     installed_at  INTEGER NOT NULL,
-    PRIMARY KEY (target, name)
+    PRIMARY KEY (target, scope, name)
 );
 CREATE TABLE IF NOT EXISTS skill_actions (
     target       TEXT NOT NULL,
+    scope        TEXT NOT NULL,
     skill        TEXT NOT NULL,
     seq          INTEGER NOT NULL,
     action_kind  TEXT NOT NULL,
     payload      TEXT NOT NULL,
-    PRIMARY KEY (target, skill, seq)
+    PRIMARY KEY (target, scope, skill, seq)
 );";
 
 /// A row of the `installed` table.
@@ -61,6 +63,7 @@ pub struct InstalledPkg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledSkill {
     pub target: String,
+    pub scope: String,
     pub name: String,
     pub version: String,
     pub description: String,
@@ -115,6 +118,7 @@ impl State {
         {
             return Err(e);
         }
+        migrate_skill_scope(&conn)?;
         Ok(State { conn })
     }
 
@@ -258,22 +262,24 @@ impl State {
     pub fn installed_skill(
         &self,
         target: &str,
+        scope: &str,
         name: &str,
     ) -> rusqlite::Result<Option<InstalledSkill>> {
         self.conn
             .query_row(
-                "SELECT target, name, version, description, manifest_json, install_dir, installed_at
-                 FROM installed_skills WHERE target = ?1 AND name = ?2",
-                rusqlite::params![target, name],
+                "SELECT target, scope, name, version, description, manifest_json, install_dir, installed_at
+                 FROM installed_skills WHERE target = ?1 AND scope = ?2 AND name = ?3",
+                rusqlite::params![target, scope, name],
                 |r| {
                     Ok(InstalledSkill {
                         target: r.get(0)?,
-                        name: r.get(1)?,
-                        version: r.get(2)?,
-                        description: r.get(3)?,
-                        manifest_json: r.get(4)?,
-                        install_dir: std::path::PathBuf::from(r.get::<_, String>(5)?),
-                        installed_at: r.get(6)?,
+                        scope: r.get(1)?,
+                        name: r.get(2)?,
+                        version: r.get(3)?,
+                        description: r.get(4)?,
+                        manifest_json: r.get(5)?,
+                        install_dir: std::path::PathBuf::from(r.get::<_, String>(6)?),
+                        installed_at: r.get(7)?,
                     })
                 },
             )
@@ -288,6 +294,7 @@ impl State {
     pub fn record_skill_install(
         &mut self,
         target: &str,
+        scope: &str,
         name: &str,
         version: &str,
         description: &str,
@@ -299,25 +306,26 @@ impl State {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO installed_skills
-             (target, name, version, description, manifest_json, install_dir, installed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (target, scope, name, version, description, manifest_json, install_dir, installed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 target,
+                scope,
                 name,
                 version,
                 description,
                 manifest_json,
                 install_dir.to_string_lossy(),
-                now
+                now,
             ],
         )?;
         for (i, action) in actions.iter().enumerate() {
             let payload = serde_json::to_string(action)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
             tx.execute(
-                "INSERT INTO skill_actions (target, skill, seq, action_kind, payload)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![target, name, i as i64, action.kind_str(), payload],
+                "INSERT INTO skill_actions (target, scope, skill, seq, action_kind, payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![target, scope, name, i as i64, action.kind_str(), payload],
             )?;
         }
         tx.commit()
@@ -326,13 +334,16 @@ impl State {
     pub fn skill_actions_for(
         &self,
         target: &str,
+        scope: &str,
         name: &str,
     ) -> rusqlite::Result<Vec<SkillAction>> {
         let mut stmt = self.conn.prepare(
             "SELECT payload FROM skill_actions
-             WHERE target = ?1 AND skill = ?2 ORDER BY seq ASC",
+             WHERE target = ?1 AND scope = ?2 AND skill = ?3 ORDER BY seq ASC",
         )?;
-        let rows = stmt.query_map(rusqlite::params![target, name], |r| r.get::<_, String>(0))?;
+        let rows = stmt.query_map(rusqlite::params![target, scope, name], |r| {
+            r.get::<_, String>(0)
+        })?;
         let mut out = Vec::new();
         for row in rows {
             let payload = row?;
@@ -348,36 +359,53 @@ impl State {
         Ok(out)
     }
 
-    pub fn remove_skill(&mut self, target: &str, name: &str) -> rusqlite::Result<()> {
+    pub fn remove_skill(&mut self, target: &str, scope: &str, name: &str) -> rusqlite::Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute(
-            "DELETE FROM skill_actions WHERE target = ?1 AND skill = ?2",
-            rusqlite::params![target, name],
+            "DELETE FROM skill_actions WHERE target = ?1 AND scope = ?2 AND skill = ?3",
+            rusqlite::params![target, scope, name],
         )?;
         tx.execute(
-            "DELETE FROM installed_skills WHERE target = ?1 AND name = ?2",
-            rusqlite::params![target, name],
+            "DELETE FROM installed_skills WHERE target = ?1 AND scope = ?2 AND name = ?3",
+            rusqlite::params![target, scope, name],
         )?;
         tx.commit()
+    }
+
+    pub fn skill_references(&self, name: &str, install_dir: &Path) -> rusqlite::Result<usize> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM installed_skills WHERE name = ?1 AND install_dir = ?2",
+            rusqlite::params![name, install_dir.to_string_lossy()],
+            |row| row.get(0),
+        )
+    }
+
+    pub fn skill_at_dir(
+        &self,
+        name: &str,
+        install_dir: &Path,
+    ) -> rusqlite::Result<Option<InstalledSkill>> {
+        self.conn
+            .query_row(
+                "SELECT target, scope, name, version, description, manifest_json, install_dir, installed_at
+                 FROM installed_skills WHERE name = ?1 AND install_dir = ?2 LIMIT 1",
+                rusqlite::params![name, install_dir.to_string_lossy()],
+                installed_skill_row,
+            )
+            .map(Some)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
     }
 
     /// All installed skills, ordered by target and name.
     pub fn list_skills(&self) -> rusqlite::Result<Vec<InstalledSkill>> {
         let mut stmt = self.conn.prepare(
-            "SELECT target, name, version, description, manifest_json, install_dir, installed_at
-             FROM installed_skills ORDER BY target ASC, name ASC",
+            "SELECT target, scope, name, version, description, manifest_json, install_dir, installed_at
+             FROM installed_skills ORDER BY target ASC, scope ASC, name ASC",
         )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(InstalledSkill {
-                target: r.get(0)?,
-                name: r.get(1)?,
-                version: r.get(2)?,
-                description: r.get(3)?,
-                manifest_json: r.get(4)?,
-                install_dir: std::path::PathBuf::from(r.get::<_, String>(5)?),
-                installed_at: r.get(6)?,
-            })
-        })?;
+        let rows = stmt.query_map([], installed_skill_row)?;
         rows.collect()
     }
 
@@ -398,6 +426,53 @@ impl State {
         })?;
         rows.collect()
     }
+}
+
+fn installed_skill_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstalledSkill> {
+    Ok(InstalledSkill {
+        target: row.get(0)?,
+        scope: row.get(1)?,
+        name: row.get(2)?,
+        version: row.get(3)?,
+        description: row.get(4)?,
+        manifest_json: row.get(5)?,
+        install_dir: std::path::PathBuf::from(row.get::<_, String>(6)?),
+        installed_at: row.get(7)?,
+    })
+}
+
+fn migrate_skill_scope(conn: &Connection) -> rusqlite::Result<()> {
+    let mut columns = conn.prepare("PRAGMA table_info(installed_skills)")?;
+    let names = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if names.iter().any(|name| name == "scope") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN;
+         ALTER TABLE installed_skills RENAME TO installed_skills_v1;
+         ALTER TABLE skill_actions RENAME TO skill_actions_v1;
+         CREATE TABLE installed_skills (
+             target TEXT NOT NULL, scope TEXT NOT NULL, name TEXT NOT NULL,
+             version TEXT NOT NULL, description TEXT NOT NULL, manifest_json TEXT NOT NULL,
+             install_dir TEXT NOT NULL, installed_at INTEGER NOT NULL,
+             PRIMARY KEY (target, scope, name)
+         );
+         CREATE TABLE skill_actions (
+             target TEXT NOT NULL, scope TEXT NOT NULL, skill TEXT NOT NULL,
+             seq INTEGER NOT NULL, action_kind TEXT NOT NULL, payload TEXT NOT NULL,
+             PRIMARY KEY (target, scope, skill, seq)
+         );
+         INSERT INTO installed_skills
+             SELECT target, 'global', name, version, description, manifest_json, install_dir, installed_at
+             FROM installed_skills_v1;
+         INSERT INTO skill_actions
+             SELECT target, 'global', skill, seq, action_kind, payload FROM skill_actions_v1;
+         DROP TABLE installed_skills_v1;
+         DROP TABLE skill_actions_v1;
+         COMMIT;",
+    )
 }
 
 fn now_unix_ms() -> i64 {

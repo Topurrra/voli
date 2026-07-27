@@ -9,12 +9,13 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256, Sha512};
 
 use crate::manifest::{Kind, Manifest};
-use crate::paths::{Paths, SkillTarget};
-use crate::state::{SkillAction, State};
+use crate::paths::{Paths, SkillScope, SkillTarget};
+use crate::state::{InstalledSkill, SkillAction, State};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillInstallReport {
     pub target: SkillTarget,
+    pub scope: SkillScope,
     pub name: String,
     pub version: String,
     pub description: String,
@@ -25,6 +26,7 @@ pub struct SkillInstallReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillUninstallReport {
     pub target: SkillTarget,
+    pub scope: SkillScope,
     pub name: String,
     pub install_dir: PathBuf,
 }
@@ -88,6 +90,11 @@ pub enum SkillError {
     Changed(PathBuf),
     #[error("skill ledger path does not match the selected target: {0}")]
     StatePathMismatch(PathBuf),
+    #[error("install failed: {original}; rollback also failed: {rollback}")]
+    Rollback {
+        original: Box<SkillError>,
+        rollback: Box<SkillError>,
+    },
 }
 
 type Result<T> = std::result::Result<T, SkillError>;
@@ -109,6 +116,80 @@ pub fn install_skill_archive(
     home: &Path,
     voli_root: &Path,
 ) -> Result<SkillInstallReport> {
+    install_skill_archive_scoped(
+        manifest,
+        archive,
+        target,
+        SkillScope::Global,
+        home,
+        Path::new("."),
+        voli_root,
+    )
+}
+
+pub fn install_skill_archive_many(
+    manifest: &Manifest,
+    archive: &Path,
+    targets: &[SkillTarget],
+    scope: SkillScope,
+    home: &Path,
+    project: &Path,
+    voli_root: &Path,
+) -> Result<Vec<SkillInstallReport>> {
+    let mut unique = Vec::<(PathBuf, Vec<SkillTarget>)>::new();
+    for target in targets {
+        let directory = target.skills_dir(scope, home, project);
+        if let Some((_, group)) = unique.iter_mut().find(|(path, _)| *path == directory) {
+            group.push(*target);
+        } else {
+            unique.push((directory, vec![*target]));
+        }
+    }
+
+    let mut installed = Vec::new();
+    for (_, group) in unique {
+        for target in group {
+            match install_skill_archive_scoped(
+                manifest, archive, target, scope, home, project, voli_root,
+            ) {
+                Ok(report) => installed.push(report),
+                Err(error) => {
+                    let mut rollback_error = None;
+                    for report in installed.iter().rev() {
+                        if let Err(error) = uninstall_skill_scoped(
+                            &report.name,
+                            report.target,
+                            report.scope,
+                            home,
+                            project,
+                            voli_root,
+                        ) {
+                            rollback_error.get_or_insert(error);
+                        }
+                    }
+                    if let Some(rollback) = rollback_error {
+                        return Err(SkillError::Rollback {
+                            original: Box::new(error),
+                            rollback: Box::new(rollback),
+                        });
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(installed)
+}
+
+pub fn install_skill_archive_scoped(
+    manifest: &Manifest,
+    archive: &Path,
+    target: SkillTarget,
+    scope: SkillScope,
+    home: &Path,
+    project: &Path,
+    voli_root: &Path,
+) -> Result<SkillInstallReport> {
     if manifest.kind != Kind::Skill {
         return Err(SkillError::WrongKind(manifest.name.clone()));
     }
@@ -127,7 +208,7 @@ pub fn install_skill_archive(
 
     let paths = Paths::at(voli_root);
     let mut state = State::open(&paths.state_db())?;
-    let skills_dir = target.global_skills_dir(home);
+    let skills_dir = target.skills_dir(scope, home, project);
     fs::create_dir_all(&skills_dir)?;
 
     let stage = tempfile::Builder::new()
@@ -159,7 +240,7 @@ pub fn install_skill_archive(
     }
 
     let target_name = target.as_str();
-    if let Some(installed) = state.installed_skill(target_name, &metadata.name)? {
+    if let Some(installed) = state.installed_skill(target_name, scope.as_str(), &metadata.name)? {
         return if installed.install_dir.exists() {
             Err(SkillError::AlreadyInstalled {
                 target: target_name.to_string(),
@@ -175,7 +256,40 @@ pub fn install_skill_archive(
 
     let install_dir = skills_dir.join(&metadata.name);
     if install_dir.exists() {
-        return Err(SkillError::DestinationExists(install_dir));
+        let Some(owner) = state.skill_at_dir(&metadata.name, &install_dir)? else {
+            return Err(SkillError::DestinationExists(install_dir));
+        };
+        if owner.version != manifest.version {
+            return Err(SkillError::VersionConflict {
+                target: target_name.to_string(),
+                name: metadata.name,
+                installed: owner.version,
+                requested: manifest.version.clone(),
+            });
+        }
+        let actions = state.skill_actions_for(&owner.target, &owner.scope, &owner.name)?;
+        state.record_skill_install(
+            target_name,
+            scope.as_str(),
+            &owner.name,
+            &owner.version,
+            &owner.description,
+            &owner.manifest_json,
+            &install_dir,
+            &actions,
+        )?;
+        return Ok(SkillInstallReport {
+            target,
+            scope,
+            name: owner.name,
+            version: owner.version,
+            description: owner.description,
+            install_dir,
+            files: actions
+                .iter()
+                .filter(|action| matches!(action, SkillAction::FileWritten { .. }))
+                .count(),
+        });
     }
 
     let actions = collect_actions(&skill_root, &install_dir)?;
@@ -189,6 +303,7 @@ pub fn install_skill_archive(
     let manifest_json = serde_json::to_string(manifest)?;
     state.record_skill_install(
         target_name,
+        scope.as_str(),
         &metadata.name,
         &manifest.version,
         &metadata.description,
@@ -197,12 +312,13 @@ pub fn install_skill_archive(
         &actions,
     )?;
     if let Err(error) = fs::rename(&publish, &install_dir) {
-        let _ = state.remove_skill(target_name, &metadata.name);
+        let _ = state.remove_skill(target_name, scope.as_str(), &metadata.name);
         return Err(error.into());
     }
 
     Ok(SkillInstallReport {
         target,
+        scope,
         name: metadata.name,
         version: manifest.version.clone(),
         description: metadata.description,
@@ -218,22 +334,95 @@ pub fn uninstall_skill(
     home: &Path,
     voli_root: &Path,
 ) -> Result<SkillUninstallReport> {
+    uninstall_skill_scoped(
+        name,
+        target,
+        SkillScope::Global,
+        home,
+        Path::new("."),
+        voli_root,
+    )
+}
+
+pub fn uninstall_skill_scoped(
+    name: &str,
+    target: SkillTarget,
+    scope: SkillScope,
+    home: &Path,
+    project: &Path,
+    voli_root: &Path,
+) -> Result<SkillUninstallReport> {
     let paths = Paths::at(voli_root);
-    let mut state = State::open(&paths.state_db())?;
+    let state = State::open(&paths.state_db())?;
     let target_name = target.as_str();
-    let installed =
-        state
-            .installed_skill(target_name, name)?
-            .ok_or_else(|| SkillError::NotInstalled {
-                target: target_name.to_string(),
-                name: name.to_string(),
-            })?;
-    let expected_dir = target.global_skills_dir(home).join(name);
+    let installed = state
+        .installed_skill(target_name, scope.as_str(), name)?
+        .ok_or_else(|| SkillError::NotInstalled {
+            target: target_name.to_string(),
+            name: name.to_string(),
+        })?;
+    let expected_dir = target.skills_dir(scope, home, project).join(name);
     if installed.install_dir != expected_dir {
         return Err(SkillError::StatePathMismatch(installed.install_dir));
     }
+    uninstall_installed_skill_inner(installed, target, scope, home, project, voli_root)
+}
 
-    let actions = state.skill_actions_for(target_name, name)?;
+pub fn uninstall_installed_skill(
+    installed: &InstalledSkill,
+    home: &Path,
+    voli_root: &Path,
+) -> Result<SkillUninstallReport> {
+    let target = installed
+        .target
+        .parse::<SkillTarget>()
+        .map_err(|_| SkillError::StatePathMismatch(installed.install_dir.clone()))?;
+    let scope = match installed.scope.as_str() {
+        "global" => SkillScope::Global,
+        "project" => SkillScope::Project,
+        _ => return Err(SkillError::StatePathMismatch(installed.install_dir.clone())),
+    };
+    let relative = target
+        .skills_dir(scope, Path::new(""), Path::new(""))
+        .join(&installed.name);
+    if (scope == SkillScope::Global
+        && installed.install_dir != target.global_skills_dir(home).join(&installed.name))
+        || (scope == SkillScope::Project && !installed.install_dir.ends_with(&relative))
+    {
+        return Err(SkillError::StatePathMismatch(installed.install_dir.clone()));
+    }
+    let depth = relative.components().count();
+    let project = installed
+        .install_dir
+        .ancestors()
+        .nth(depth)
+        .ok_or_else(|| SkillError::StatePathMismatch(installed.install_dir.clone()))?;
+    uninstall_installed_skill_inner(installed.clone(), target, scope, home, project, voli_root)
+}
+
+fn uninstall_installed_skill_inner(
+    installed: InstalledSkill,
+    target: SkillTarget,
+    scope: SkillScope,
+    home: &Path,
+    project: &Path,
+    voli_root: &Path,
+) -> Result<SkillUninstallReport> {
+    let paths = Paths::at(voli_root);
+    let mut state = State::open(&paths.state_db())?;
+    let target_name = target.as_str();
+    let name = &installed.name;
+    if state.skill_references(name, &installed.install_dir)? > 1 {
+        state.remove_skill(target_name, scope.as_str(), name)?;
+        return Ok(SkillUninstallReport {
+            target,
+            scope,
+            name: name.clone(),
+            install_dir: installed.install_dir,
+        });
+    }
+
+    let actions = state.skill_actions_for(target_name, scope.as_str(), name)?;
     let parent = installed
         .install_dir
         .parent()
@@ -247,29 +436,38 @@ pub fn uninstall_skill(
         verify_unchanged(&installed.install_dir, &installed.install_dir, &actions)?;
         fs::rename(&installed.install_dir, &quarantined)?;
     } else if !quarantined.exists() {
-        state.remove_skill(target_name, name)?;
-        prune_empty_skill_dirs(&parent, home);
+        state.remove_skill(target_name, scope.as_str(), name)?;
+        prune_empty_skill_dirs(&parent, scope_root(scope, home, project));
         return Ok(SkillUninstallReport {
             target,
-            name: name.to_string(),
+            scope,
+            name: name.clone(),
             install_dir: installed.install_dir,
         });
     }
 
     verify_unchanged(&quarantined, &installed.install_dir, &actions)?;
     fs::remove_dir_all(&quarantined)?;
-    state.remove_skill(target_name, name)?;
+    state.remove_skill(target_name, scope.as_str(), name)?;
     // Zero-trace (§2): remove the agent skills-dir scaffolding voli created
     // when the agent wasn't already present. `remove_dir` only deletes EMPTY
     // dirs, so any agent- or user-owned content stops the walk — we never
     // touch a populated directory, and never `home` itself.
-    prune_empty_skill_dirs(&parent, home);
+    prune_empty_skill_dirs(&parent, scope_root(scope, home, project));
 
     Ok(SkillUninstallReport {
         target,
-        name: name.to_string(),
+        scope,
+        name: name.clone(),
         install_dir: installed.install_dir,
     })
+}
+
+fn scope_root<'a>(scope: SkillScope, home: &'a Path, project: &'a Path) -> &'a Path {
+    match scope {
+        SkillScope::Global => home,
+        SkillScope::Project => project,
+    }
 }
 
 /// Remove `start` and each ancestor up to (but never including) `home`, while

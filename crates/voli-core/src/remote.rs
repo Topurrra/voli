@@ -19,7 +19,7 @@ use crate::fetch::{self, FetchError};
 use crate::index::{self, IndexError, Suggestion};
 use crate::install::{self, EnvConsent, InstallError, InstallReport, UpgradeReport};
 use crate::manifest::{Kind, Manifest, PackageRef};
-use crate::paths::{Paths, SkillTarget};
+use crate::paths::{Paths, SkillScope, SkillTarget};
 use crate::skill::{self, SkillError, SkillInstallReport};
 use crate::state::State;
 
@@ -75,7 +75,11 @@ pub enum SkillStep<'a> {
 #[derive(Debug)]
 pub enum SkillRemoteReport {
     Installed(SkillInstallReport),
-    Skipped { name: String, version: String },
+    Skipped {
+        name: String,
+        version: String,
+        target: SkillTarget,
+    },
 }
 
 #[derive(Debug)]
@@ -140,6 +144,31 @@ pub fn install_skill_remote(
     root: &Path,
     on_step: &mut dyn FnMut(SkillStep),
 ) -> Result<SkillRemoteReport, RemoteError> {
+    Ok(install_skill_remote_many(
+        name,
+        version,
+        &[target],
+        SkillScope::Global,
+        home,
+        Path::new("."),
+        root,
+        on_step,
+    )?
+    .pop()
+    .expect("one target produces one report"))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn install_skill_remote_many(
+    name: &str,
+    version: Option<&str>,
+    targets: &[SkillTarget],
+    scope: SkillScope,
+    home: &Path,
+    project: &Path,
+    root: &Path,
+    on_step: &mut dyn FnMut(SkillStep),
+) -> Result<Vec<SkillRemoteReport>, RemoteError> {
     let package = PackageRef {
         kind: Kind::Skill,
         name: name.to_string(),
@@ -155,30 +184,40 @@ pub fn install_skill_remote(
 
     let state = State::open(&Paths::at(root).state_db())
         .map_err(|error| RemoteError::Skill(SkillError::Sqlite(error)))?;
-    if let Some(installed) = state
-        .installed_skill(target.as_str(), name)
-        .map_err(|error| RemoteError::Skill(SkillError::Sqlite(error)))?
-    {
-        if !installed.install_dir.exists() {
-            return Err(RemoteError::Skill(SkillError::IncompleteInstall {
+    let mut pending = Vec::new();
+    let mut skipped = Vec::new();
+    for target in targets {
+        if let Some(installed) = state
+            .installed_skill(target.as_str(), scope.as_str(), name)
+            .map_err(|error| RemoteError::Skill(SkillError::Sqlite(error)))?
+        {
+            if !installed.install_dir.exists() {
+                return Err(RemoteError::Skill(SkillError::IncompleteInstall {
+                    target: target.as_str().to_string(),
+                    name: installed.name,
+                }));
+            }
+            if installed.version == manifest.version {
+                skipped.push(SkillRemoteReport::Skipped {
+                    name: installed.name,
+                    version: installed.version,
+                    target: *target,
+                });
+                continue;
+            }
+            return Err(RemoteError::Skill(SkillError::VersionConflict {
                 target: target.as_str().to_string(),
                 name: installed.name,
+                installed: installed.version,
+                requested: manifest.version,
             }));
         }
-        if installed.version == manifest.version {
-            return Ok(SkillRemoteReport::Skipped {
-                name: installed.name,
-                version: installed.version,
-            });
-        }
-        return Err(RemoteError::Skill(SkillError::VersionConflict {
-            target: target.as_str().to_string(),
-            name: installed.name,
-            installed: installed.version,
-            requested: manifest.version,
-        }));
+        pending.push(*target);
     }
     drop(state);
+    if pending.is_empty() {
+        return Ok(skipped);
+    }
 
     let source = manifest
         .source
@@ -201,8 +240,21 @@ pub fn install_skill_remote(
         bytes: archive.size,
         cache_hit: archive.cache_hit,
     });
-    let report = skill::install_skill_archive(&manifest, &archive.path, target, home, root)?;
-    Ok(SkillRemoteReport::Installed(report))
+    let reports = skill::install_skill_archive_many(
+        &manifest,
+        &archive.path,
+        &pending,
+        scope,
+        home,
+        project,
+        root,
+    )?;
+    let mut results = reports
+        .into_iter()
+        .map(SkillRemoteReport::Installed)
+        .collect::<Vec<_>>();
+    results.append(&mut skipped);
+    Ok(results)
 }
 
 /// Download all artifacts for several requested packages concurrently.

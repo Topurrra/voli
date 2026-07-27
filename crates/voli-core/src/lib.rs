@@ -35,17 +35,19 @@ pub use manifest::{
     Bin, ExtraSource, Kind, Manifest, ManifestError, PackageRef, PackageRefError, Shortcut, Source,
     SourceKind, WriteFile,
 };
-pub use paths::{Paths, SKILL_TARGET_IDS, SkillTarget, SkillTargetError};
+pub use paths::{Paths, SKILL_TARGET_IDS, SkillScope, SkillTarget, SkillTargetError};
 #[cfg(windows)]
 pub use remote::{
     RemoteError, RemoteReport, SkillRemoteReport, SkillStep, Step, UpgradeOutcome, install_remote,
-    install_remote_env, install_skill_remote, upgrade,
+    install_remote_env, install_skill_remote, install_skill_remote_many, upgrade,
 };
 #[cfg(windows)]
 pub use selfinstall::{SelfInstallError, SelfInstallReport, self_install};
 #[cfg(windows)]
 pub use skill::{
-    SkillError, SkillInstallReport, SkillUninstallReport, install_skill_archive, uninstall_skill,
+    SkillError, SkillInstallReport, SkillUninstallReport, install_skill_archive,
+    install_skill_archive_many, install_skill_archive_scoped, uninstall_installed_skill,
+    uninstall_skill, uninstall_skill_scoped,
 };
 #[cfg(windows)]
 pub use state::{InstalledPkg, InstalledSkill, SkillAction, State};

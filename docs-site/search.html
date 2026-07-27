@@ -313,6 +313,36 @@
       font: .76rem var(--mono);
     }
 
+    .kind-filters {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: center;
+      gap: .25rem;
+      width: fit-content;
+      margin: 0 auto;
+      padding: .25rem;
+      background: color-mix(in srgb, var(--bg-dark) 88%, var(--panel));
+      border: 1px solid var(--border-strong);
+      border-radius: 9px;
+    }
+
+    .kind-filter {
+      min-width: 88px;
+      padding: .45rem .8rem;
+      color: var(--sage-bright);
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font: 700 .75rem var(--mono);
+    }
+
+    .kind-filter[aria-pressed="true"] {
+      color: var(--cream);
+      background: color-mix(in srgb, var(--verm) 24%, var(--bg-dark));
+      border-color: var(--verm-bright);
+    }
+
     .source-filters[hidden] {
       display: none;
     }
@@ -416,6 +446,18 @@
       font-weight: 400;
     }
 
+    .package-kind {
+      padding: .12rem .38rem;
+      color: var(--verm-bright);
+      background: color-mix(in srgb, var(--verm) 13%, transparent);
+      border: 1px solid color-mix(in srgb, var(--verm) 38%, transparent);
+      border-radius: 999px;
+      font-size: .65rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
     .package-description {
       margin: .35rem 0 0;
       color: var(--cream-muted);
@@ -446,6 +488,7 @@
 
     .install-copy {
       min-width: 176px;
+      max-width: 310px;
       padding: .58rem .75rem;
       border: 1px solid var(--border-strong);
       border-radius: 8px;
@@ -454,6 +497,7 @@
       cursor: pointer;
       font: .75rem var(--mono);
       transition: border-color .12s, color .12s;
+      overflow-wrap: anywhere;
     }
 
     .install-copy:hover {
@@ -463,6 +507,23 @@
     .install-copy.copied {
       color: var(--pos);
       border-color: var(--pos);
+    }
+
+    .install-actions {
+      display: grid;
+      gap: .45rem;
+      justify-items: stretch;
+    }
+
+    .agent-select {
+      width: 100%;
+      min-height: 34px;
+      padding: .35rem .55rem;
+      color: var(--cream);
+      background: color-mix(in srgb, var(--bg-dark) 70%, transparent);
+      border: 1px solid var(--border-strong);
+      border-radius: 7px;
+      font: .72rem var(--mono);
     }
 
     .empty {
@@ -551,8 +612,12 @@
       }
 
       .install-copy {
-        grid-column: 1 / -1;
         width: 100%;
+        max-width: none;
+      }
+
+      .install-actions {
+        grid-column: 1 / -1;
       }
     }
 
@@ -610,6 +675,10 @@
           <option value="name">Name A-Z</option>
           <option value="updated" id="sort-updated" hidden>Recently updated</option>
         </select>
+        <div class="kind-filters" id="kind-filters" role="group" aria-label="Catalog kind">
+          <button class="kind-filter" type="button" data-kind="app" aria-pressed="true">Apps</button>
+          <button class="kind-filter" type="button" data-kind="skill" aria-pressed="false">Skills</button>
+        </div>
         <div class="source-filters" id="source-filters" hidden role="group" aria-label="Filter by package source">
           <span>Source:</span>
           <button class="source-filter" type="button" data-source="" aria-pressed="true">All</button>
@@ -651,14 +720,21 @@
       var sortUpdated = document.getElementById('sort-updated');
       var sourceFilters = document.getElementById('source-filters');
       var sourceButtons = sourceFilters.querySelectorAll('.source-filter');
+      var kindButtons = document.getElementById('kind-filters').querySelectorAll('.kind-filter');
       var status = document.getElementById('result-status');
       var results = document.getElementById('results');
       var packages = null;
       var timer = null;
       var query = new URLSearchParams(window.location.search).get('q') || '';
+      var selectedKind = new URLSearchParams(window.location.search).get('kind') === 'skill'
+        ? 'skill'
+        : 'app';
       var source = '';
 
       input.value = query;
+      kindButtons.forEach(function (button) {
+        button.setAttribute('aria-pressed', String(button.getAttribute('data-kind') === selectedKind));
+      });
 
       function render() {
         query = input.value.trim();
@@ -669,16 +745,23 @@
           return;
         }
 
+        var catalog = VoliCatalog.filterKind(packages, selectedKind);
+        var kindLabel = selectedKind === 'skill' ? 'skills' : 'apps';
+
         if (!query) {
           updateUrl('');
-          status.textContent = packages.length + ' packages ready to search';
-          results.innerHTML =
-            '<div class="empty"><strong>Start with a package, command, or keyword.</strong>' +
-            'Try chrome, rust, editor, database, or any executable name.</div>';
+          status.textContent = catalog.length + ' ' + kindLabel + ' ready to search';
+          results.innerHTML = catalog.length
+            ? '<div class="empty"><strong>Start with a name, command, or keyword.</strong>' +
+              (selectedKind === 'skill'
+                ? 'Try testing, documentation, design, or workflow.'
+                : 'Try chrome, rust, editor, database, or any executable name.') + '</div>'
+            : '<div class="empty"><strong>Skills are coming online.</strong>' +
+              'The catalog will appear here as soon as it is published.</div>';
           return;
         }
 
-        var matches = VoliCatalog.search(packages, query);
+        var matches = VoliCatalog.search(catalog, query);
         if (source) {
           matches = matches.filter(function (item) {
             return VoliCatalog.provenance(item.p) === source;
@@ -694,7 +777,8 @@
         }
 
         status.textContent = matches.length + ' result' + (matches.length === 1 ? '' : 's') +
-          ' for "' + query + '"' + (source ? ' from ' + source + ' packages' : '');
+          ' for "' + query + '" in ' + kindLabel +
+          (source ? ' from ' + source + ' packages' : '');
         updateUrl(query);
 
         if (!matches.length) {
@@ -713,22 +797,43 @@
 
       function resultCard(pkg) {
         var card = document.createElement('article');
-        var command = VoliCatalog.command(pkg.n);
+        var isSkill = VoliCatalog.kind(pkg) === 'skill';
+        var command = VoliCatalog.command(pkg);
         var bins = (pkg.b || []).slice(0, 4).map(function (bin) {
           return '<code>' + VoliCatalog.highlight(bin, query) + '</code>';
         }).join('');
 
         card.className = 'result-card';
+        card.tabIndex = -1;
+        card.setAttribute('aria-label', (isSkill ? 'Skill ' : 'App ') + pkg.n);
         card.innerHTML =
           VoliCatalog.icon(pkg, 'package-icon') +
           '<div><h2 class="package-title"><span>' + VoliCatalog.highlight(pkg.n, query) + '</span>' +
-          '<span class="package-version">' + VoliCatalog.escape(pkg.v) + '</span></h2>' +
+          '<span class="package-version">' + VoliCatalog.escape(pkg.v) + '</span>' +
+          (isSkill ? '<span class="package-kind">skill</span>' : '') + '</h2>' +
           '<p class="package-description">' + VoliCatalog.highlight(pkg.d || 'No description available.', query) + '</p>' +
           (bins ? '<div class="package-bins" aria-label="Provided commands">' + bins + '</div>' : '') + '</div>' +
-          '<button class="install-copy" type="button">' + VoliCatalog.escape(command) + '</button>';
+          '<div class="install-actions">' +
+          (isSkill
+            ? '<select class="agent-select" aria-label="Install ' + VoliCatalog.escape(pkg.n) + ' for agent">' +
+              '<option value="codex">Codex</option><option value="claude-code">Claude Code</option>' +
+              '<option value="cursor">Cursor</option><option value="windsurf">Windsurf</option></select>'
+            : '') +
+          '<button class="install-copy" type="button" aria-label="Copy ' +
+          VoliCatalog.escape(command) + '">' + VoliCatalog.escape(command) + '</button></div>';
 
         VoliCatalog.wireIcon(card.querySelector('.package-icon'));
         var button = card.querySelector('.install-copy');
+        var agent = card.querySelector('.agent-select');
+        button.dataset.command = command;
+        if (agent) {
+          agent.addEventListener('change', function () {
+            command = VoliCatalog.command(pkg, agent.value);
+            button.dataset.command = command;
+            if (!button.classList.contains('copied')) button.textContent = command;
+            button.setAttribute('aria-label', 'Copy ' + command);
+          });
+        }
         button.addEventListener('click', function () {
           copyText(command, button);
         });
@@ -739,17 +844,18 @@
         var url = new URL(window.location.href);
         if (value) url.searchParams.set('q', value);
         else url.searchParams.delete('q');
+        if (selectedKind === 'skill') url.searchParams.set('kind', 'skill');
+        else url.searchParams.delete('kind');
         history.replaceState(null, '', url);
       }
 
       function copyText(text, button) {
         function done() {
-          var original = button.textContent;
           button.classList.add('copied');
-          button.textContent = 'Copied';
+          button.textContent = '✓ Copied';
           setTimeout(function () {
             button.classList.remove('copied');
-            button.textContent = original;
+            button.textContent = button.dataset.command || text;
           }, 1400);
         }
         if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -790,6 +896,47 @@
           });
           render();
         });
+      });
+      kindButtons.forEach(function (button) {
+        button.addEventListener('click', function () {
+          selectedKind = button.getAttribute('data-kind');
+          kindButtons.forEach(function (item) {
+            item.setAttribute('aria-pressed', String(item === button));
+          });
+          render();
+        });
+      });
+
+      input.addEventListener('keydown', function (event) {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        var cards = results.querySelectorAll('.result-card');
+        if (!cards.length) return;
+        event.preventDefault();
+        cards[event.key === 'ArrowDown' ? 0 : cards.length - 1].focus();
+      });
+
+      results.addEventListener('keydown', function (event) {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        var card = event.target.closest('.result-card');
+        if (!card || event.target !== card) return;
+        var cards = Array.prototype.slice.call(results.querySelectorAll('.result-card'));
+        var next = cards.indexOf(card) + (event.key === 'ArrowDown' ? 1 : -1);
+        event.preventDefault();
+        if (next >= 0 && next < cards.length) cards[next].focus();
+        else input.focus();
+      });
+
+      document.addEventListener('keydown', function (event) {
+        var tag = event.target.tagName;
+        if (event.key === '/' && !/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(tag)) {
+          event.preventDefault();
+          input.focus();
+        } else if (event.key === 'Escape' &&
+          (event.target === input || results.contains(event.target))) {
+          input.value = '';
+          render();
+          input.focus();
+        }
       });
 
       VoliCatalog.load().then(function (data) {

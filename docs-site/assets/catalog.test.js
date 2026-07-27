@@ -19,6 +19,10 @@ global.document = {
 global.window = {};
 require('./catalog.js');
 
+const fixture = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'catalog.fixture.json'), 'utf8')
+);
+
 test('icons stay lazy without using display-none hiding', () => {
   const html = window.VoliCatalog.icon(
     { n: 'googlechrome', i: 'https://example.com/icon.svg' },
@@ -75,4 +79,41 @@ test('optional catalog metadata degrades safely', () => {
   assert.equal(window.VoliCatalog.provenance({}), '');
   assert.equal(window.VoliCatalog.provenance({ p: 'Official' }), 'official');
   assert.equal(window.VoliCatalog.provenance({ p: 'unknown' }), '');
+});
+
+test('install commands follow package kind and selected agent', () => {
+  assert.equal(window.VoliCatalog.command({ n: 'ripgrep', k: 'app' }), 'voli install ripgrep');
+  assert.equal(
+    window.VoliCatalog.command({ n: 'tdd', k: 'skill' }, 'cursor'),
+    'voli install skill/tdd --for cursor'
+  );
+  assert.equal(
+    window.VoliCatalog.command({ n: 'tdd', k: 'skill' }),
+    'voli install skill/tdd --for codex'
+  );
+});
+
+test('kind filtering returns only the selected catalog kind', () => {
+  assert.deepEqual(
+    window.VoliCatalog.filterKind(fixture, 'app').map(pkg => pkg.n),
+    ['ripgrep', 'legacy-app']
+  );
+  assert.deepEqual(
+    window.VoliCatalog.filterKind(fixture, 'skill').map(pkg => pkg.n),
+    ['tdd', 'frontend-design']
+  );
+});
+
+test('skill tab fixture renders agent-ready commands and initializes from the URL', () => {
+  const search = fs.readFileSync(path.join(__dirname, '..', 'search.html'), 'utf8');
+  const commands = window.VoliCatalog.filterKind(fixture, 'skill').map(pkg =>
+    window.VoliCatalog.command(pkg)
+  );
+  assert.deepEqual(commands, [
+    'voli install skill/tdd --for codex',
+    'voli install skill/frontend-design --for codex'
+  ]);
+  assert.match(search, /get\('kind'\) === 'skill'/);
+  assert.match(search, /class="agent-select"/);
+  assert.match(search, /class="package-kind">skill/);
 });

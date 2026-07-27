@@ -133,10 +133,16 @@ fn local_skill_install_list_and_targeted_delete() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("voli");
     let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
     let archive_bytes = skill_zip();
     let archive = temp.path().join("tdd.zip");
     fs::write(&archive, &archive_bytes).unwrap();
     let manifest = temp.path().join("tdd.toml");
+    let env_subkey = "Software\\voli-test-cli\\skill-env";
+    let uninstall_subkey = "Software\\voli-test-cli\\skill-uninstall";
+    let _ = env::delete_subkey(env_subkey);
+    let _ = voli_core::uninstall_reg::delete_base(uninstall_subkey);
     fs::write(
         &manifest,
         format!(
@@ -157,7 +163,11 @@ sha256 = "{}"
         Command::new(env!("CARGO_BIN_EXE_voli"))
             .args(args)
             .env("VOLI_ROOT", &root)
+            .env("VOLI_ENV_SUBKEY", env_subkey)
+            .env("VOLI_UNINSTALL_SUBKEY", uninstall_subkey)
             .env("USERPROFILE", &home)
+            .env("HOME", &home)
+            .current_dir(&project)
             .stdin(Stdio::null())
             .output()
             .unwrap()
@@ -170,6 +180,8 @@ sha256 = "{}"
         archive.to_str().unwrap(),
         "--for",
         "codex",
+        "--for",
+        "zed",
     ]);
     assert!(
         install.status.success(),
@@ -179,11 +191,13 @@ sha256 = "{}"
     let install_json: serde_json::Value = serde_json::from_slice(&install.stdout).unwrap();
     assert_eq!(install_json["installed"][0]["kind"], "skill");
     assert_eq!(install_json["installed"][0]["target"], "codex");
+    assert_eq!(install_json["installed"][0]["scope"], "global");
+    assert_eq!(install_json["installed"].as_array().unwrap().len(), 2);
     assert!(home.join(".agents/skills/tdd/SKILL.md").is_file());
 
     let list = run(&["list"]);
     assert!(list.status.success());
-    assert!(String::from_utf8_lossy(&list.stdout).contains("skill/tdd  1.0.0  [codex]"));
+    assert!(String::from_utf8_lossy(&list.stdout).contains("skill/tdd  1.0.0  [codex:global]"));
 
     let delete = run(&["delete", "skill/tdd", "--for", "codex"]);
     assert!(
@@ -191,7 +205,50 @@ sha256 = "{}"
         "{}",
         String::from_utf8_lossy(&delete.stderr)
     );
-    assert!(!home.join(".agents/skills/tdd").exists());
+    assert!(home.join(".agents/skills/tdd").exists());
+    assert!(
+        run(&["delete", "skill/tdd", "--for", "zed"])
+            .status
+            .success()
+    );
+    assert!(!home.join(".agents").exists());
+
+    let project_install = run(&[
+        "install",
+        manifest.to_str().unwrap(),
+        "--archive",
+        archive.to_str().unwrap(),
+        "--for",
+        "cursor",
+        "--project",
+    ]);
+    assert!(
+        project_install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&project_install.stderr)
+    );
+    assert!(project.join(".agents/skills/tdd/SKILL.md").is_file());
+    assert!(
+        run(&["delete", "skill/tdd", "--for", "cursor", "--project"])
+            .status
+            .success()
+    );
+    assert!(!project.join(".agents").exists());
+
+    let missing = run(&[
+        "install",
+        manifest.to_str().unwrap(),
+        "--archive",
+        archive.to_str().unwrap(),
+    ]);
+    assert!(!missing.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("require --for"),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+    let _ = env::delete_subkey(env_subkey);
+    let _ = voli_core::uninstall_reg::delete_base(uninstall_subkey);
 }
 
 #[test]

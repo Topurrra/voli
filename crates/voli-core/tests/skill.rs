@@ -8,8 +8,9 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use voli_core::{
-    Manifest, SKILL_TARGET_IDS, SkillError, SkillTarget, State, install_skill_archive,
-    uninstall_skill,
+    Manifest, Paths, SKILL_TARGET_IDS, SkillError, SkillScope, SkillTarget, State,
+    install_skill_archive, install_skill_archive_many, install_skill_archive_scoped,
+    uninstall_installed_skill, uninstall_skill, uninstall_skill_scoped,
 };
 use zip::write::SimpleFileOptions;
 
@@ -121,6 +122,37 @@ fn state_migration_preserves_existing_app_rows() {
 }
 
 #[test]
+fn state_migration_scopes_preview_skills_as_global() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("state.sqlite");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE installed_skills (
+             target TEXT NOT NULL, name TEXT NOT NULL, version TEXT NOT NULL,
+             description TEXT NOT NULL, manifest_json TEXT NOT NULL,
+             install_dir TEXT NOT NULL, installed_at INTEGER NOT NULL,
+             PRIMARY KEY (target, name)
+         );
+         CREATE TABLE skill_actions (
+             target TEXT NOT NULL, skill TEXT NOT NULL, seq INTEGER NOT NULL,
+             action_kind TEXT NOT NULL, payload TEXT NOT NULL,
+             PRIMARY KEY (target, skill, seq)
+         );
+         INSERT INTO installed_skills VALUES
+             ('codex', 'legacy', '1.0.0', 'old', '{}', 'C:\\temp\\legacy', 1);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let state = State::open(&db).unwrap();
+    let installed = state
+        .installed_skill("codex", "global", "legacy")
+        .unwrap()
+        .unwrap();
+    assert_eq!(installed.scope, "global");
+}
+
+#[test]
 fn installs_and_uninstalls_per_target() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
@@ -155,6 +187,220 @@ fn installs_and_uninstalls_per_target() {
     uninstall_skill("test-skill", SkillTarget::ClaudeCode, &home, &root).unwrap();
     assert!(!claude.install_dir.exists());
     assert!(codex.install_dir.exists());
+}
+
+#[test]
+fn shared_directory_is_installed_once_and_reference_counted() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let root = temp.path().join("voli");
+    let markdown = skill_md("shared");
+    let archive_bytes = build_zip(&[("shared/SKILL.md", &markdown)]);
+    let archive = write_archive(temp.path(), &archive_bytes, "shared.zip");
+    let manifest = manifest("shared", &archive_bytes);
+    let zed = "zed".parse::<SkillTarget>().unwrap();
+
+    let reports = install_skill_archive_many(
+        &manifest,
+        &archive,
+        &[SkillTarget::Codex, zed],
+        SkillScope::Global,
+        &home,
+        temp.path(),
+        &root,
+    )
+    .unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].install_dir, reports[1].install_dir);
+    assert_eq!(
+        State::open(&Paths::at(&root).state_db())
+            .unwrap()
+            .list_skills()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    uninstall_skill_scoped(
+        "shared",
+        SkillTarget::Codex,
+        SkillScope::Global,
+        &home,
+        temp.path(),
+        &root,
+    )
+    .unwrap();
+    assert!(home.join(".agents/skills/shared/SKILL.md").is_file());
+    uninstall_skill_scoped("shared", zed, SkillScope::Global, &home, temp.path(), &root).unwrap();
+    assert!(!home.join(".agents").exists());
+}
+
+#[test]
+fn multi_directory_failure_rolls_back_prior_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let root = temp.path().join("voli");
+    let blocked = home.join(".claude/skills/rollback");
+    std::fs::create_dir_all(&blocked).unwrap();
+    std::fs::write(blocked.join("owned.txt"), b"user").unwrap();
+    let before = snapshot_tree(&home);
+    let markdown = skill_md("rollback");
+    let archive_bytes = build_zip(&[("rollback/SKILL.md", &markdown)]);
+    let archive = write_archive(temp.path(), &archive_bytes, "rollback.zip");
+    let manifest = manifest("rollback", &archive_bytes);
+
+    assert!(matches!(
+        install_skill_archive_many(
+            &manifest,
+            &archive,
+            &[SkillTarget::Cursor, SkillTarget::ClaudeCode],
+            SkillScope::Global,
+            &home,
+            temp.path(),
+            &root,
+        ),
+        Err(SkillError::DestinationExists(_))
+    ));
+    assert_eq!(snapshot_tree(&home), before);
+    assert!(
+        State::open(&Paths::at(&root).state_db())
+            .unwrap()
+            .list_skills()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn multi_directory_failure_reports_a_failed_rollback() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let root = temp.path().join("voli");
+    std::fs::create_dir_all(home.join(".cursor/skills/.voli-removing-stuck")).unwrap();
+    std::fs::create_dir_all(home.join(".claude/skills/stuck")).unwrap();
+    let markdown = skill_md("stuck");
+    let archive_bytes = build_zip(&[("stuck/SKILL.md", &markdown)]);
+    let archive = write_archive(temp.path(), &archive_bytes, "stuck.zip");
+    let manifest = manifest("stuck", &archive_bytes);
+
+    let error = install_skill_archive_many(
+        &manifest,
+        &archive,
+        &[SkillTarget::Cursor, SkillTarget::ClaudeCode],
+        SkillScope::Global,
+        &home,
+        temp.path(),
+        &root,
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    match error {
+        SkillError::Rollback { original, rollback } => {
+            assert!(matches!(*original, SkillError::DestinationExists(_)));
+            assert!(matches!(*rollback, SkillError::Changed(_)));
+        }
+        other => panic!("expected rollback context, got {other:?}"),
+    }
+    assert!(message.contains("rollback also failed"));
+    assert!(home.join(".cursor/skills/stuck/SKILL.md").is_file());
+}
+
+#[test]
+fn detection_and_scopes_use_their_declared_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let root = temp.path().join("voli");
+    std::fs::create_dir_all(home.join(".cursor")).unwrap();
+    assert!(SkillTarget::Cursor.is_detected(&home));
+    assert!(!SkillTarget::Codex.is_detected(&home));
+    let detected = SkillTarget::all()
+        .iter()
+        .filter(|target| target.is_detected_in(&home, None))
+        .count();
+    assert_eq!(detected, 1);
+    assert_eq!(SkillTarget::all().len(), SKILL_TARGET_IDS.len());
+    let zed = "zed".parse::<SkillTarget>().unwrap();
+    let appdata = temp.path().join("appdata");
+    assert!(!zed.is_detected_in(&home, Some(&appdata)));
+    std::fs::create_dir_all(appdata.join("Zed")).unwrap();
+    assert!(zed.is_detected_in(&home, Some(&appdata)));
+
+    let markdown = skill_md("scoped");
+    let archive_bytes = build_zip(&[("scoped/SKILL.md", &markdown)]);
+    let archive = write_archive(temp.path(), &archive_bytes, "scoped.zip");
+    let manifest = manifest("scoped", &archive_bytes);
+    let project_report = install_skill_archive_scoped(
+        &manifest,
+        &archive,
+        SkillTarget::Cursor,
+        SkillScope::Project,
+        &home,
+        &project,
+        &root,
+    )
+    .unwrap();
+    let global_report = install_skill_archive_scoped(
+        &manifest,
+        &archive,
+        SkillTarget::Cursor,
+        SkillScope::Global,
+        &home,
+        &project,
+        &root,
+    )
+    .unwrap();
+    assert_eq!(
+        project_report.install_dir,
+        project.join(".agents/skills/scoped")
+    );
+    assert_eq!(
+        global_report.install_dir,
+        home.join(".cursor/skills/scoped")
+    );
+
+    let project_row = State::open(&Paths::at(&root).state_db())
+        .unwrap()
+        .installed_skill("cursor", "project", "scoped")
+        .unwrap()
+        .unwrap();
+    uninstall_installed_skill(&project_row, &home, &root).unwrap();
+    assert!(!project.join(".agents").exists());
+    assert!(home.join(".cursor/skills/scoped").is_dir());
+}
+
+fn snapshot_tree(root: &std::path::Path) -> Vec<(String, Option<Vec<u8>>)> {
+    fn walk(
+        root: &std::path::Path,
+        current: &std::path::Path,
+        output: &mut Vec<(String, Option<Vec<u8>>)>,
+    ) {
+        if !current.exists() {
+            return;
+        }
+        let mut entries = std::fs::read_dir(current)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            if path.is_dir() {
+                output.push((relative, None));
+                walk(root, &path, output);
+            } else {
+                output.push((relative, Some(std::fs::read(path).unwrap())));
+            }
+        }
+    }
+    let mut output = Vec::new();
+    walk(root, root, &mut output);
+    output
 }
 
 #[test]

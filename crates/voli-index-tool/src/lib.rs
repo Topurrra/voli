@@ -238,10 +238,6 @@ pub fn build(
         let updated_times = git_updated_times(dir);
         let mut latest: BTreeMap<(Kind, &str), &Manifest> = BTreeMap::new();
         for m in &manifests {
-            // The current website emits bare app install commands.
-            if m.kind != Kind::App {
-                continue;
-            }
             let identity = (m.kind, m.name.as_str());
             match latest.get(&identity) {
                 Some(prev) => {
@@ -1107,13 +1103,13 @@ sha256 = "{hash}"
         assert_eq!(packages[0]["h"], "https://example.com/fd");
         assert_eq!(packages[0]["p"], "official");
         assert_eq!(packages[0]["k"], "app");
-        assert_eq!(packages.as_array().unwrap().len(), 2);
+        assert_eq!(packages.as_array().unwrap().len(), 3);
         assert!(
             packages
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|package| package["k"] == "app")
+                .any(|package| package["n"] == "tdd" && package["k"] == "skill")
         );
 
         // Decompress .zst → must match sha + size in index.json.
