@@ -17,6 +17,8 @@ pub mod remote;
 #[cfg(windows)]
 pub mod selfinstall;
 #[cfg(windows)]
+pub mod shim_icon;
+#[cfg(windows)]
 pub mod skill;
 #[cfg(windows)]
 pub mod state;

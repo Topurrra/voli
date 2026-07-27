@@ -490,6 +490,10 @@ fn install_fs_inner(
         }
         fs::write(&shim_file, body)?;
         fs::copy(&stub, &shim_exe)?;
+        // Give the shim the target app's own icon instead of voli's bear stub
+        // icon (spec §6). Best-effort and never fatal: on any error, or when the
+        // target carries no icon, the working stub-icon shim is left in place.
+        let _ = crate::shim_icon::copy_exe_icon(&target, &shim_exe);
         actions.push(Action::ShimWritten {
             shim: shim_file,
             exe: shim_exe.clone(),
