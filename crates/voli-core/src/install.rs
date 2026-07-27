@@ -473,8 +473,9 @@ fn install_fs_inner(
         path: current.clone(),
     });
 
-    // 7. shims: one <base>.shim + <base>.exe per bin entry.
-    let stub = resolve_stub()?;
+    // 7. shims: one <base>.shim + <base>.exe per bin entry. GUI apps get the
+    // windows-subsystem stub so launching them never flashes a console window.
+    let stub = resolve_stub(manifest.gui.unwrap_or(false))?;
     let mut shims = Vec::new();
     for b in &manifest.bin {
         let base = b.shim_name();
@@ -927,9 +928,10 @@ pub fn dir_size(path: &Path) -> u64 {
     total
 }
 
-/// Locate the shim stub exe: `VOLI_SHIM_STUB` override, else `voli-shim.exe`
-/// next to the running binary.
-fn resolve_stub() -> Result<PathBuf> {
+/// Locate the shim stub exe: `VOLI_SHIM_STUB` override, else the stub matching
+/// the app kind next to the running binary — `voli-shim-gui.exe` (windows
+/// subsystem, no console) for GUI apps, `voli-shim.exe` (console) otherwise.
+fn resolve_stub(gui: bool) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("VOLI_SHIM_STUB") {
         let p = PathBuf::from(p);
         return if p.exists() {
@@ -939,7 +941,12 @@ fn resolve_stub() -> Result<PathBuf> {
         };
     }
     let exe = std::env::current_exe()?;
-    let cand = exe.with_file_name("voli-shim.exe");
+    let stub = if gui {
+        "voli-shim-gui.exe"
+    } else {
+        "voli-shim.exe"
+    };
+    let cand = exe.with_file_name(stub);
     if cand.exists() {
         Ok(cand)
     } else {
