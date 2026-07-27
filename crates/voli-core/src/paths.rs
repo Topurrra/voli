@@ -5,6 +5,68 @@
 //! each run into a tempdir).
 
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+/// Agent installations supported by the skill installer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillTarget {
+    id: &'static str,
+    global_dir: &'static str,
+}
+
+impl SkillTarget {
+    pub(crate) const fn new(id: &'static str, global_dir: &'static str) -> Self {
+        Self { id, global_dir }
+    }
+
+    #[allow(non_upper_case_globals)]
+    pub const ClaudeCode: Self = Self::new("claude-code", ".claude/skills");
+    #[allow(non_upper_case_globals)]
+    pub const Codex: Self = Self::new("codex", ".agents/skills");
+    #[allow(non_upper_case_globals)]
+    pub const Cursor: Self = Self::new("cursor", ".cursor/skills");
+    #[allow(non_upper_case_globals)]
+    pub const Windsurf: Self = Self::new("windsurf", ".codeium/windsurf/skills");
+
+    pub fn as_str(self) -> &'static str {
+        self.id
+    }
+
+    /// Resolve an agent's global skills directory from an explicit home path.
+    pub fn global_skills_dir(self, home: &Path) -> PathBuf {
+        home.join(self.global_dir)
+    }
+}
+
+include!("agent_targets_generated.rs");
+
+impl FromStr for SkillTarget {
+    type Err = SkillTargetError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        GENERATED_SKILL_TARGETS
+            .iter()
+            .copied()
+            .find(|target| target.id == value)
+            .ok_or_else(|| SkillTargetError(value.to_string()))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct SkillTargetError(String);
+
+impl std::fmt::Display for SkillTargetError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "unknown skill target '{}': supported targets are {}",
+            self.0,
+            SKILL_TARGET_IDS.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for SkillTargetError {}
 
 /// Resolved on-disk layout rooted at a single directory.
 #[derive(Debug, Clone)]

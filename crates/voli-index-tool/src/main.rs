@@ -63,6 +63,17 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Generate Voli's checked-in global agent target table from agents.ts.
+    SyncAgentTargets {
+        /// Local copy of vercel-labs/skills/src/agents.ts.
+        source: PathBuf,
+        /// Generated Rust file consumed by voli-core.
+        #[arg(long)]
+        out: PathBuf,
+        /// Exact upstream git revision recorded in the generated file.
+        #[arg(long)]
+        revision: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -148,6 +159,18 @@ fn run() -> anyhow::Result<ExitCode> {
         Command::Bump { dir, limit } => {
             let summary = voli_index_tool::bump(&dir, limit)?;
             println!("\n{}", summary);
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::SyncAgentTargets {
+            source,
+            out,
+            revision,
+        } => {
+            let summary = voli_index_tool::sync_agent_targets(&source, &out, &revision)?;
+            println!("imported {} stable global agent targets", summary.imported);
+            for (id, reason) in summary.excluded {
+                println!("excluded {id}: {reason}");
+            }
             Ok(ExitCode::SUCCESS)
         }
     }

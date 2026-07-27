@@ -43,6 +43,13 @@ pub struct SelfInstallReport {
     pub path_added: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum SelfInstallStep {
+    Binaries,
+    Path,
+    Finalizing,
+}
+
 /// Run self-install.
 ///
 /// - `root`: the voli root to install into.
@@ -54,6 +61,15 @@ pub fn self_install(
     root: &Path,
     source_dir: Option<&Path>,
     env_subkey: &str,
+) -> Result<SelfInstallReport, SelfInstallError> {
+    self_install_with_steps(root, source_dir, env_subkey, &mut |_| {})
+}
+
+pub fn self_install_with_steps(
+    root: &Path,
+    source_dir: Option<&Path>,
+    env_subkey: &str,
+    on_step: &mut dyn FnMut(SelfInstallStep),
 ) -> Result<SelfInstallReport, SelfInstallError> {
     let paths = Paths::at(root);
     paths.ensure()?; // apps, shims, cache, db
@@ -70,6 +86,7 @@ pub fn self_install(
     };
 
     // Copy whichever binaries exist; voli.exe is mandatory.
+    on_step(SelfInstallStep::Binaries);
     let mut copied = Vec::new();
     for name in BINARIES {
         let from = src.join(name);
@@ -83,6 +100,7 @@ pub fn self_install(
     }
 
     // Put shims\ on the user PATH (prepend, idempotent).
+    on_step(SelfInstallStep::Path);
     let shims_dir = paths.shims();
     let shims_str = shims_dir.to_string_lossy().into_owned();
     let prior = env::add_to_path(env_subkey, &shims_str)?;
@@ -93,6 +111,7 @@ pub fn self_install(
 
     // Shim voli itself: only shims\ is on PATH, and voli.exe lives in bin\ —
     // without this, `voli` is not resolvable in any shell (launch-day bug).
+    on_step(SelfInstallStep::Finalizing);
     let stub = bin_dir.join("voli-shim.exe");
     if stub.is_file() {
         fs::write(

@@ -17,6 +17,8 @@ pub mod remote;
 #[cfg(windows)]
 pub mod selfinstall;
 #[cfg(windows)]
+pub mod skill;
+#[cfg(windows)]
 pub mod state;
 #[cfg(windows)]
 pub mod uninstall_reg;
@@ -30,14 +32,20 @@ pub use install::{
     uninstall_env, upgrade_install,
 };
 pub use manifest::{
-    Bin, ExtraSource, Kind, Manifest, ManifestError, Shortcut, Source, SourceKind, WriteFile,
+    Bin, ExtraSource, Kind, Manifest, ManifestError, PackageRef, PackageRefError, Shortcut, Source,
+    SourceKind, WriteFile,
 };
-pub use paths::Paths;
+pub use paths::{Paths, SKILL_TARGET_IDS, SkillTarget, SkillTargetError};
 #[cfg(windows)]
 pub use remote::{
-    RemoteError, RemoteReport, Step, UpgradeOutcome, install_remote, install_remote_env, upgrade,
+    RemoteError, RemoteReport, SkillRemoteReport, SkillStep, Step, UpgradeOutcome, install_remote,
+    install_remote_env, install_skill_remote, upgrade,
 };
 #[cfg(windows)]
 pub use selfinstall::{SelfInstallError, SelfInstallReport, self_install};
 #[cfg(windows)]
-pub use state::{InstalledPkg, State};
+pub use skill::{
+    SkillError, SkillInstallReport, SkillUninstallReport, install_skill_archive, uninstall_skill,
+};
+#[cfg(windows)]
+pub use state::{InstalledPkg, InstalledSkill, SkillAction, State};

@@ -59,6 +59,24 @@ fn app_zip() -> Vec<u8> {
     buf
 }
 
+fn skill_zip() -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        writer.add_directory("tdd/", options).unwrap();
+        writer.start_file("tdd/SKILL.md", options).unwrap();
+        writer
+            .write_all(
+                b"---\nname: tdd\ndescription: Test-driven development workflow\n---\n# TDD\n\nWrite the test first.\n",
+            )
+            .unwrap();
+        writer.finish().unwrap();
+    }
+    buf
+}
+
 fn write_env_manifest(dir: &Path, sha: &str) -> std::path::PathBuf {
     let toml = format!(
         r#"
@@ -111,6 +129,72 @@ fn delete_commands_are_primary_and_old_names_remain_aliases() {
 }
 
 #[test]
+fn local_skill_install_list_and_targeted_delete() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("voli");
+    let home = temp.path().join("home");
+    let archive_bytes = skill_zip();
+    let archive = temp.path().join("tdd.zip");
+    fs::write(&archive, &archive_bytes).unwrap();
+    let manifest = temp.path().join("tdd.toml");
+    fs::write(
+        &manifest,
+        format!(
+            r#"name = "tdd"
+version = "1.0.0"
+kind = "skill"
+
+[source.any]
+url = "https://example.com/tdd.zip"
+sha256 = "{}"
+"#,
+            sha256_hex(&archive_bytes)
+        ),
+    )
+    .unwrap();
+
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_voli"))
+            .args(args)
+            .env("VOLI_ROOT", &root)
+            .env("USERPROFILE", &home)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let install = run(&[
+        "--json",
+        "install",
+        manifest.to_str().unwrap(),
+        "--archive",
+        archive.to_str().unwrap(),
+        "--for",
+        "codex",
+    ]);
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let install_json: serde_json::Value = serde_json::from_slice(&install.stdout).unwrap();
+    assert_eq!(install_json["installed"][0]["kind"], "skill");
+    assert_eq!(install_json["installed"][0]["target"], "codex");
+    assert!(home.join(".agents/skills/tdd/SKILL.md").is_file());
+
+    let list = run(&["list"]);
+    assert!(list.status.success());
+    assert!(String::from_utf8_lossy(&list.stdout).contains("skill/tdd  1.0.0  [codex]"));
+
+    let delete = run(&["delete", "skill/tdd", "--for", "codex"]);
+    assert!(
+        delete.status.success(),
+        "{}",
+        String::from_utf8_lossy(&delete.stderr)
+    );
+    assert!(!home.join(".agents/skills/tdd").exists());
+}
+
+#[test]
 fn non_tty_install_auto_applies_env_and_uninstall_restores() {
     let td = tempfile::tempdir().unwrap();
     let root = td.path();
@@ -151,9 +235,11 @@ fn non_tty_install_auto_applies_env_and_uninstall_restores() {
     );
 
     // `voli env app` reports it.
-    let env_out = voli(root, sk, &["env", "app"]);
+    let env_out = voli(root, sk, &["env", "app/app"]);
     assert!(env_out.status.success());
     assert!(String::from_utf8_lossy(&env_out.stdout).contains("JAVA_HOME"));
+    assert!(voli(root, sk, &["pin", "app/app"]).status.success());
+    assert!(voli(root, sk, &["unpin", "app/app"]).status.success());
 
     // Uninstall restores prior (JAVA_HOME was absent => deleted).
     let un = voli(root, sk, &["delete", "app"]);

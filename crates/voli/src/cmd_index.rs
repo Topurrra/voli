@@ -6,11 +6,10 @@
 //! `i32` exit code returned).
 
 use std::path::Path;
-use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressStyle};
 use voli_core::config::Config;
 use voli_core::index::{self, IndexError, UpdateOutcome};
+use voli_core::{Kind, PackageRef};
 
 const EXIT_OK: i32 = 0;
 const EXIT_ERROR: i32 = 1;
@@ -25,23 +24,14 @@ fn index_url(root: &Path) -> String {
 
 /// Map an index error to a clean one-line message + error exit code.
 fn fail(context: &str, e: IndexError) -> i32 {
-    eprintln!("error: {context}: {e}");
+    crate::print_index_error(context, &e);
     EXIT_ERROR
 }
 
 // ---- voli update ----------------------------------------------------------
 
 pub fn run_update(root: &Path, json: bool) -> i32 {
-    let spinner = (!json).then(|| {
-        let pb = ProgressBar::new_spinner();
-        pb.enable_steady_tick(Duration::from_millis(100));
-        pb.set_style(
-            ProgressStyle::with_template("{spinner} {msg}")
-                .unwrap_or_else(|_| ProgressStyle::default_spinner()),
-        );
-        pb.set_message("refreshing package index");
-        pb
-    });
+    let spinner = (!json).then(|| crate::stage_spinner("refreshing package index".to_string()));
     let result = index::update(root, &index_url(root));
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -57,7 +47,7 @@ pub fn run_update(root: &Path, json: bool) -> i32 {
                 _ => EXIT_OK,
             }
         }
-        Err(e) => fail("update failed", e),
+        Err(e) => fail("update the package index", e),
     }
 }
 
@@ -84,10 +74,16 @@ fn print_update(outcome: &UpdateOutcome, json: bool) {
     }
     match outcome {
         UpdateOutcome::UpToDate { epoch } => {
-            println!("✓ index is already up to date (epoch {epoch})");
+            println!(
+                "{} index is already up to date (epoch {epoch})",
+                crate::success_mark()
+            );
         }
         UpdateOutcome::Updated { epoch, size } => {
-            println!("✓ updated index to epoch {epoch} ({size} bytes)");
+            println!(
+                "{} updated index to epoch {epoch} ({size} bytes)",
+                crate::success_mark()
+            );
         }
         UpdateOutcome::Offline {
             local_epoch: Some(_),
@@ -108,16 +104,26 @@ fn print_update(outcome: &UpdateOutcome, json: bool) {
 // ---- voli search ----------------------------------------------------------
 
 pub fn run_search(root: &Path, query: &str, json: bool) -> i32 {
+    let spinner = (!json).then(|| crate::stage_spinner(format!("searching for {query}")));
     let hits = match index::search(root, query) {
         Ok(h) => h,
-        Err(e) => return fail("search failed", e),
+        Err(e) => {
+            if let Some(spinner) = spinner {
+                spinner.finish_and_clear();
+            }
+            return fail("search packages", e);
+        }
     };
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
 
     if json {
         let arr: Vec<_> = hits
             .iter()
             .map(|h| {
                 serde_json::json!({
+                    "kind": h.kind.as_str(),
                     "name": h.name,
                     "version": h.version,
                     "description": h.description,
@@ -132,11 +138,15 @@ pub fn run_search(root: &Path, query: &str, json: bool) -> i32 {
         println!("no packages match '{query}'");
         return EXIT_OK;
     }
-    let namew = hits.iter().map(|h| h.name.len()).max().unwrap_or(0);
+    let display_names: Vec<String> = hits
+        .iter()
+        .map(|hit| qualified_name(hit.kind, &hit.name))
+        .collect();
+    let namew = display_names.iter().map(String::len).max().unwrap_or(0);
     let verw = hits.iter().map(|h| h.version.len()).max().unwrap_or(0);
-    for h in &hits {
+    for (h, name) in hits.iter().zip(display_names) {
         let desc = h.description.as_deref().unwrap_or("");
-        println!("{:<namew$}  {:<verw$}  {}", h.name, h.version, desc);
+        println!("{name:<namew$}  {:<verw$}  {}", h.version, desc);
     }
     EXIT_OK
 }
@@ -144,20 +154,27 @@ pub fn run_search(root: &Path, query: &str, json: bool) -> i32 {
 // ---- voli info ------------------------------------------------------------
 
 pub fn run_info(root: &Path, package: &str, json: bool) -> i32 {
-    let found = match index::info(root, package) {
+    let package_ref = match PackageRef::parse(package) {
+        Ok(package) => package,
+        Err(error) => {
+            eprintln!("error: invalid package '{package}': {error}");
+            return EXIT_ERROR;
+        }
+    };
+    let found = match index::info_ref(root, &package_ref) {
         Ok(m) => m,
-        Err(e) => return fail("info failed", e),
+        Err(e) => return fail("read package information", e),
     };
 
     let Some(m) = found else {
-        return info_not_found(root, package, json);
+        return info_not_found(root, &package_ref, package, json);
     };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&m).unwrap());
         return EXIT_OK;
     }
-    println!("{} {}", m.name, m.version);
+    println!("{} {}", qualified_name(m.kind, &m.name), m.version);
     if let Some(d) = &m.description {
         println!("  {d}");
     }
@@ -168,6 +185,7 @@ pub fn run_info(root: &Path, package: &str, json: bool) -> i32 {
         println!("  license:  {l}");
     }
     let arches: Vec<&str> = [
+        m.source.any.as_ref().map(|_| "any"),
         m.source.x64.as_ref().map(|_| "x64"),
         m.source.arm64.as_ref().map(|_| "arm64"),
     ]
@@ -185,13 +203,13 @@ pub fn run_info(root: &Path, package: &str, json: bool) -> i32 {
 }
 
 /// Not-found path: emit did-you-mean suggestions (spec §5) and exit non-zero.
-fn info_not_found(root: &Path, package: &str, json: bool) -> i32 {
+fn info_not_found(root: &Path, package_ref: &PackageRef, package: &str, json: bool) -> i32 {
     if json {
         println!("null");
         return EXIT_ERROR;
     }
     eprintln!("error: package '{package}' not found");
-    if let Ok(suggestions) = index::did_you_mean(root, package) {
+    if let Ok(suggestions) = index::did_you_mean_ref(root, package_ref) {
         print_suggestions(&suggestions);
     }
     EXIT_ERROR
@@ -203,14 +221,26 @@ pub fn print_suggestions(suggestions: &[index::Suggestion]) {
         return;
     }
     eprintln!("Did you mean:");
-    let namew = suggestions.iter().map(|s| s.name.len()).max().unwrap_or(0);
+    let namew = suggestions
+        .iter()
+        .map(|suggestion| qualified_name(suggestion.kind, &suggestion.name).len())
+        .max()
+        .unwrap_or(0);
     for s in suggestions {
+        let name = qualified_name(s.kind, &s.name);
         let bin = s
             .bin
             .as_ref()
             .map(|b| format!(" ({b})"))
             .unwrap_or_default();
         let desc = s.description.as_deref().unwrap_or("");
-        eprintln!("  {:<namew$}{bin}  {desc}", s.name);
+        eprintln!("  {name:<namew$}{bin}  {desc}");
+    }
+}
+
+fn qualified_name(kind: Kind, name: &str) -> String {
+    match kind {
+        Kind::App => name.to_string(),
+        Kind::Mcp | Kind::Skill => format!("{}/{name}", kind.as_str()),
     }
 }

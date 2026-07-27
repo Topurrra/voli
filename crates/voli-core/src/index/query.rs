@@ -6,7 +6,7 @@
 use rusqlite::Connection;
 
 use super::{IndexError, latest_version, open_index};
-use crate::manifest::Manifest;
+use crate::manifest::{Kind, Manifest, PackageRef};
 
 /// Minimum Jaro-Winkler similarity for a did-you-mean suggestion (spec §5).
 const DYM_THRESHOLD: f64 = 0.75;
@@ -15,6 +15,7 @@ const DYM_LIMIT: usize = 5;
 /// A search result row: package name, latest version, short description.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchHit {
+    pub kind: Kind,
     pub name: String,
     pub version: String,
     pub description: Option<String>,
@@ -23,6 +24,7 @@ pub struct SearchHit {
 /// A did-you-mean suggestion for an install miss.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Suggestion {
+    pub kind: Kind,
     pub name: String,
     /// A representative bin name (e.g. `rg` for ripgrep), if any.
     pub bin: Option<String>,
@@ -38,11 +40,12 @@ pub fn search(root: &std::path::Path, query: &str) -> Result<Vec<SearchHit>, Ind
         names = substring_names(&conn, query)?;
     }
     let mut hits = Vec::with_capacity(names.len());
-    for name in names {
-        if let Some(version) = latest_version(&conn, &name)? {
-            let description = description_of(&conn, &name, &version)?;
+    for package in names {
+        if let Some(version) = latest_version(&conn, package.kind, &package.name)? {
+            let description = description_of(&conn, package.kind, &package.name, &version)?;
             hits.push(SearchHit {
-                name,
+                kind: package.kind,
+                name: package.name,
                 version,
                 description,
             });
@@ -53,15 +56,39 @@ pub fn search(root: &std::path::Path, query: &str) -> Result<Vec<SearchHit>, Ind
 
 /// Full manifest of the latest version of `name`, or `None` if not in the index.
 pub fn info(root: &std::path::Path, name: &str) -> Result<Option<Manifest>, IndexError> {
+    info_ref(
+        root,
+        &PackageRef {
+            kind: Kind::App,
+            name: name.to_string(),
+        },
+    )
+}
+
+/// Full manifest of the latest version of a kind-qualified package identity.
+pub fn info_ref(
+    root: &std::path::Path,
+    package: &PackageRef,
+) -> Result<Option<Manifest>, IndexError> {
     let conn = open_index(root)?;
-    let Some(version) = latest_version(&conn, name)? else {
+    let Some(version) = latest_version(&conn, package.kind, &package.name)? else {
         return Ok(None);
     };
-    let toml_text: String = conn.query_row(
-        "SELECT manifest_toml FROM packages WHERE name = ?1 AND version = ?2 LIMIT 1",
-        rusqlite::params![name, version],
-        |r| r.get(0),
-    )?;
+    let toml_text: String = if package.kind == Kind::App {
+        conn.query_row(
+            "SELECT manifest_toml FROM packages
+             WHERE name = ?1 AND version = ?2 LIMIT 1",
+            rusqlite::params![package.name, version],
+            |r| r.get(0),
+        )?
+    } else {
+        conn.query_row(
+            "SELECT manifest_toml FROM agent_packages
+             WHERE kind = ?1 AND name = ?2 AND version = ?3 LIMIT 1",
+            rusqlite::params![package.kind.as_str(), package.name, version],
+            |r| r.get(0),
+        )?
+    };
     Ok(Some(Manifest::from_toml_str(&toml_text)?))
 }
 
@@ -72,14 +99,42 @@ pub fn manifest_at(
     name: &str,
     version: &str,
 ) -> Result<Option<Manifest>, IndexError> {
+    manifest_at_ref(
+        root,
+        &PackageRef {
+            kind: Kind::App,
+            name: name.to_string(),
+        },
+        version,
+    )
+}
+
+/// Manifest of a specific kind-qualified package identity at `version`.
+pub fn manifest_at_ref(
+    root: &std::path::Path,
+    package: &PackageRef,
+    version: &str,
+) -> Result<Option<Manifest>, IndexError> {
     let conn = open_index(root)?;
-    let toml_text: Option<String> = conn
-        .query_row(
-            "SELECT manifest_toml FROM packages WHERE name = ?1 AND version = ?2 LIMIT 1",
-            rusqlite::params![name, version],
+    let toml_text: Option<String> = if package.kind == Kind::App {
+        conn.query_row(
+            "SELECT manifest_toml FROM packages
+             WHERE name = ?1 AND version = ?2 LIMIT 1",
+            rusqlite::params![package.name, version],
             |r| r.get(0),
         )
-        .ok();
+        .ok()
+    } else if table_exists(&conn, "agent_packages")? {
+        conn.query_row(
+            "SELECT manifest_toml FROM agent_packages
+             WHERE kind = ?1 AND name = ?2 AND version = ?3 LIMIT 1",
+            rusqlite::params![package.kind.as_str(), package.name, version],
+            |r| r.get(0),
+        )
+        .ok()
+    } else {
+        None
+    };
     match toml_text {
         Some(t) => Ok(Some(Manifest::from_toml_str(&t)?)),
         None => Ok(None),
@@ -89,20 +144,45 @@ pub fn manifest_at(
 /// Suggestions for a name that missed: Jaro-Winkler ≥ 0.75 over package names
 /// AND bin names, best 5 first (spec §5 install-miss path).
 pub fn did_you_mean(root: &std::path::Path, wrong: &str) -> Result<Vec<Suggestion>, IndexError> {
-    let conn = open_index(root)?;
-    let wrong = wrong.to_ascii_lowercase();
+    did_you_mean_ref(
+        root,
+        &PackageRef {
+            kind: Kind::App,
+            name: wrong.to_string(),
+        },
+    )
+}
 
-    // (name, bin_names) for every package — cheap, no manifest parsing.
-    let mut stmt = conn.prepare("SELECT name, bin_names FROM packages_fts")?;
-    let rows: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+/// Suggestions within the same package kind as `wrong`.
+pub fn did_you_mean_ref(
+    root: &std::path::Path,
+    wrong: &PackageRef,
+) -> Result<Vec<Suggestion>, IndexError> {
+    let conn = open_index(root)?;
+    let name_to_match = wrong.name.to_ascii_lowercase();
+
+    // (name, bin_names) for this package kind, cheap and no manifest parsing.
+    let rows: Vec<(String, String)> = if wrong.kind == Kind::App {
+        let mut stmt = conn.prepare("SELECT name, bin_names FROM packages_fts")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    } else if table_exists(&conn, "agent_packages_fts")? {
+        let mut stmt =
+            conn.prepare("SELECT name, bin_names FROM agent_packages_fts WHERE kind = ?1")?;
+        stmt.query_map([wrong.kind.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    } else {
+        Vec::new()
+    };
 
     let mut scored: Vec<(f64, String)> = Vec::new();
     for (name, bin_names) in rows {
-        let mut best = strsim::jaro_winkler(&wrong, &name.to_ascii_lowercase());
+        let mut best = strsim::jaro_winkler(&name_to_match, &name.to_ascii_lowercase());
         for bin in bin_names.split_whitespace() {
-            best = best.max(strsim::jaro_winkler(&wrong, &bin.to_ascii_lowercase()));
+            best = best.max(strsim::jaro_winkler(
+                &name_to_match,
+                &bin.to_ascii_lowercase(),
+            ));
         }
         if best >= DYM_THRESHOLD {
             scored.push((best, name));
@@ -118,12 +198,13 @@ pub fn did_you_mean(root: &std::path::Path, wrong: &str) -> Result<Vec<Suggestio
 
     let mut out = Vec::with_capacity(scored.len());
     for (_, name) in scored {
-        let bin = first_bin(&conn, &name)?;
-        let description = latest_version(&conn, &name)?
-            .map(|v| description_of(&conn, &name, &v))
+        let bin = first_bin(&conn, wrong.kind, &name)?;
+        let description = latest_version(&conn, wrong.kind, &name)?
+            .map(|v| description_of(&conn, wrong.kind, &name, &v))
             .transpose()?
             .flatten();
         out.push(Suggestion {
+            kind: wrong.kind,
             name,
             bin,
             description,
@@ -133,7 +214,7 @@ pub fn did_you_mean(root: &std::path::Path, wrong: &str) -> Result<Vec<Suggestio
 }
 
 /// FTS5 names, best-match first. Empty query or no tokens → no FTS results.
-fn fts_names(conn: &Connection, query: &str) -> Result<Vec<String>, IndexError> {
+fn fts_names(conn: &Connection, query: &str) -> Result<Vec<PackageRef>, IndexError> {
     // Pure-alphanumeric prefix tokens, AND-joined; punctuation stripped so a
     // user query can never inject FTS5 match syntax.
     let match_expr = query
@@ -150,50 +231,124 @@ fn fts_names(conn: &Connection, query: &str) -> Result<Vec<String>, IndexError> 
     if match_expr.is_empty() {
         return Ok(Vec::new());
     }
-    let mut stmt =
-        conn.prepare("SELECT name FROM packages_fts WHERE packages_fts MATCH ?1 ORDER BY rank")?;
-    let names = stmt
-        .query_map([&match_expr], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<_>>()?;
+    let mut names: Vec<PackageRef> = {
+        let mut stmt = conn
+            .prepare("SELECT name FROM packages_fts WHERE packages_fts MATCH ?1 ORDER BY rank")?;
+        stmt.query_map([&match_expr], |row| {
+            Ok(PackageRef {
+                kind: Kind::App,
+                name: row.get(0)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    if table_exists(conn, "agent_packages_fts")? {
+        let mut stmt = conn.prepare(
+            "SELECT kind, name FROM agent_packages_fts
+             WHERE agent_packages_fts MATCH ?1 ORDER BY rank",
+        )?;
+        names.extend(
+            stmt.query_map([&match_expr], package_ref_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+    }
     Ok(names)
 }
 
 /// Substring fallback over name and description, name-ordered.
-fn substring_names(conn: &Connection, query: &str) -> Result<Vec<String>, IndexError> {
+fn substring_names(conn: &Connection, query: &str) -> Result<Vec<PackageRef>, IndexError> {
     let like = format!("%{}%", query.trim());
     let mut stmt = conn.prepare(
         "SELECT DISTINCT name FROM packages
          WHERE name LIKE ?1 OR IFNULL(description, '') LIKE ?1
          ORDER BY name ASC",
     )?;
-    let names = stmt
-        .query_map([&like], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<_>>()?;
+    let mut names = stmt
+        .query_map([&like], |row| {
+            Ok(PackageRef {
+                kind: Kind::App,
+                name: row.get(0)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if table_exists(conn, "agent_packages")? {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT kind, name FROM agent_packages
+             WHERE name LIKE ?1 OR IFNULL(description, '') LIKE ?1
+             ORDER BY name ASC, kind ASC",
+        )?;
+        names.extend(
+            stmt.query_map([&like], package_ref_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+    }
     Ok(names)
 }
 
 fn description_of(
     conn: &Connection,
+    kind: Kind,
     name: &str,
     version: &str,
 ) -> Result<Option<String>, IndexError> {
-    Ok(conn.query_row(
-        "SELECT description FROM packages WHERE name = ?1 AND version = ?2 LIMIT 1",
-        rusqlite::params![name, version],
-        |r| r.get::<_, Option<String>>(0),
-    )?)
+    if kind == Kind::App {
+        Ok(conn.query_row(
+            "SELECT description FROM packages
+             WHERE name = ?1 AND version = ?2 LIMIT 1",
+            rusqlite::params![name, version],
+            |r| r.get::<_, Option<String>>(0),
+        )?)
+    } else {
+        Ok(conn.query_row(
+            "SELECT description FROM agent_packages
+             WHERE kind = ?1 AND name = ?2 AND version = ?3 LIMIT 1",
+            rusqlite::params![kind.as_str(), name, version],
+            |r| r.get::<_, Option<String>>(0),
+        )?)
+    }
 }
 
 /// First searchable bin term for a package (the `rg` in ripgrep), from FTS.
-fn first_bin(conn: &Connection, name: &str) -> Result<Option<String>, IndexError> {
-    let bin_names: Option<String> = conn
-        .query_row(
+fn first_bin(conn: &Connection, kind: Kind, name: &str) -> Result<Option<String>, IndexError> {
+    let bin_names: Option<String> = if kind == Kind::App {
+        conn.query_row(
             "SELECT bin_names FROM packages_fts WHERE name = ?1 LIMIT 1",
             [name],
             |r| r.get(0),
         )
-        .ok();
+        .ok()
+    } else if table_exists(conn, "agent_packages_fts")? {
+        conn.query_row(
+            "SELECT bin_names FROM agent_packages_fts
+             WHERE kind = ?1 AND name = ?2 LIMIT 1",
+            rusqlite::params![kind.as_str(), name],
+            |r| r.get(0),
+        )
+        .ok()
+    } else {
+        None
+    };
     Ok(bin_names
         .and_then(|s| s.split_whitespace().next().map(str::to_string))
         .filter(|s| !s.is_empty()))
+}
+
+fn package_ref_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRef> {
+    let kind: String = row.get(0)?;
+    let name = row.get(1)?;
+    let kind = match kind.as_str() {
+        "app" => Kind::App,
+        "mcp" => Kind::Mcp,
+        "skill" => Kind::Skill,
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    };
+    Ok(PackageRef { kind, name })
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool, IndexError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1)",
+        [table],
+        |row| row.get(0),
+    )?)
 }

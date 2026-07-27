@@ -4,16 +4,68 @@
 //! no script field, and the grammar cannot express one.
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// Package kind. Only `App` is wired in v1; `Mcp`/`Skill` are v2 (spec §11 phase 3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+/// Package kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     App,
     Mcp,
     Skill,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::App => "app",
+            Self::Mcp => "mcp",
+            Self::Skill => "skill",
+        }
+    }
+}
+
+/// A package identity. Bare names remain app references for compatibility.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PackageRef {
+    pub kind: Kind,
+    pub name: String,
+}
+
+impl PackageRef {
+    pub fn parse(value: &str) -> Result<Self, PackageRefError> {
+        value.parse()
+    }
+}
+
+impl FromStr for PackageRef {
+    type Err = PackageRefError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (kind, name) = match value.split_once('/') {
+            Some(("app", name)) => (Kind::App, name),
+            Some(("mcp", name)) => (Kind::Mcp, name),
+            Some(("skill", name)) => (Kind::Skill, name),
+            Some((kind, _)) => return Err(PackageRefError::Kind(kind.to_string())),
+            None => (Kind::App, value),
+        };
+        validate_name(name).map_err(|_| PackageRefError::Name(name.to_string()))?;
+        Ok(Self {
+            kind,
+            name: name.to_string(),
+        })
+    }
+}
+
+/// Errors from parsing a package reference.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PackageRefError {
+    #[error("unknown package kind '{0}': expected app, mcp, or skill")]
+    Kind(String),
+    #[error("invalid package name '{0}': must be lowercase alphanumeric and dashes only")]
+    Name(String),
 }
 
 /// How a source payload is handled.
@@ -80,6 +132,7 @@ pub struct ExtraSource {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Sources {
+    pub any: Option<Source>,
     pub x64: Option<Source>,
     pub arm64: Option<Source>,
 }
@@ -225,6 +278,18 @@ pub enum ManifestError {
     #[error("no source: at least one of [source.x64] or [source.arm64] is required")]
     NoSource,
 
+    #[error("invalid skill source: exactly one [source.any] archive is required")]
+    SkillSource,
+
+    #[error("invalid skill name '{0}': expected the Agent Skills name format")]
+    SkillName(String),
+
+    #[error("invalid skill archive URL '{0}': expected .zip, .tar.gz, or .tgz")]
+    SkillArchiveUrl(String),
+
+    #[error("[source.any] is only allowed for skill packages")]
+    UniversalSource,
+
     #[error("source for {arch}: exactly one of sha256 or sha512 is required")]
     HashRequired { arch: &'static str },
 
@@ -243,6 +308,9 @@ pub enum ManifestError {
 
     #[error("invalid icon URL '{0}': must be an HTTPS URL")]
     IconUrl(String),
+
+    #[error("field '{0}' is not allowed for skill packages")]
+    SkillField(&'static str),
 }
 
 impl Manifest {
@@ -260,16 +328,35 @@ impl Manifest {
             check_icon_url(icon)?;
         }
 
-        if self.source.x64.is_none() && self.source.arm64.is_none() {
-            return Err(ManifestError::NoSource);
-        }
-        if let Some(s) = &self.source.x64 {
-            check_source_hash(s, "x64")?;
-            check_extra_sources(s, "x64")?;
-        }
-        if let Some(s) = &self.source.arm64 {
-            check_source_hash(s, "arm64")?;
-            check_extra_sources(s, "arm64")?;
+        if self.kind == Kind::Skill {
+            validate_skill_name(&self.name)?;
+            let Some(source) = &self.source.any else {
+                return Err(ManifestError::SkillSource);
+            };
+            if self.source.x64.is_some() || self.source.arm64.is_some() {
+                return Err(ManifestError::SkillSource);
+            }
+            check_source_hash(source, "any")?;
+            check_extra_sources(source, "any")?;
+            self.validate_skill()?;
+            if !is_skill_archive_url(&source.url) {
+                return Err(ManifestError::SkillArchiveUrl(source.url.clone()));
+            }
+        } else {
+            if self.source.any.is_some() {
+                return Err(ManifestError::UniversalSource);
+            }
+            if self.source.x64.is_none() && self.source.arm64.is_none() {
+                return Err(ManifestError::NoSource);
+            }
+            if let Some(s) = &self.source.x64 {
+                check_source_hash(s, "x64")?;
+                check_extra_sources(s, "x64")?;
+            }
+            if let Some(s) = &self.source.arm64 {
+                check_source_hash(s, "arm64")?;
+                check_extra_sources(s, "arm64")?;
+            }
         }
 
         for b in &self.bin {
@@ -288,6 +375,43 @@ impl Manifest {
             check_relative(&wf.path, "write_file")?;
         }
 
+        Ok(())
+    }
+
+    fn validate_skill(&self) -> Result<(), ManifestError> {
+        let app_field = if self.extract_dir.is_some() {
+            Some("extract_dir")
+        } else if !self.bin.is_empty() {
+            Some("bin")
+        } else if !self.env.is_empty() {
+            Some("env")
+        } else if !self.depends.is_empty() {
+            Some("depends")
+        } else if !self.persist.is_empty() {
+            Some("persist")
+        } else if self.gui.is_some() {
+            Some("gui")
+        } else if !self.shortcuts.is_empty() {
+            Some("shortcuts")
+        } else if !self.write_file.is_empty() {
+            Some("write_file")
+        } else {
+            None
+        };
+        if let Some(field) = app_field {
+            return Err(ManifestError::SkillField(field));
+        }
+        let source = self
+            .source
+            .any
+            .as_ref()
+            .expect("validated: skill has a universal source");
+        if source.kind != SourceKind::Archive {
+            return Err(ManifestError::SkillField("source.kind"));
+        }
+        if !source.extra.is_empty() {
+            return Err(ManifestError::SkillField("source.extra"));
+        }
         Ok(())
     }
 }
@@ -314,6 +438,23 @@ fn validate_name(name: &str) -> Result<(), ManifestError> {
     } else {
         Err(ManifestError::Name(name.to_string()))
     }
+}
+
+fn validate_skill_name(name: &str) -> Result<(), ManifestError> {
+    if name.len() <= 64 && !name.starts_with('-') && !name.ends_with('-') && !name.contains("--") {
+        Ok(())
+    } else {
+        Err(ManifestError::SkillName(name.to_string()))
+    }
+}
+
+fn is_skill_archive_url(url: &str) -> bool {
+    let path = url
+        .split_once("#/")
+        .map(|(_, path)| path)
+        .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url))
+        .to_ascii_lowercase();
+    path.ends_with(".zip") || path.ends_with(".tar.gz") || path.ends_with(".tgz")
 }
 
 fn check_source_hash(source: &Source, arch: &'static str) -> Result<(), ManifestError> {
@@ -736,6 +877,169 @@ extra = [{{ url = "https://example.com/b.zip", sha256 = "{}", extract_to = "../e
         assert!(matches!(
             Manifest::from_toml_str(&s),
             Err(ManifestError::RelativePath { .. })
+        ));
+    }
+
+    #[test]
+    fn standard_skill_archive_parses_without_extra_schema() {
+        let s = format!(
+            r#"
+name = "tdd"
+version = "1.0.0"
+description = "Test-driven development workflow"
+kind = "skill"
+
+[source.any]
+url = "https://example.com/tdd.zip"
+sha256 = "{}"
+"#,
+            "a".repeat(64)
+        );
+        let skill = Manifest::from_toml_str(&s).expect("standard skill archive should parse");
+        assert_eq!(skill.kind, Kind::Skill);
+        assert!(skill.bin.is_empty());
+        assert!(!toml::to_string(&skill).unwrap().contains("[skill]"));
+    }
+
+    #[test]
+    fn skill_manifest_enforces_name_and_archive_shape_early() {
+        let long_name = "a".repeat(65);
+        for name in ["-tdd", "tdd-", "test--driven", long_name.as_str()] {
+            let text = format!(
+                r#"
+name = "{name}"
+version = "1.0.0"
+kind = "skill"
+
+[source.any]
+url = "https://example.com/tdd.zip"
+sha256 = "{}"
+"#,
+                "a".repeat(64)
+            );
+            assert!(matches!(
+                Manifest::from_toml_str(&text),
+                Err(ManifestError::SkillName(_))
+            ));
+        }
+
+        let extensionless = format!(
+            r#"
+name = "tdd"
+version = "1.0.0"
+kind = "skill"
+
+[source.any]
+url = "https://example.com/download"
+sha256 = "{}"
+"#,
+            "a".repeat(64)
+        );
+        assert!(matches!(
+            Manifest::from_toml_str(&extensionless),
+            Err(ManifestError::SkillArchiveUrl(_))
+        ));
+    }
+
+    #[test]
+    fn skill_rejects_app_only_fields() {
+        for (field, extra) in [
+            ("extract_dir", r#"extract_dir = "wrapped""#),
+            ("bin", r#"bin = ["tool.exe"]"#),
+            ("env", r#"env = { PATH = "{dir}" }"#),
+            ("depends", r#"depends = { app = "*" }"#),
+            ("persist", r#"persist = ["config"]"#),
+            ("gui", "gui = false"),
+            ("shortcuts", r#"shortcuts = ["tool.exe"]"#),
+            (
+                "write_file",
+                r#"write_file = [{ path = "config", content = "x" }]"#,
+            ),
+        ] {
+            let s = format!(
+                r#"
+name = "tdd"
+version = "1.0.0"
+kind = "skill"
+{extra}
+
+[source.any]
+url = "https://example.com/tdd.zip"
+sha256 = "{}"
+"#,
+                "a".repeat(64)
+            );
+            assert!(matches!(
+                Manifest::from_toml_str(&s),
+                Err(ManifestError::SkillField(actual)) if actual == field
+            ));
+        }
+    }
+
+    #[test]
+    fn skill_rejects_nonstandard_source_features() {
+        let s = format!(
+            r#"
+name = "tdd"
+version = "1.0.0"
+kind = "skill"
+
+[source.any]
+url = "https://example.com/tdd.exe"
+sha256 = "{}"
+kind = "installer-archive"
+"#,
+            "a".repeat(64)
+        );
+        assert!(matches!(
+            Manifest::from_toml_str(&s),
+            Err(ManifestError::SkillField("source.kind"))
+        ));
+    }
+
+    #[test]
+    fn universal_source_is_skill_only() {
+        let app = minimal("").replace("[source.x64]", "[source.any]");
+        assert!(matches!(
+            Manifest::from_toml_str(&app),
+            Err(ManifestError::UniversalSource)
+        ));
+
+        let skill = minimal("")
+            .replace(r#"kind = "app""#, r#"kind = "skill""#)
+            .replace("[source.x64]", "[source.any]");
+        Manifest::from_toml_str(&skill).expect("skill accepts a universal source");
+
+        let arch_skill = minimal("").replace(r#"kind = "app""#, r#"kind = "skill""#);
+        assert!(matches!(
+            Manifest::from_toml_str(&arch_skill),
+            Err(ManifestError::SkillSource)
+        ));
+    }
+
+    #[test]
+    fn package_refs_are_qualified_without_weakening_manifest_names() {
+        assert_eq!(
+            PackageRef::parse("foo").unwrap(),
+            PackageRef {
+                kind: Kind::App,
+                name: "foo".to_string(),
+            }
+        );
+        assert_eq!(PackageRef::parse("app/foo").unwrap().kind, Kind::App);
+        assert_eq!(PackageRef::parse("mcp/foo").unwrap().kind, Kind::Mcp);
+        assert_eq!(PackageRef::parse("skill/foo").unwrap().kind, Kind::Skill);
+        assert!(matches!(
+            PackageRef::parse("skill/foo/bar"),
+            Err(PackageRefError::Name(name)) if name == "foo/bar"
+        ));
+        assert!(matches!(
+            PackageRef::parse("other/foo"),
+            Err(PackageRefError::Kind(kind)) if kind == "other"
+        ));
+        assert!(matches!(
+            Manifest::from_toml_str(&minimal("").replace("name = \"app\"", "name = \"app/foo\"")),
+            Err(ManifestError::Name(name)) if name == "app/foo"
         ));
     }
 }

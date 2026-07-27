@@ -5,7 +5,8 @@
 //!
 //! - [`analyze`] / [`validate`] — walk `manifests/`, parse+validate every
 //!   `.toml` with [`Manifest::from_toml_str`], check the on-disk layout
-//!   (`<letter>/<name>/<version>.toml`), and detect duplicate (name, version)
+//!   (apps use `<letter>/<name>/<version>.toml`; typed packages add a kind
+//!   directory), and detect duplicate (kind, name, version)
 //!   pairs. Collects *every* error rather than failing fast.
 //! - [`build`] — validate, compile the manifests into `index.sqlite` via
 //!   [`voli_core::index::build`], compress to `.zst`, Ed25519-sign the
@@ -16,8 +17,11 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
-use voli_core::Manifest;
 use voli_core::index::net::RemoteIndex;
+use voli_core::{Kind, Manifest};
+
+mod agent_targets;
+pub use agent_targets::{AgentTargetSync, sync_agent_targets};
 
 /// Directory name excluded from validation and the index build (spec: fixtures).
 const EXAMPLES_DIR: &str = "_examples";
@@ -65,8 +69,8 @@ pub fn analyze(dir: &Path) -> Result<(Vec<Manifest>, Vec<String>)> {
     let files = collect_toml_files(dir)?;
     let mut manifests = Vec::new();
     let mut errors = Vec::new();
-    // (name, version) -> the relative path that first claimed it.
-    let mut seen: HashSet<(String, String)> = HashSet::new();
+    // (kind, name, version) -> the relative path that first claimed it.
+    let mut seen: HashSet<(Kind, String, String)> = HashSet::new();
 
     for abs in &files {
         let rel = abs.strip_prefix(dir).unwrap_or(abs);
@@ -82,11 +86,13 @@ pub fn analyze(dir: &Path) -> Result<(Vec<Manifest>, Vec<String>)> {
             Err(e) => errors.push(format!("{rel_disp}: {e}")),
             Ok(m) => {
                 errors.extend(layout_errors(rel, &m));
-                if !seen.insert((m.name.clone(), m.version.clone())) {
+                if !seen.insert((m.kind, m.name.clone(), m.version.clone())) {
                     errors.push(format!(
-                        "{rel_disp}: duplicate package version (name = {}, version = {}) \
+                        "{rel_disp}: duplicate package version (kind = {}, name = {}, version = {}) \
                          already defined elsewhere",
-                        m.name, m.version
+                        m.kind.as_str(),
+                        m.name,
+                        m.version
                     ));
                 }
                 manifests.push(m);
@@ -96,9 +102,9 @@ pub fn analyze(dir: &Path) -> Result<(Vec<Manifest>, Vec<String>)> {
     Ok((manifests, errors))
 }
 
-/// Layout check for one manifest: the path must be
-/// `<first-letter>/<name>/<version>.toml` relative to the manifests root, with
-/// the letter, directory name, and filename matching the manifest fields.
+/// Layout check for one manifest. Apps preserve the v1
+/// `<first-letter>/<name>/<version>.toml` layout. Typed packages use
+/// `<kind>/<first-letter>/<name>/<version>.toml`.
 fn layout_errors(rel: &Path, m: &Manifest) -> Vec<String> {
     let rel_disp = rel.display().to_string();
     let comps: Vec<String> = rel
@@ -109,12 +115,28 @@ fn layout_errors(rel: &Path, m: &Manifest) -> Vec<String> {
         })
         .collect();
 
-    if comps.len() != 3 {
-        return vec![format!(
-            "{rel_disp}: wrong layout — expected <first-letter>/<name>/<version>.toml"
-        )];
+    let (offset, expected) = match m.kind {
+        Kind::App => (0, "<first-letter>/<name>/<version>.toml"),
+        Kind::Mcp => (1, "mcp/<first-letter>/<name>/<version>.toml"),
+        Kind::Skill => (1, "skills/<first-letter>/<name>/<version>.toml"),
+    };
+    if comps.len() != offset + 3 {
+        return vec![format!("{rel_disp}: wrong layout - expected {expected}")];
     }
-    let (letter, name_dir, file) = (&comps[0], &comps[1], &comps[2]);
+    if offset == 1 {
+        let expected_kind = match m.kind {
+            Kind::Mcp => "mcp",
+            Kind::Skill => "skills",
+            Kind::App => unreachable!(),
+        };
+        if comps[0] != expected_kind {
+            return vec![format!(
+                "{rel_disp}: package kind directory '{}' does not match '{expected_kind}'",
+                comps[0]
+            )];
+        }
+    }
+    let (letter, name_dir, file) = (&comps[offset], &comps[offset + 1], &comps[offset + 2]);
     let mut errs = Vec::new();
 
     let expected_letter = m.name.chars().next().unwrap_or('_').to_ascii_lowercase();
@@ -214,18 +236,23 @@ pub fn build(
     {
         use std::collections::BTreeMap;
         let updated_times = git_updated_times(dir);
-        let mut latest: BTreeMap<&str, &Manifest> = BTreeMap::new();
+        let mut latest: BTreeMap<(Kind, &str), &Manifest> = BTreeMap::new();
         for m in &manifests {
-            match latest.get(m.name.as_str()) {
+            // The current website emits bare app install commands.
+            if m.kind != Kind::App {
+                continue;
+            }
+            let identity = (m.kind, m.name.as_str());
+            match latest.get(&identity) {
                 Some(prev) => {
                     if voli_core::index::cmp_version(&m.version, &prev.version)
                         == std::cmp::Ordering::Greater
                     {
-                        latest.insert(&m.name, m);
+                        latest.insert(identity, m);
                     }
                 }
                 None => {
-                    latest.insert(&m.name, m);
+                    latest.insert(identity, m);
                 }
             }
         }
@@ -239,8 +266,11 @@ pub fn build(
                     "d": m.description.as_deref().unwrap_or(""),
                     "b": bins,
                     "p": "official",
+                    "k": m.kind.as_str(),
                 });
-                if let Some(updated) = updated_times.get(&(m.name.clone(), m.version.clone())) {
+                if let Some(updated) =
+                    updated_times.get(&(m.kind, m.name.clone(), m.version.clone()))
+                {
                     package["u"] = serde_json::json!(updated);
                 }
                 if let Some(homepage) = &m.homepage {
@@ -271,7 +301,7 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn git_updated_times(dir: &Path) -> std::collections::BTreeMap<(String, String), u64> {
+fn git_updated_times(dir: &Path) -> std::collections::BTreeMap<(Kind, String, String), u64> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -285,7 +315,7 @@ fn git_updated_times(dir: &Path) -> std::collections::BTreeMap<(String, String),
     }
 }
 
-fn parse_git_updated_times(log: &str) -> std::collections::BTreeMap<(String, String), u64> {
+fn parse_git_updated_times(log: &str) -> std::collections::BTreeMap<(Kind, String, String), u64> {
     let mut updated = std::collections::BTreeMap::new();
     let mut timestamp = None;
     for line in log.lines().map(str::trim).filter(|line| !line.is_empty()) {
@@ -310,8 +340,21 @@ fn parse_git_updated_times(log: &str) -> std::collections::BTreeMap<(String, Str
         let Some(version) = path.file_stem().and_then(|value| value.to_str()) else {
             continue;
         };
+        let kind = if path
+            .components()
+            .any(|component| component.as_os_str() == "skills")
+        {
+            Kind::Skill
+        } else if path
+            .components()
+            .any(|component| component.as_os_str() == "mcp")
+        {
+            Kind::Mcp
+        } else {
+            Kind::App
+        };
         updated
-            .entry((name.to_string(), version.to_string()))
+            .entry((kind, name.to_string(), version.to_string()))
             .or_insert(timestamp);
     }
     updated
@@ -348,6 +391,9 @@ pub fn bump(dir: &Path, limit: usize) -> Result<String> {
     let mut latest: std::collections::BTreeMap<String, Manifest> =
         std::collections::BTreeMap::new();
     for m in manifests {
+        if m.kind != Kind::App {
+            continue;
+        }
         match latest.get(&m.name) {
             Some(prev) => {
                 if voli_core::index::cmp_version(&m.version, &prev.version)
@@ -862,6 +908,21 @@ sha256 = "{hash}"
         )
     }
 
+    fn skill_manifest_toml(name: &str, version: &str) -> String {
+        format!(
+            r#"name = "{name}"
+version = "{version}"
+description = "test skill {name}"
+kind = "skill"
+
+[source.any]
+url = "https://example.com/{name}-{version}.zip"
+sha256 = "{hash}"
+"#,
+            hash = "b".repeat(64),
+        )
+    }
+
     /// Write a manifest at the correct `<letter>/<name>/<version>.toml` layout.
     fn write_good(root: &Path, name: &str, version: &str, bin: &str) {
         let letter = &name[..1];
@@ -870,6 +931,17 @@ sha256 = "{hash}"
         fs::write(
             dir.join(format!("{version}.toml")),
             manifest_toml(name, version, bin),
+        )
+        .unwrap();
+    }
+
+    fn write_good_skill(root: &Path, name: &str, version: &str) {
+        let letter = &name[..1];
+        let dir = root.join("skills").join(letter).join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(format!("{version}.toml")),
+            skill_manifest_toml(name, version),
         )
         .unwrap();
     }
@@ -978,6 +1050,19 @@ sha256 = "{hash}"
     }
 
     #[test]
+    fn app_and_skill_with_same_name_are_distinct() {
+        let td = TempDir::new().unwrap();
+        write_good(td.path(), "shared", "1.0.0", "shared.exe");
+        write_good_skill(td.path(), "shared", "1.0.0");
+
+        let (manifests, errors) = analyze(td.path()).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(manifests.len(), 2);
+        assert!(manifests.iter().any(|m| m.kind == Kind::App));
+        assert!(manifests.iter().any(|m| m.kind == Kind::Skill));
+    }
+
+    #[test]
     fn does_not_fail_fast() {
         let td = TempDir::new().unwrap();
         // Two independent broken manifests — both must be reported.
@@ -998,6 +1083,7 @@ sha256 = "{hash}"
     #[test]
     fn build_produces_verifiable_triple() {
         let reg = registry_with_examples();
+        write_good_skill(reg.path(), "tdd", "1.0.0");
         let out = TempDir::new().unwrap();
         // Ephemeral test key written to a temp file — no key material in the repo.
         let keydir = TempDir::new().unwrap();
@@ -1006,7 +1092,7 @@ sha256 = "{hash}"
 
         let meta = build(reg.path(), out.path(), &key, Some(1_753_315_200)).unwrap();
         assert_eq!(meta.epoch, 1_753_315_200);
-        assert_eq!(meta.manifests, 3);
+        assert_eq!(meta.manifests, 4);
 
         // index.json shape matches the client's RemoteIndex.
         let json = fs::read_to_string(out.path().join("index.json")).unwrap();
@@ -1020,6 +1106,15 @@ sha256 = "{hash}"
         assert_eq!(packages[0]["i"], "https://example.com/fd.svg");
         assert_eq!(packages[0]["h"], "https://example.com/fd");
         assert_eq!(packages[0]["p"], "official");
+        assert_eq!(packages[0]["k"], "app");
+        assert_eq!(packages.as_array().unwrap().len(), 2);
+        assert!(
+            packages
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|package| package["k"] == "app")
+        );
 
         // Decompress .zst → must match sha + size in index.json.
         let zst = fs::read(out.path().join("index.sqlite.zst")).unwrap();
@@ -1370,7 +1465,13 @@ sha256 = "{hash}"
             "@@200\nmanifests/t/tool/2.0.0.toml\n\
              @@100\nmanifests/t/tool/2.0.0.toml\nmanifests/t/tool/1.0.0.toml\n",
         );
-        assert_eq!(updated.get(&("tool".into(), "2.0.0".into())), Some(&200));
-        assert_eq!(updated.get(&("tool".into(), "1.0.0".into())), Some(&100));
+        assert_eq!(
+            updated.get(&(Kind::App, "tool".into(), "2.0.0".into())),
+            Some(&200)
+        );
+        assert_eq!(
+            updated.get(&(Kind::App, "tool".into(), "1.0.0".into())),
+            Some(&100)
+        );
     }
 }

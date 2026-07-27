@@ -18,7 +18,11 @@ use std::thread;
 
 use sha2::{Digest, Sha256};
 use voli_core::index;
-use voli_core::{Manifest, RemoteError, State, Step, install_remote, uninstall};
+use voli_core::remote::{PrefetchStep, prefetch_remote};
+use voli_core::{
+    Manifest, RemoteError, SkillError, SkillRemoteReport, SkillTarget, State, Step, install_remote,
+    install_skill_remote, uninstall, uninstall_skill,
+};
 use zip::write::SimpleFileOptions;
 
 // ---- shim stub (shared, set once) -----------------------------------------
@@ -74,6 +78,29 @@ fn pkg_zip(name: &str, version: &str, bin: &str) -> Vec<u8> {
         w.write_all(format!("fake {name} {version}").as_bytes())
             .unwrap();
         w.finish().unwrap();
+    }
+    buf
+}
+
+fn skill_zip(name: &str) -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        writer.add_directory(format!("{name}/"), options).unwrap();
+        writer
+            .start_file(format!("{name}/SKILL.md"), options)
+            .unwrap();
+        writer
+            .write_all(
+                format!(
+                    "---\nname: {name}\ndescription: Remote test skill\n---\n# Test\n\nInstructions.\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        writer.finish().unwrap();
     }
     buf
 }
@@ -201,6 +228,75 @@ fn build_index(root: &Path, manifests: &[Manifest]) {
 }
 
 // ---- tests -----------------------------------------------------------------
+
+#[test]
+fn remote_skill_installs_and_deletes_for_one_target() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("voli");
+    let home = temp.path().join("home");
+    let archive = skill_zip("tdd");
+    let server = Server::start(HashMap::from([("/tdd.zip".to_string(), archive.clone())]));
+    let manifest = Manifest::from_toml_str(&format!(
+        r#"name = "tdd"
+version = "1.0.0"
+kind = "skill"
+
+[source.any]
+url = "{}/tdd.zip"
+sha256 = "{}"
+"#,
+        server.base,
+        sha256_hex(&archive)
+    ))
+    .unwrap();
+    build_index(&root, &[manifest]);
+
+    let report =
+        install_skill_remote("tdd", None, SkillTarget::Codex, &home, &root, &mut |_| {}).unwrap();
+    assert!(matches!(report, SkillRemoteReport::Installed(_)));
+    assert!(home.join(".agents/skills/tdd/SKILL.md").is_file());
+    assert_eq!(server.hits("/tdd.zip"), 1);
+
+    uninstall_skill("tdd", SkillTarget::Codex, &home, &root).unwrap();
+    assert!(!home.join(".agents/skills/tdd").exists());
+}
+
+#[test]
+fn remote_skill_rejects_a_different_installed_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("voli");
+    let home = temp.path().join("home");
+    let archive = skill_zip("tdd");
+    let server = Server::start(HashMap::from([("/tdd.zip".to_string(), archive.clone())]));
+    let make_manifest = |version: &str| {
+        Manifest::from_toml_str(&format!(
+            r#"name = "tdd"
+version = "{version}"
+kind = "skill"
+
+[source.any]
+url = "{}/tdd.zip"
+sha256 = "{}"
+"#,
+            server.base,
+            sha256_hex(&archive)
+        ))
+        .unwrap()
+    };
+    build_index(&root, &[make_manifest("1.0.0")]);
+    install_skill_remote("tdd", None, SkillTarget::Codex, &home, &root, &mut |_| {}).unwrap();
+
+    build_index(&root, &[make_manifest("2.0.0")]);
+    assert!(matches!(
+        install_skill_remote("tdd", None, SkillTarget::Codex, &home, &root, &mut |_| {}),
+        Err(RemoteError::Skill(SkillError::VersionConflict {
+            installed,
+            requested,
+            ..
+        })) if installed == "1.0.0" && requested == "2.0.0"
+    ));
+    assert_eq!(server.hits("/tdd.zip"), 1);
+}
 
 #[test]
 fn install_by_name_resolves_latest() {
@@ -466,4 +562,72 @@ fn already_installed_is_skipped() {
         report.skipped,
         vec![("ripgrep".to_string(), "1.0.0".to_string())]
     );
+}
+
+#[test]
+fn parallel_prefetch_populates_cache_before_sequential_install() {
+    ensure_stub();
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path();
+
+    let ripgrep = pkg_zip("ripgrep", "1.0.0", "rg.exe");
+    let fd = pkg_zip("fd", "1.0.0", "fd.exe");
+    let srv = Server::start(HashMap::from([
+        ("/rg.zip".to_string(), ripgrep.clone()),
+        ("/fd.zip".to_string(), fd.clone()),
+    ]));
+    let manifests = [
+        Manifest::from_toml_str(&manifest_toml(
+            "ripgrep",
+            "1.0.0",
+            &format!("{}/rg.zip", srv.base),
+            &sha256_hex(&ripgrep),
+            "rg.exe",
+            &[],
+        ))
+        .unwrap(),
+        Manifest::from_toml_str(&manifest_toml(
+            "fd",
+            "1.0.0",
+            &format!("{}/fd.zip", srv.base),
+            &sha256_hex(&fd),
+            "fd.exe",
+            &[],
+        ))
+        .unwrap(),
+    ];
+    build_index(root, &manifests);
+
+    let mut prepared = 0;
+    prefetch_remote(
+        &[("ripgrep".to_string(), None), ("fd".to_string(), None)],
+        root,
+        &mut |step| {
+            if matches!(step, PrefetchStep::Prepared { .. }) {
+                prepared += 1;
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(prepared, 2);
+    assert_eq!(srv.hits("/rg.zip"), 1);
+    assert_eq!(srv.hits("/fd.zip"), 1);
+
+    let mut cache_hits = 0;
+    install_remote("ripgrep", None, root, &mut |step| {
+        if matches!(
+            step,
+            Step::Installing {
+                cache_hit: true,
+                ..
+            }
+        ) {
+            cache_hits += 1;
+        }
+    })
+    .unwrap();
+    install_remote("fd", None, root, &mut |_| {}).unwrap();
+    assert_eq!(cache_hits, 1);
+    assert_eq!(srv.hits("/rg.zip"), 1);
+    assert_eq!(srv.hits("/fd.zip"), 1);
 }

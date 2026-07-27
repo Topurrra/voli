@@ -46,6 +46,12 @@ pub enum FetchError {
 
 type Result<T> = std::result::Result<T, FetchError>;
 
+pub(crate) struct DownloadOutcome {
+    pub path: PathBuf,
+    pub size: u64,
+    pub cache_hit: bool,
+}
+
 /// Download `url` into `cache_dir`, verifying it hashes to `expected_hash`
 /// (sha256 when 64 hex chars, sha512 when 128).
 ///
@@ -59,6 +65,15 @@ pub fn download(
     cache_dir: &Path,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<PathBuf> {
+    download_with_status(url, expected_hash, cache_dir, progress).map(|outcome| outcome.path)
+}
+
+pub(crate) fn download_with_status(
+    url: &str,
+    expected_hash: &str,
+    cache_dir: &Path,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<DownloadOutcome> {
     fs::create_dir_all(cache_dir)?;
     let expected = expected_hash.trim().to_ascii_lowercase();
     let is_sha512 = expected.len() == 128;
@@ -69,7 +84,11 @@ pub fn download(
         if hash_file(&final_path, is_sha512)? == expected {
             let total = fs::metadata(&final_path)?.len();
             progress(total, Some(total));
-            return Ok(final_path);
+            return Ok(DownloadOutcome {
+                path: final_path,
+                size: total,
+                cache_hit: true,
+            });
         }
         // Corrupt cache entry — never trust or serve it.
         fs::remove_file(&final_path)?;
@@ -84,7 +103,11 @@ pub fn download(
             fs::rename(&legacy_path, &final_path)?;
             let total = fs::metadata(&final_path)?.len();
             progress(total, Some(total));
-            return Ok(final_path);
+            return Ok(DownloadOutcome {
+                path: final_path,
+                size: total,
+                cache_hit: true,
+            });
         }
         fs::remove_file(&legacy_path)?;
     }
@@ -170,7 +193,11 @@ pub fn download(
 
     // 7. Atomic publish into the cache.
     fs::rename(&part_path, &final_path)?;
-    Ok(final_path)
+    Ok(DownloadOutcome {
+        path: final_path,
+        size: done,
+        cache_hit: false,
+    })
 }
 
 /// GET `url`, adding a `Range: bytes=<from>-` header when `from > 0`.

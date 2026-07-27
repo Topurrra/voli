@@ -23,7 +23,10 @@ pub mod sign;
 
 pub use build::build;
 pub use net::{UpdateOutcome, update};
-pub use query::{SearchHit, Suggestion, did_you_mean, info, manifest_at, search};
+pub use query::{
+    SearchHit, Suggestion, did_you_mean, did_you_mean_ref, info, info_ref, manifest_at,
+    manifest_at_ref, search,
+};
 pub use sign::{DEV_PUBKEY, sign, verify};
 
 /// Errors from the index client.
@@ -78,12 +81,34 @@ fn open_index(root: &Path) -> Result<Connection, IndexError> {
     )?)
 }
 
-/// The newest version string among the rows for `name`, if any.
-fn latest_version(conn: &Connection, name: &str) -> Result<Option<String>, IndexError> {
-    let mut stmt = conn.prepare("SELECT DISTINCT version FROM packages WHERE name = ?1")?;
-    let versions: Vec<String> = stmt
-        .query_map([name], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<_>>()?;
+/// The newest version string among the rows for `(kind, name)`, if any.
+fn latest_version(
+    conn: &Connection,
+    kind: crate::manifest::Kind,
+    name: &str,
+) -> Result<Option<String>, IndexError> {
+    let table = if kind == crate::manifest::Kind::App {
+        "packages"
+    } else if conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'agent_packages')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )? {
+        "agent_packages"
+    } else {
+        return Ok(None);
+    };
+    let versions: Vec<String> = if kind == crate::manifest::Kind::App {
+        let mut stmt = conn.prepare("SELECT DISTINCT version FROM packages WHERE name = ?1")?;
+        stmt.query_map([name], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    } else {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT DISTINCT version FROM {table} WHERE kind = ?1 AND name = ?2"
+        ))?;
+        stmt.query_map(rusqlite::params![kind.as_str(), name], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
     Ok(versions.into_iter().max_by(|a, b| cmp_version(a, b)))
 }
 

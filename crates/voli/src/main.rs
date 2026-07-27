@@ -3,14 +3,15 @@
 mod cmd_index;
 mod cmd_install;
 
-use std::io::Read;
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use voli_core::{
-    Action, Paths, State, Step, UpgradeOutcome, config, env, self_install, uninstall, upgrade,
+    Action, FetchError, InstallError, Kind, PackageRef, Paths, RemoteError, SkillTarget, State,
+    UpgradeOutcome, config, env, uninstall, uninstall_skill, upgrade,
 };
 
 /// Exit code for a runtime error (bad args, install failure, …).
@@ -52,6 +53,12 @@ enum Command {
         /// Do not apply any `[env]` environment variables (spec §8).
         #[arg(long)]
         no_env: bool,
+        /// Install a skill for this agent.
+        #[arg(long = "for")]
+        for_agent: Option<String>,
+        /// Download requested app packages concurrently, then install safely in order.
+        #[arg(short = 'p', long)]
+        parallel: bool,
     },
     /// Delete one or more packages.
     #[command(alias = "uninstall")]
@@ -61,6 +68,9 @@ enum Command {
         /// Also remove persist dirs (user data). Off by default.
         #[arg(long)]
         purge: bool,
+        /// Delete a skill from this agent.
+        #[arg(long = "for")]
+        for_agent: Option<String>,
     },
     /// Refresh the local package index.
     Update,
@@ -146,6 +156,7 @@ enum ConfigAction {
 
 fn main() {
     let cli = Cli::parse();
+    set_taskbar_progress(TaskbarProgress::Clear);
 
     // Nudge (message only, no action) when running from outside <root>\bin.
     if !matches!(cli.command, Command::Setup) {
@@ -157,15 +168,25 @@ fn main() {
             packages,
             archive,
             no_env,
+            for_agent,
+            parallel,
         } => cmd_install::run(
             packages,
             archive.as_deref(),
-            &root(),
-            cli.json,
-            cli.yes,
-            *no_env,
+            cmd_install::Options {
+                root: &root(),
+                json: cli.json,
+                yes: cli.yes,
+                no_env: *no_env,
+                for_agent: for_agent.as_deref(),
+                parallel: *parallel,
+            },
         ),
-        Command::Delete { packages, purge } => cmd_delete(packages, *purge),
+        Command::Delete {
+            packages,
+            purge,
+            for_agent,
+        } => cmd_delete(packages, *purge, for_agent.as_deref()),
         Command::List => cmd_list(cli.json),
         Command::Upgrade { packages, all } => cmd_upgrade(packages, *all, cli.json),
         Command::Pin { package } => cmd_pin(package, true),
@@ -217,11 +238,101 @@ fn root() -> PathBuf {
     }
 }
 
-fn cmd_delete(packages: &[String], purge: bool) -> i32 {
+pub(crate) fn user_home() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .or_else(|| {
+            eprintln!("error: cannot resolve user home for the agent skills directory");
+            None
+        })
+}
+
+fn cmd_delete(packages: &[String], purge: bool, for_agent: Option<&str>) -> i32 {
     let root = root();
+    let mut parsed = Vec::with_capacity(packages.len());
+    for package in packages {
+        match PackageRef::parse(package) {
+            Ok(package) => parsed.push(package),
+            Err(error) => {
+                eprintln!("error: invalid package '{package}': {error}");
+                return EXIT_ERROR;
+            }
+        }
+    }
+    let kind = parsed[0].kind;
+    if parsed.iter().any(|package| package.kind != kind) {
+        eprintln!("error: delete app and skill packages in separate commands");
+        return EXIT_ERROR;
+    }
+    if kind == Kind::Mcp {
+        eprintln!("error: MCP deletion is not available yet");
+        return EXIT_ERROR;
+    }
+    if kind == Kind::App && for_agent.is_some() {
+        eprintln!("error: --for is only valid for skill packages");
+        return EXIT_ERROR;
+    }
+    if kind == Kind::Skill && purge {
+        eprintln!("error: --purge is only valid for app packages");
+        return EXIT_ERROR;
+    }
+    let target = if kind == Kind::Skill {
+        let Some(value) = for_agent else {
+            eprintln!("error: skill packages require --for <agent>");
+            return EXIT_ERROR;
+        };
+        match value.parse::<SkillTarget>() {
+            Ok(target) => Some(target),
+            Err(error) => {
+                eprintln!("error: {error}");
+                return EXIT_ERROR;
+            }
+        }
+    } else {
+        None
+    };
+    let home = if kind == Kind::Skill {
+        let Some(home) = user_home() else {
+            return EXIT_ERROR;
+        };
+        Some(home)
+    } else {
+        None
+    };
+
     let mut code = 0;
-    for name in packages {
-        match uninstall(name, &root, purge) {
+    for package in parsed {
+        if package.kind == Kind::Skill {
+            let activity = pulse_bar(format!("deleting skill/{}", package.name));
+            let result = uninstall_skill(
+                &package.name,
+                target.expect("skill target validated"),
+                home.as_deref().expect("skill home resolved"),
+                &root,
+            );
+            activity.finish_and_clear();
+            match result {
+                Ok(report) => println!(
+                    "deleted skill/{} from {}",
+                    report.name,
+                    report.target.as_str()
+                ),
+                Err(error) => {
+                    print_remote_error(
+                        "delete",
+                        &format!("skill/{}", package.name),
+                        &RemoteError::Skill(error),
+                    );
+                    code = EXIT_ERROR;
+                }
+            }
+            continue;
+        }
+        let activity = pulse_bar(format!("deleting {}", package.name));
+        let result = uninstall(&package.name, &root, purge);
+        activity.finish_and_clear();
+        match result {
             Ok(r) => {
                 println!("deleted {} {}", r.name, r.version);
                 if r.kept_persist {
@@ -229,7 +340,7 @@ fn cmd_delete(packages: &[String], purge: bool) -> i32 {
                 }
             }
             Err(e) => {
-                eprintln!("error: delete '{name}' failed: {e}");
+                print_remote_error("delete", &package.name, &RemoteError::Install(e));
                 code = EXIT_ERROR;
             }
         }
@@ -252,24 +363,47 @@ fn cmd_list(json: bool) -> i32 {
             return EXIT_ERROR;
         }
     };
+    let skills = match state.list_skills() {
+        Ok(skills) => skills,
+        Err(error) => {
+            eprintln!("error: cannot read skill state: {error}");
+            return EXIT_ERROR;
+        }
+    };
 
     if json {
-        let arr: Vec<_> = pkgs
+        let mut arr: Vec<_> = pkgs
             .iter()
             .map(|p| {
                 serde_json::json!({
+                    "kind": "app",
                     "name": p.name,
                     "version": p.version,
                     "installed_at": p.installed_at,
                 })
             })
             .collect();
+        arr.extend(skills.iter().map(|skill| {
+            serde_json::json!({
+                "kind": "skill",
+                "name": skill.name,
+                "version": skill.version,
+                "target": skill.target,
+                "installed_at": skill.installed_at,
+            })
+        }));
         println!("{}", serde_json::to_string_pretty(&arr).unwrap());
-    } else if pkgs.is_empty() {
+    } else if pkgs.is_empty() && skills.is_empty() {
         println!("no packages installed");
     } else {
         for p in &pkgs {
             println!("{}  {}", p.name, p.version);
+        }
+        for skill in &skills {
+            println!(
+                "skill/{}  {}  [{}]",
+                skill.name, skill.version, skill.target
+            );
         }
     }
     0
@@ -303,12 +437,32 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool) -> i32 {
         return EXIT_ERROR;
     } else {
         // Explicit upgrade proceeds even if pinned (spec §9), with a note.
-        packages.iter().map(|n| (n.clone(), false)).collect()
+        let mut targets = Vec::with_capacity(packages.len());
+        for package in packages {
+            let package_ref = match PackageRef::parse(package) {
+                Ok(package_ref) => package_ref,
+                Err(error) => {
+                    eprintln!("error: invalid package '{package}': {error}");
+                    return EXIT_ERROR;
+                }
+            };
+            if package_ref.kind != Kind::App {
+                eprintln!(
+                    "error: skill upgrades are not available yet; delete the skill, then install it again"
+                );
+                return EXIT_ERROR;
+            }
+            targets.push((package_ref.name, false));
+        }
+        targets
     };
 
     let mut code = 0;
     let mut results = Vec::new();
-    for (name, pinned_under_all) in &targets {
+    let started = std::time::Instant::now();
+    let mut upgraded_count = 0usize;
+    let mut upgraded_bytes = 0u64;
+    for (position, (name, pinned_under_all)) in targets.iter().enumerate() {
         if all && *pinned_under_all {
             if !json {
                 println!("{name}: pinned — skipped");
@@ -327,7 +481,11 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool) -> i32 {
             }
         }
 
-        match upgrade(name, &root, &mut |s| upgrade_step(json, s)) {
+        let mut reporter = cmd_install::Reporter::new(json, position + 1, targets.len());
+        let result = upgrade(name, &root, &mut |step| reporter.step(step));
+        reporter.finish_bar();
+        let (_, bytes) = reporter.stats();
+        match result {
             Ok(UpgradeOutcome::UpToDate { version }) => {
                 if !json {
                     println!("{name} is up to date ({version})");
@@ -337,10 +495,16 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool) -> i32 {
                 );
             }
             Ok(UpgradeOutcome::Upgraded(r)) => {
+                upgraded_count += 1;
+                upgraded_bytes = upgraded_bytes.saturating_add(bytes);
+                set_taskbar_progress(TaskbarProgress::Clear);
                 if !json {
                     println!(
-                        "✓ upgraded {} {} -> {}",
-                        r.name, r.from_version, r.to_version
+                        "{} upgraded {} {} -> {}",
+                        success_mark(),
+                        r.name,
+                        r.from_version,
+                        r.to_version
                     );
                 }
                 results.push(serde_json::json!({
@@ -351,8 +515,9 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool) -> i32 {
                 }));
             }
             Err(e) => {
+                set_taskbar_progress(TaskbarProgress::Error);
                 if !json {
-                    eprintln!("error: upgrade '{name}' failed: {e}");
+                    print_remote_error("upgrade", name, &e);
                 }
                 results.push(serde_json::json!({ "name": name, "status": "error", "message": e.to_string() }));
                 code = EXIT_ERROR;
@@ -369,23 +534,30 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool) -> i32 {
             }))
             .unwrap()
         );
+    } else if upgraded_count > 0 && code == 0 {
+        println!(
+            "{} upgraded {} package(s) · {} · {:.1}s",
+            success_mark(),
+            upgraded_count,
+            HumanBytes(upgraded_bytes),
+            started.elapsed().as_secs_f32()
+        );
     }
     code
 }
 
-/// One-line download note for an upgrade (human mode only). ponytail: upgrade
-/// prints a note rather than a live bar — the rich progress bar already exists
-/// for install and download is cache-aware/fast.
-fn upgrade_step(json: bool, step: Step) {
-    if json {
-        return;
-    }
-    if let Step::Downloading { name, version } = step {
-        println!("downloading {name} {version}...");
-    }
-}
-
 fn cmd_pin(package: &str, pin: bool) -> i32 {
+    let package_ref = match PackageRef::parse(package) {
+        Ok(package_ref) if package_ref.kind == Kind::App => package_ref,
+        Ok(_) => {
+            eprintln!("error: pin is only available for app packages");
+            return EXIT_ERROR;
+        }
+        Err(error) => {
+            eprintln!("error: invalid package '{package}': {error}");
+            return EXIT_ERROR;
+        }
+    };
     let mut state = match State::open(&Paths::at(root()).state_db()) {
         Ok(s) => s,
         Err(e) => {
@@ -393,7 +565,7 @@ fn cmd_pin(package: &str, pin: bool) -> i32 {
             return EXIT_ERROR;
         }
     };
-    match state.set_pinned(package, pin) {
+    match state.set_pinned(&package_ref.name, pin) {
         Ok(true) => {
             println!("{} {package}", if pin { "pinned" } else { "unpinned" });
             0
@@ -411,6 +583,18 @@ fn cmd_pin(package: &str, pin: bool) -> i32 {
 
 /// `voli env <pkg>`: show the env vars a package set, from its ledger (spec §8).
 fn cmd_env(package: &str, json: bool) -> i32 {
+    let package_ref = match PackageRef::parse(package) {
+        Ok(package_ref) if package_ref.kind == Kind::App => package_ref,
+        Ok(_) => {
+            eprintln!("error: env is only available for app packages");
+            return EXIT_ERROR;
+        }
+        Err(error) => {
+            eprintln!("error: invalid package '{package}': {error}");
+            return EXIT_ERROR;
+        }
+    };
+    let package = package_ref.name;
     let root = root();
     let state = match State::open(&Paths::at(&root).state_db()) {
         Ok(s) => s,
@@ -419,11 +603,11 @@ fn cmd_env(package: &str, json: bool) -> i32 {
             return EXIT_ERROR;
         }
     };
-    if !state.is_installed(package).unwrap_or(false) {
+    if !state.is_installed(&package).unwrap_or(false) {
         eprintln!("error: '{package}' is not installed");
         return EXIT_ERROR;
     }
-    let actions = match state.actions_for(package) {
+    let actions = match state.actions_for(&package) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: cannot read ledger: {e}");
@@ -611,19 +795,49 @@ fn env_subkey() -> String {
 
 fn cmd_setup() -> i32 {
     let root = root();
-    match self_install(&root, None, &env_subkey()) {
+    let spinner = stage_spinner("installing Voli binaries".to_string());
+    let result =
+        voli_core::selfinstall::self_install_with_steps(&root, None, &env_subkey(), &mut |step| {
+            match step {
+                voli_core::selfinstall::SelfInstallStep::Binaries => {
+                    spinner.set_message("installing Voli binaries")
+                }
+                voli_core::selfinstall::SelfInstallStep::Path => {
+                    spinner.set_message("adding Voli to PATH")
+                }
+                voli_core::selfinstall::SelfInstallStep::Finalizing => {
+                    spinner.set_message("finalizing Voli setup")
+                }
+            }
+        });
+    spinner.finish_and_clear();
+    match result {
         Ok(r) => {
-            println!("✓ voli installed to {}", r.bin_dir.display());
+            println!(
+                "{} installed Voli binaries to {}",
+                success_mark(),
+                r.bin_dir.display()
+            );
             for f in &r.copied {
                 println!("  bin: {f}");
             }
             if r.path_added {
-                println!("  added {} to your PATH", r.shims_dir.display());
+                println!(
+                    "{} added {} to your PATH",
+                    success_mark(),
+                    r.shims_dir.display()
+                );
                 println!("  open a new shell for the PATH change to take effect.");
             } else {
-                println!("  {} already on PATH", r.shims_dir.display());
+                println!(
+                    "{} {} is already on PATH",
+                    success_mark(),
+                    r.shims_dir.display()
+                );
             }
-            if cmd_index::run_update(&root, false) != 0 {
+            if cmd_index::run_update(&root, false) == 0 {
+                println!("{} Voli is ready", success_mark());
+            } else {
                 eprintln!("voli is installed; run `voli update` once the index is reachable.");
             }
             0
@@ -637,15 +851,243 @@ fn cmd_setup() -> i32 {
 
 const GITHUB_RELEASE_API: &str = "https://api.github.com/repos/Topurrra/voli/releases/latest";
 
-fn stage_spinner(message: String) -> ProgressBar {
+const SPINNER_TICKS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✓"];
+const PULSE_TICKS: &[&str] = &[
+    "╺━━━━───────────────",
+    "──╺━━━━─────────────",
+    "────╺━━━━───────────",
+    "──────╺━━━━─────────",
+    "────────╺━━━━───────",
+    "──────────╺━━━━─────",
+    "────────────╺━━━━───",
+    "──────────────╺━━━━─",
+    "───────────────━━━━╸",
+    "─────────────━━━━╸──",
+    "───────────━━━━╸────",
+    "─────────━━━━╸──────",
+    "───────━━━━╸────────",
+    "─────━━━━╸──────────",
+    "───━━━━╸────────────",
+    "─━━━━╸──────────────",
+    "━━━━╸───────────────",
+    "✓",
+];
+
+fn progress_colors_enabled() -> bool {
+    !matches!(std::env::var_os("NO_COLOR"), Some(value) if !value.is_empty())
+}
+
+pub(crate) fn success_mark() -> &'static str {
+    if progress_colors_enabled() && std::io::stdout().is_terminal() {
+        "\x1b[32m✓\x1b[0m"
+    } else {
+        "✓"
+    }
+}
+
+pub(crate) fn cache_mark() -> &'static str {
+    if progress_colors_enabled() && std::io::stdout().is_terminal() {
+        "\x1b[36m◆\x1b[0m"
+    } else {
+        "◆"
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum TaskbarProgress {
+    Clear,
+    Value(u8),
+    Error,
+    Indeterminate,
+}
+
+pub(crate) fn set_taskbar_progress(progress: TaskbarProgress) {
+    if std::env::var_os("WT_SESSION").is_none() || !std::io::stderr().is_terminal() {
+        return;
+    }
+    eprint!("{}", taskbar_sequence(progress));
+    let _ = std::io::stderr().flush();
+}
+
+fn taskbar_sequence(progress: TaskbarProgress) -> String {
+    let (state, value) = match progress {
+        TaskbarProgress::Clear => (0, 0),
+        TaskbarProgress::Value(value) => (1, value.min(100)),
+        TaskbarProgress::Error => (2, 100),
+        TaskbarProgress::Indeterminate => (3, 0),
+    };
+    format!("\x1b]9;4;{state};{value}\x07")
+}
+
+pub(crate) fn stage_spinner_style() -> ProgressStyle {
+    let template = if progress_colors_enabled() {
+        "{spinner:.cyan} {msg:.bold} · {elapsed}"
+    } else {
+        "{spinner} {msg} · {elapsed}"
+    };
+    ProgressStyle::with_template(template)
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+        .tick_strings(SPINNER_TICKS)
+}
+
+pub(crate) fn download_spinner_style() -> ProgressStyle {
+    let template = if progress_colors_enabled() {
+        "{spinner:.yellow} {msg:.bold} · {bytes} · {bytes_per_sec}"
+    } else {
+        "{spinner} {msg} · {bytes} · {bytes_per_sec}"
+    };
+    ProgressStyle::with_template(template)
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+        .tick_strings(PULSE_TICKS)
+}
+
+pub(crate) fn download_bar_style() -> ProgressStyle {
+    let template = if progress_colors_enabled() {
+        "{spinner:.yellow} {msg:.bold} [{bar:24.yellow/black}] {percent:>3}% \
+         {bytes}/{total_bytes} · {bytes_per_sec} · {eta}"
+    } else {
+        "{spinner} {msg} [{bar:24}] {percent:>3}% {bytes}/{total_bytes} · \
+         {bytes_per_sec} · {eta}"
+    };
+    ProgressStyle::with_template(template)
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("━╸─")
+        .tick_strings(SPINNER_TICKS)
+}
+
+pub(crate) fn stage_spinner(message: String) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
-    pb.enable_steady_tick(Duration::from_millis(100));
+    pb.enable_steady_tick(Duration::from_millis(80));
+    pb.set_style(stage_spinner_style());
+    pb.set_message(message);
+    pb
+}
+
+fn pulse_bar(message: String) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.enable_steady_tick(Duration::from_millis(80));
+    let template = if progress_colors_enabled() {
+        "{spinner:.cyan} {msg:.bold} · {elapsed}"
+    } else {
+        "{spinner} {msg} · {elapsed}"
+    };
     pb.set_style(
-        ProgressStyle::with_template("{spinner} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+        ProgressStyle::with_template(template)
+            .unwrap_or_else(|_| ProgressStyle::default_spinner())
+            .tick_strings(PULSE_TICKS),
     );
     pb.set_message(message);
     pb
+}
+
+fn print_problem(summary: &str, detail: &str, fix: &str) {
+    eprintln!("error: {summary}");
+    if !detail.is_empty() {
+        eprintln!("  details: {detail}");
+    }
+    eprintln!("  fix: {fix}");
+}
+
+pub(crate) fn print_index_error(action: &str, error: &voli_core::index::IndexError) {
+    use voli_core::index::IndexError;
+
+    match error {
+        IndexError::NoIndex => print_problem(
+            "the package index is missing",
+            "",
+            "run `voli update`, then try again",
+        ),
+        IndexError::Http { source, .. } => print_problem(
+            &format!("couldn't {action} because the package index is unreachable"),
+            &source.to_string(),
+            "check your internet connection, then run `voli update`",
+        ),
+        IndexError::BadSignature => print_problem(
+            "the downloaded package index could not be trusted",
+            "its security signature is invalid",
+            "retry `voli update`; if it happens again, do not install packages and report it",
+        ),
+        IndexError::Sha256Mismatch { .. }
+        | IndexError::SizeMismatch { .. }
+        | IndexError::Decompress(_) => print_problem(
+            "the downloaded package index is damaged",
+            &error.to_string(),
+            "run `voli update` again; if it repeats, report the problem",
+        ),
+        _ => print_problem(
+            &format!("couldn't {action}"),
+            &error.to_string(),
+            "run `voli update` and try again; use `voli doctor` if it continues",
+        ),
+    }
+}
+
+pub(crate) fn print_remote_error(action: &str, name: &str, error: &RemoteError) {
+    match error {
+        RemoteError::NotFound { suggestions, .. } => {
+            eprintln!("error: package '{name}' was not found");
+            cmd_index::print_suggestions(suggestions);
+            eprintln!("  fix: check the name or run `voli search {name}`");
+        }
+        RemoteError::NoIndex => print_problem(
+            "the package index is missing",
+            "",
+            "run `voli update`, then try again",
+        ),
+        RemoteError::Index(error) => print_index_error("read the package index", error),
+        RemoteError::Fetch(FetchError::Http { source, .. }) => print_problem(
+            &format!("couldn't {action} '{name}' because its download server is unreachable"),
+            &source.to_string(),
+            "check your internet connection and try again",
+        ),
+        RemoteError::Fetch(FetchError::HashMismatch { .. })
+        | RemoteError::Install(InstallError::HashMismatch { .. }) => print_problem(
+            &format!("couldn't {action} '{name}' because the download failed its security check"),
+            "",
+            "run `voli cleanup --cache-days 0`, then retry; report it if the error repeats",
+        ),
+        RemoteError::Fetch(FetchError::Io(error))
+        | RemoteError::Install(InstallError::Io(error)) => print_problem(
+            &format!("couldn't {action} '{name}' because Voli could not access its files"),
+            &error.to_string(),
+            "check free disk space and access to the Voli folder, then try again",
+        ),
+        RemoteError::Install(InstallError::SevenZipNotFound) => print_problem(
+            &format!("couldn't {action} '{name}' because 7-Zip is required"),
+            "",
+            "install 7-Zip, make sure `7z` is on PATH, then try again",
+        ),
+        RemoteError::Install(
+            error @ (InstallError::Zip(_)
+            | InstallError::SevenZ(_)
+            | InstallError::UnsupportedArchive(_)
+            | InstallError::ExtractDirMissing(_)),
+        ) => print_problem(
+            &format!("couldn't {action} '{name}' because its archive could not be extracted"),
+            &error.to_string(),
+            "run `voli update` and retry; report the package if it still fails",
+        ),
+        RemoteError::Install(InstallError::Manifest(error)) => print_problem(
+            &format!("couldn't {action} '{name}' because its package instructions are invalid"),
+            &error.to_string(),
+            "run `voli update` and retry; report the package if it still fails",
+        ),
+        RemoteError::UnknownDep { .. } => print_problem(
+            &format!("couldn't {action} '{name}' because its dependency information is incomplete"),
+            &error.to_string(),
+            "run `voli update` and retry; report the package if it still fails",
+        ),
+        RemoteError::NoArch(_) | RemoteError::NoUniversalSource(_) => print_problem(
+            &format!("'{name}' is not available for this type of installation"),
+            &error.to_string(),
+            "run `voli info` for the package and choose a supported source",
+        ),
+        _ => print_problem(
+            &format!("couldn't {action} '{name}'"),
+            &error.to_string(),
+            "retry the command; run `voli doctor` if the problem continues",
+        ),
+    }
 }
 
 fn cmd_self_update() -> i32 {
@@ -686,11 +1128,14 @@ fn cmd_self_update() -> i32 {
     let latest = tag.trim_start_matches('v');
     match voli_core::index::cmp_version(latest, current) {
         Ordering::Less => {
-            println!("✓ local version {current} is newer than latest release {latest}");
+            println!(
+                "{} local version {current} is newer than latest release {latest}",
+                success_mark()
+            );
             return 0;
         }
         Ordering::Equal => {
-            println!("✓ already up to date ({current})");
+            println!("{} already up to date ({current})", success_mark());
             return 0;
         }
         Ordering::Greater => {}
@@ -734,19 +1179,11 @@ fn cmd_self_update() -> i32 {
         .and_then(|value| value.parse::<u64>().ok());
     let download = total.map_or_else(ProgressBar::new_spinner, ProgressBar::new);
     if total.is_some() {
-        download.set_style(
-            ProgressStyle::with_template(
-                "{msg} [{bar:30}] {bytes}/{total_bytes} {percent}% ({bytes_per_sec}, {eta})",
-            )
-            .unwrap_or_else(|_| ProgressStyle::default_bar())
-            .progress_chars("=> "),
-        );
+        download.set_style(download_bar_style());
+        download.enable_steady_tick(Duration::from_millis(80));
     } else {
-        download.enable_steady_tick(Duration::from_millis(100));
-        download.set_style(
-            ProgressStyle::with_template("{spinner} {msg} {bytes} ({bytes_per_sec})")
-                .unwrap_or_else(|_| ProgressStyle::default_spinner()),
-        );
+        download.enable_steady_tick(Duration::from_millis(80));
+        download.set_style(download_spinner_style());
     }
     download.set_message(format!("downloading voli {latest}"));
     let mut zip_bytes = Vec::new();
@@ -759,7 +1196,7 @@ fn cmd_self_update() -> i32 {
         eprintln!("error: reading download: {e}");
         return EXIT_ERROR;
     }
-    println!("✓ downloaded voli {latest}");
+    println!("{} downloaded voli {latest}", success_mark());
 
     // 4. Verify sha256 if a checksums asset exists.
     if let Some(sha_url) = sha_url {
@@ -794,7 +1231,7 @@ fn cmd_self_update() -> i32 {
             eprintln!("error: sha256 mismatch: expected {expected}, got {actual}");
             return EXIT_ERROR;
         }
-        println!("✓ sha256 verified");
+        println!("{} sha256 verified", success_mark());
     } else {
         eprintln!("warning: no .sha256 asset found; skipping hash verification");
     }
@@ -839,7 +1276,7 @@ fn cmd_self_update() -> i32 {
         }
     }
     extracting.finish_and_clear();
-    println!("✓ extracted voli {latest}");
+    println!("{} extracted voli {latest}", success_mark());
 
     // 6. Replace binaries in bin\ using the .new/.old rename dance.
     let root = root();
@@ -865,7 +1302,11 @@ fn cmd_self_update() -> i32 {
         return EXIT_ERROR;
     }
     installing.finish_and_clear();
-    println!("✓ updated to {latest}: {}", updated.join(", "));
+    println!(
+        "{} updated to {latest}: {}",
+        success_mark(),
+        updated.join(", ")
+    );
     0
 }
 
@@ -929,6 +1370,13 @@ fn cmd_self_delete(auto_yes: bool) -> i32 {
             return EXIT_ERROR;
         }
     };
+    let skills = match state.list_skills() {
+        Ok(skills) => skills,
+        Err(error) => {
+            eprintln!("error: cannot list installed skills: {error}");
+            return EXIT_ERROR;
+        }
+    };
     drop(state);
 
     // Prompt (default NO — the only voli prompt that defaults to no).
@@ -942,6 +1390,17 @@ fn cmd_self_delete(auto_yes: bool) -> i32 {
                 "  - {} installed package(s): {}",
                 pkgs.len(),
                 pkgs.join(", ")
+            );
+        }
+        if !skills.is_empty() {
+            let names: Vec<String> = skills
+                .iter()
+                .map(|skill| format!("skill/{} [{}]", skill.name, skill.target))
+                .collect();
+            println!(
+                "  - {} installed skill(s): {}",
+                skills.len(),
+                names.join(", ")
             );
         }
         println!(
@@ -960,7 +1419,43 @@ fn cmd_self_delete(auto_yes: bool) -> i32 {
         }
     }
 
-    // 1. Uninstall every package (purge — persist goes too).
+    // Remove external skill directories first. If one has user changes, stop
+    // before deleting packages or the ownership ledger needed for recovery.
+    let mut skill_delete_failed = false;
+    if !skills.is_empty() {
+        let Some(home) = user_home() else {
+            return EXIT_ERROR;
+        };
+        for skill in &skills {
+            let target = match skill.target.parse::<SkillTarget>() {
+                Ok(target) => target,
+                Err(error) => {
+                    skill_delete_failed = true;
+                    eprintln!(
+                        "  warning: delete skill/{} failed: invalid ledger target: {error}",
+                        skill.name
+                    );
+                    continue;
+                }
+            };
+            match uninstall_skill(&skill.name, target, &home, &root) {
+                Ok(_) => println!("  deleted skill/{} [{}]", skill.name, skill.target),
+                Err(error) => {
+                    skill_delete_failed = true;
+                    eprintln!(
+                        "  warning: delete skill/{} [{}] failed: {error}",
+                        skill.name, skill.target
+                    );
+                }
+            }
+        }
+    }
+    if skill_delete_failed {
+        eprintln!("error: self-delete stopped to preserve skill ownership records");
+        return EXIT_ERROR;
+    }
+
+    // 1. Uninstall every package, including persisted data.
     let env_subkey = env_subkey();
     for name in &pkgs {
         match uninstall(name, &root, true) {
@@ -1475,5 +1970,36 @@ fn cmd_which(bin: &str) -> i32 {
             eprintln!("error: no shim for '{bin}' (looked for {})", shim.display());
             EXIT_ERROR
         }
+    }
+}
+
+#[cfg(test)]
+mod ui_tests {
+    use super::{PULSE_TICKS, TaskbarProgress, taskbar_sequence};
+
+    #[test]
+    fn pulse_bar_frames_keep_a_constant_width() {
+        assert!(
+            PULSE_TICKS[..PULSE_TICKS.len() - 1]
+                .iter()
+                .all(|frame| frame.chars().count() == 20)
+        );
+    }
+
+    #[test]
+    fn windows_terminal_progress_sequences_are_bounded_and_clearable() {
+        assert_eq!(
+            taskbar_sequence(TaskbarProgress::Value(150)),
+            "\x1b]9;4;1;100\x07"
+        );
+        assert_eq!(
+            taskbar_sequence(TaskbarProgress::Indeterminate),
+            "\x1b]9;4;3;0\x07"
+        );
+        assert_eq!(
+            taskbar_sequence(TaskbarProgress::Error),
+            "\x1b]9;4;2;100\x07"
+        );
+        assert_eq!(taskbar_sequence(TaskbarProgress::Clear), "\x1b]9;4;0;0\x07");
     }
 }

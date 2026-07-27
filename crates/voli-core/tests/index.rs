@@ -9,8 +9,8 @@ use std::sync::mpsc;
 use std::thread;
 
 use sha2::{Digest, Sha256};
-use voli_core::Manifest;
 use voli_core::index::{self, UpdateOutcome};
+use voli_core::{Kind, Manifest, PackageRef};
 
 // ---- fixtures -------------------------------------------------------------
 
@@ -56,6 +56,23 @@ fn fixtures() -> Vec<Manifest> {
     ]
 }
 
+fn skill_manifest(name: &str, version: &str, desc: &str) -> Manifest {
+    let toml = format!(
+        r#"
+name = "{name}"
+version = "{version}"
+description = "{desc}"
+kind = "skill"
+
+[source.any]
+url = "https://example.com/{name}.zip"
+sha256 = "{hash}"
+"#,
+        hash = "b".repeat(64),
+    );
+    Manifest::from_toml_str(&toml).expect("skill fixture manifest parses")
+}
+
 /// Build an index into `<root>\db\index.sqlite` and return it.
 fn build_index_at(root: &Path) -> std::path::PathBuf {
     let db = index::index_db_path(root);
@@ -87,6 +104,9 @@ fn search_finds_by_name_description_and_bin() {
         by_bin.iter().any(|h| h.name == "ripgrep"),
         "searching bin 'rg' should surface ripgrep, got {by_bin:?}"
     );
+
+    // Kind is identity metadata, not a term that makes every app match "app".
+    assert!(index::search(tmp.path(), "app").unwrap().is_empty());
 }
 
 #[test]
@@ -100,6 +120,73 @@ fn info_returns_latest_manifest() {
     let info = index::info(tmp.path(), "ripgrep").unwrap().unwrap();
     assert_eq!(info.version, "14.1.1");
     assert!(index::info(tmp.path(), "nope").unwrap().is_none());
+}
+
+#[test]
+fn app_and_skill_with_same_name_coexist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut manifests = vec![
+        manifest("shared", "2.0.0", "Shared app", "shared.exe"),
+        skill_manifest("shared", "3.0.0", "Shared skill"),
+    ];
+    manifests.push(skill_manifest("shared", "1.0.0", "Old shared skill"));
+    index::build(&manifests, &index::index_db_path(tmp.path())).unwrap();
+
+    let app = index::info(tmp.path(), "shared").unwrap().unwrap();
+    assert_eq!(app.kind, Kind::App);
+    assert_eq!(app.version, "2.0.0");
+
+    let skill_ref = PackageRef::parse("skill/shared").unwrap();
+    let skill = index::info_ref(tmp.path(), &skill_ref).unwrap().unwrap();
+    assert_eq!(skill.kind, Kind::Skill);
+    assert_eq!(skill.version, "3.0.0");
+    assert_eq!(
+        index::manifest_at_ref(tmp.path(), &skill_ref, "1.0.0")
+            .unwrap()
+            .unwrap()
+            .description
+            .as_deref(),
+        Some("Old shared skill")
+    );
+
+    let hits = index::search(tmp.path(), "shared").unwrap();
+    assert!(hits.iter().any(|hit| hit.kind == Kind::App));
+    assert!(hits.iter().any(|hit| hit.kind == Kind::Skill));
+
+    // Released clients read only these legacy tables and must see apps only.
+    let connection = rusqlite::Connection::open(index::index_db_path(tmp.path())).unwrap();
+    let app_rows: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM packages WHERE name = 'shared'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let app_search_rows: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM packages_fts WHERE name = 'shared'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(app_rows, 1);
+    assert_eq!(app_search_rows, 1);
+}
+
+#[test]
+fn suggestions_are_scoped_to_package_kind() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifests = vec![
+        manifest("testing", "1.0.0", "Testing app", "testing.exe"),
+        skill_manifest("test-driven", "1.0.0", "Testing skill"),
+    ];
+    index::build(&manifests, &index::index_db_path(tmp.path())).unwrap();
+
+    let skill_ref = PackageRef::parse("skill/test-drivne").unwrap();
+    let suggestions = index::did_you_mean_ref(tmp.path(), &skill_ref).unwrap();
+    assert_eq!(suggestions[0].kind, Kind::Skill);
+    assert_eq!(suggestions[0].name, "test-driven");
+    assert!(suggestions.iter().all(|item| item.kind == Kind::Skill));
 }
 
 #[test]
@@ -120,6 +207,29 @@ fn queries_without_index_say_run_update() {
         index::search(tmp.path(), "x"),
         Err(index::IndexError::NoIndex)
     ));
+}
+
+#[test]
+fn legacy_app_index_remains_searchable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = build_index_at(tmp.path());
+    let conn = rusqlite::Connection::open(db).unwrap();
+    conn.execute_batch(
+        "DROP TABLE packages_fts;
+         CREATE VIRTUAL TABLE packages_fts USING fts5(name, description, bin_names);
+         INSERT INTO packages_fts VALUES
+           ('ripgrep', 'Recursively search directories with a regex', 'rg'),
+           ('fd', 'A simple, fast alternative to find', 'fd'),
+           ('bat', 'A cat clone with syntax highlighting', 'bat');",
+    )
+    .unwrap();
+    drop(conn);
+
+    assert_eq!(index::search(tmp.path(), "rg").unwrap()[0].name, "ripgrep");
+    assert_eq!(
+        index::did_you_mean(tmp.path(), "ripgerp").unwrap()[0].name,
+        "ripgrep"
+    );
 }
 
 // ---- sign / verify --------------------------------------------------------

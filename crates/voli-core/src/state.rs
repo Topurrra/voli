@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 
 use crate::install::Action;
 
@@ -25,6 +26,24 @@ CREATE TABLE IF NOT EXISTS actions (
     action_kind TEXT NOT NULL,
     payload     TEXT NOT NULL,
     PRIMARY KEY (package, seq)
+);
+CREATE TABLE IF NOT EXISTS installed_skills (
+    target        TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    version       TEXT NOT NULL,
+    description   TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    install_dir   TEXT NOT NULL,
+    installed_at  INTEGER NOT NULL,
+    PRIMARY KEY (target, name)
+);
+CREATE TABLE IF NOT EXISTS skill_actions (
+    target       TEXT NOT NULL,
+    skill        TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    action_kind  TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    PRIMARY KEY (target, skill, seq)
 );";
 
 /// A row of the `installed` table.
@@ -36,6 +55,40 @@ pub struct InstalledPkg {
     pub installed_at: i64,
     /// Excluded from `upgrade --all` when true (spec §9 pin).
     pub pinned: bool,
+}
+
+/// A target-scoped installed skill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledSkill {
+    pub target: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub manifest_json: String,
+    pub install_dir: std::path::PathBuf,
+    pub installed_at: i64,
+}
+
+/// One filesystem entry owned by an installed skill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SkillAction {
+    DirectoryCreated {
+        path: std::path::PathBuf,
+    },
+    FileWritten {
+        path: std::path::PathBuf,
+        sha256: String,
+    },
+}
+
+impl SkillAction {
+    fn kind_str(&self) -> &'static str {
+        match self {
+            SkillAction::DirectoryCreated { .. } => "directory_created",
+            SkillAction::FileWritten { .. } => "file_written",
+        }
+    }
 }
 
 /// Handle to the local state database.
@@ -200,6 +253,132 @@ impl State {
         tx.execute("DELETE FROM actions WHERE package = ?1", [name])?;
         tx.execute("DELETE FROM installed WHERE name = ?1", [name])?;
         tx.commit()
+    }
+
+    pub fn installed_skill(
+        &self,
+        target: &str,
+        name: &str,
+    ) -> rusqlite::Result<Option<InstalledSkill>> {
+        self.conn
+            .query_row(
+                "SELECT target, name, version, description, manifest_json, install_dir, installed_at
+                 FROM installed_skills WHERE target = ?1 AND name = ?2",
+                rusqlite::params![target, name],
+                |r| {
+                    Ok(InstalledSkill {
+                        target: r.get(0)?,
+                        name: r.get(1)?,
+                        version: r.get(2)?,
+                        description: r.get(3)?,
+                        manifest_json: r.get(4)?,
+                        install_dir: std::path::PathBuf::from(r.get::<_, String>(5)?),
+                        installed_at: r.get(6)?,
+                    })
+                },
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_skill_install(
+        &mut self,
+        target: &str,
+        name: &str,
+        version: &str,
+        description: &str,
+        manifest_json: &str,
+        install_dir: &Path,
+        actions: &[SkillAction],
+    ) -> rusqlite::Result<()> {
+        let now = now_unix_ms();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO installed_skills
+             (target, name, version, description, manifest_json, install_dir, installed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                target,
+                name,
+                version,
+                description,
+                manifest_json,
+                install_dir.to_string_lossy(),
+                now
+            ],
+        )?;
+        for (i, action) in actions.iter().enumerate() {
+            let payload = serde_json::to_string(action)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            tx.execute(
+                "INSERT INTO skill_actions (target, skill, seq, action_kind, payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![target, name, i as i64, action.kind_str(), payload],
+            )?;
+        }
+        tx.commit()
+    }
+
+    pub fn skill_actions_for(
+        &self,
+        target: &str,
+        name: &str,
+    ) -> rusqlite::Result<Vec<SkillAction>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT payload FROM skill_actions
+             WHERE target = ?1 AND skill = ?2 ORDER BY seq ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![target, name], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let payload = row?;
+            let action = serde_json::from_str(&payload).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            out.push(action);
+        }
+        Ok(out)
+    }
+
+    pub fn remove_skill(&mut self, target: &str, name: &str) -> rusqlite::Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM skill_actions WHERE target = ?1 AND skill = ?2",
+            rusqlite::params![target, name],
+        )?;
+        tx.execute(
+            "DELETE FROM installed_skills WHERE target = ?1 AND name = ?2",
+            rusqlite::params![target, name],
+        )?;
+        tx.commit()
+    }
+
+    /// All installed skills, ordered by target and name.
+    pub fn list_skills(&self) -> rusqlite::Result<Vec<InstalledSkill>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT target, name, version, description, manifest_json, install_dir, installed_at
+             FROM installed_skills ORDER BY target ASC, name ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(InstalledSkill {
+                target: r.get(0)?,
+                name: r.get(1)?,
+                version: r.get(2)?,
+                description: r.get(3)?,
+                manifest_json: r.get(4)?,
+                install_dir: std::path::PathBuf::from(r.get::<_, String>(5)?),
+                installed_at: r.get(6)?,
+            })
+        })?;
+        rows.collect()
     }
 
     /// All installed packages, ordered by name.

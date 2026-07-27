@@ -12,12 +12,15 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 
 use crate::fetch::{self, FetchError};
 use crate::index::{self, IndexError, Suggestion};
 use crate::install::{self, EnvConsent, InstallError, InstallReport, UpgradeReport};
-use crate::manifest::Manifest;
-use crate::paths::Paths;
+use crate::manifest::{Kind, Manifest, PackageRef};
+use crate::paths::{Paths, SkillTarget};
+use crate::skill::{self, SkillError, SkillInstallReport};
 use crate::state::State;
 
 /// Progress events emitted as [`install_remote`] works through the chain.
@@ -27,6 +30,13 @@ pub enum Step<'a> {
     Downloading { name: &'a str, version: &'a str },
     /// Download byte progress for the current package.
     Progress { done: u64, total: Option<u64> },
+    /// All artifacts are verified and the package is ready to install.
+    Installing {
+        name: &'a str,
+        version: &'a str,
+        bytes: u64,
+        cache_hit: bool,
+    },
     /// A package was freshly installed.
     Installed(&'a InstallReport),
     /// A package was already installed and left untouched.
@@ -42,6 +52,60 @@ pub struct RemoteReport {
     pub skipped: Vec<(String, String)>,
 }
 
+/// Progress events for one remote skill installation.
+#[derive(Debug)]
+pub enum SkillStep<'a> {
+    Downloading {
+        name: &'a str,
+        version: &'a str,
+    },
+    Progress {
+        done: u64,
+        total: Option<u64>,
+    },
+    Installing {
+        name: &'a str,
+        version: &'a str,
+        bytes: u64,
+        cache_hit: bool,
+    },
+}
+
+/// Result of installing one skill for one target agent.
+#[derive(Debug)]
+pub enum SkillRemoteReport {
+    Installed(SkillInstallReport),
+    Skipped { name: String, version: String },
+}
+
+#[derive(Debug)]
+pub enum PrefetchStep {
+    Queued {
+        position: usize,
+        total: usize,
+        name: String,
+    },
+    Downloading {
+        position: usize,
+        total: usize,
+        name: String,
+        version: String,
+    },
+    Progress {
+        position: usize,
+        total: usize,
+        done: u64,
+        length: Option<u64>,
+    },
+    Prepared {
+        position: usize,
+        total: usize,
+        name: String,
+        bytes: u64,
+        cache_hit: bool,
+    },
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteError {
     #[error(transparent)]
@@ -50,6 +114,8 @@ pub enum RemoteError {
     Install(#[from] InstallError),
     #[error(transparent)]
     Fetch(#[from] FetchError),
+    #[error(transparent)]
+    Skill(#[from] SkillError),
     #[error("no package index yet — run `voli update` first")]
     NoIndex,
     #[error("package '{name}' not found")]
@@ -61,6 +127,225 @@ pub enum RemoteError {
     UnknownDep { package: String, dep: String },
     #[error("package '{0}' has no x64 source in the index")]
     NoArch(String),
+    #[error("skill package '{0}' has no universal source in the index")]
+    NoUniversalSource(String),
+}
+
+/// Resolve, download, and install one signed skill archive for an agent.
+pub fn install_skill_remote(
+    name: &str,
+    version: Option<&str>,
+    target: SkillTarget,
+    home: &Path,
+    root: &Path,
+    on_step: &mut dyn FnMut(SkillStep),
+) -> Result<SkillRemoteReport, RemoteError> {
+    let package = PackageRef {
+        kind: Kind::Skill,
+        name: name.to_string(),
+    };
+    let manifest = match version {
+        Some(version) => index::manifest_at_ref(root, &package, version)?,
+        None => index::info_ref(root, &package)?,
+    }
+    .ok_or_else(|| RemoteError::NotFound {
+        name: format!("skill/{name}"),
+        suggestions: index::did_you_mean_ref(root, &package).unwrap_or_default(),
+    })?;
+
+    let state = State::open(&Paths::at(root).state_db())
+        .map_err(|error| RemoteError::Skill(SkillError::Sqlite(error)))?;
+    if let Some(installed) = state
+        .installed_skill(target.as_str(), name)
+        .map_err(|error| RemoteError::Skill(SkillError::Sqlite(error)))?
+    {
+        if !installed.install_dir.exists() {
+            return Err(RemoteError::Skill(SkillError::IncompleteInstall {
+                target: target.as_str().to_string(),
+                name: installed.name,
+            }));
+        }
+        if installed.version == manifest.version {
+            return Ok(SkillRemoteReport::Skipped {
+                name: installed.name,
+                version: installed.version,
+            });
+        }
+        return Err(RemoteError::Skill(SkillError::VersionConflict {
+            target: target.as_str().to_string(),
+            name: installed.name,
+            installed: installed.version,
+            requested: manifest.version,
+        }));
+    }
+    drop(state);
+
+    let source = manifest
+        .source
+        .any
+        .as_ref()
+        .ok_or_else(|| RemoteError::NoUniversalSource(name.to_string()))?;
+    on_step(SkillStep::Downloading {
+        name: &manifest.name,
+        version: &manifest.version,
+    });
+    let archive = fetch::download_with_status(
+        &source.url,
+        source.hash(),
+        &Paths::at(root).cache(),
+        &mut |done, total| on_step(SkillStep::Progress { done, total }),
+    )?;
+    on_step(SkillStep::Installing {
+        name: &manifest.name,
+        version: &manifest.version,
+        bytes: archive.size,
+        cache_hit: archive.cache_hit,
+    });
+    let report = skill::install_skill_archive(&manifest, &archive.path, target, home, root)?;
+    Ok(SkillRemoteReport::Installed(report))
+}
+
+/// Download all artifacts for several requested packages concurrently.
+///
+/// Only cache files are written here. Package installation, environment
+/// changes, shims, and state updates remain sequential in [`install_remote`].
+pub fn prefetch_remote(
+    packages: &[(String, Option<String>)],
+    root: &Path,
+    on_step: &mut dyn FnMut(PrefetchStep),
+) -> Result<(), RemoteError> {
+    #[derive(Debug)]
+    struct Job {
+        package: String,
+        version: String,
+        url: String,
+        hash: String,
+    }
+
+    let state = State::open(&Paths::at(root).state_db())
+        .map_err(|error| RemoteError::Install(InstallError::Sqlite(error)))?;
+    let mut seen_packages = HashSet::new();
+    let mut seen_hashes = HashSet::new();
+    let mut plans: Vec<Vec<Job>> = (0..packages.len()).map(|_| Vec::new()).collect();
+
+    for (position, (name, version)) in packages.iter().enumerate() {
+        on_step(PrefetchStep::Queued {
+            position: position + 1,
+            total: packages.len(),
+            name: name.clone(),
+        });
+        for manifest in resolve_chain(root, name, version.as_deref())? {
+            if !seen_packages.insert(manifest.name.clone())
+                || state
+                    .is_installed(&manifest.name)
+                    .map_err(|error| RemoteError::Install(InstallError::Sqlite(error)))?
+            {
+                continue;
+            }
+            let source = manifest
+                .source
+                .x64
+                .as_ref()
+                .ok_or_else(|| RemoteError::NoArch(manifest.name.clone()))?;
+            let hash = source.hash().to_string();
+            if seen_hashes.insert(hash.clone()) {
+                plans[position].push(Job {
+                    package: manifest.name.clone(),
+                    version: manifest.version.clone(),
+                    url: source.url.clone(),
+                    hash,
+                });
+            }
+            for extra in &source.extra {
+                if seen_hashes.insert(extra.sha256.clone()) {
+                    plans[position].push(Job {
+                        package: manifest.name.clone(),
+                        version: manifest.version.clone(),
+                        url: extra.url.clone(),
+                        hash: extra.sha256.clone(),
+                    });
+                }
+            }
+        }
+    }
+    drop(state);
+
+    let cache = Paths::at(root).cache();
+    let workers = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(2)
+        .clamp(1, 4);
+
+    for chunk_start in (0..plans.len()).step_by(workers) {
+        let chunk_end = (chunk_start + workers).min(plans.len());
+        let (tx, rx) = mpsc::channel();
+        let results = thread::scope(|scope| {
+            let handles: Vec<_> = plans[chunk_start..chunk_end]
+                .iter()
+                .enumerate()
+                .map(|(offset, jobs)| {
+                    let tx = tx.clone();
+                    let cache = &cache;
+                    let position = chunk_start + offset + 1;
+                    let total = packages.len();
+                    let requested = packages[position - 1].0.clone();
+                    scope.spawn(move || -> Result<(), RemoteError> {
+                        let mut bytes = 0u64;
+                        let mut cache_hit = true;
+                        for job in jobs {
+                            let _ = tx.send(PrefetchStep::Downloading {
+                                position,
+                                total,
+                                name: job.package.clone(),
+                                version: job.version.clone(),
+                            });
+                            let outcome = fetch::download_with_status(
+                                &job.url,
+                                &job.hash,
+                                cache,
+                                &mut |done, length| {
+                                    let _ = tx.send(PrefetchStep::Progress {
+                                        position,
+                                        total,
+                                        done,
+                                        length,
+                                    });
+                                },
+                            )?;
+                            bytes = bytes.saturating_add(outcome.size);
+                            cache_hit &= outcome.cache_hit;
+                        }
+                        let _ = tx.send(PrefetchStep::Prepared {
+                            position,
+                            total,
+                            name: requested,
+                            bytes,
+                            cache_hit: !jobs.is_empty() && cache_hit,
+                        });
+                        Ok(())
+                    })
+                })
+                .collect();
+            drop(tx);
+            for event in rx {
+                on_step(event);
+            }
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle.join().map_err(|_| {
+                        RemoteError::Install(InstallError::Io(std::io::Error::other(
+                            "parallel download worker stopped unexpectedly",
+                        )))
+                    })?
+                })
+                .collect::<Vec<_>>()
+        });
+        for result in results {
+            result?;
+        }
+    }
+    Ok(())
 }
 
 /// Install `name` (optionally pinned to `version`) and its dependencies.
@@ -131,21 +416,33 @@ pub fn install_remote_env(
             name: &manifest.name,
             version: &manifest.version,
         });
-        let archive = fetch::download(&source.url, source.hash(), &cache, &mut |done, total| {
-            on_step(Step::Progress { done, total })
-        })?;
+        let archive =
+            fetch::download_with_status(&source.url, source.hash(), &cache, &mut |done, total| {
+                on_step(Step::Progress { done, total })
+            })?;
+        let mut artifact_bytes = archive.size;
+        let mut cache_hit = archive.cache_hit;
 
         // Download extra archives (multi-URL sources).
         let mut extras: Vec<(std::path::PathBuf, String)> = Vec::new();
         for ex in &source.extra {
-            let extra_path = fetch::download(&ex.url, &ex.sha256, &cache, &mut |done, total| {
-                on_step(Step::Progress { done, total })
-            })?;
-            extras.push((extra_path, ex.extract_to.clone()));
+            let extra =
+                fetch::download_with_status(&ex.url, &ex.sha256, &cache, &mut |done, total| {
+                    on_step(Step::Progress { done, total })
+                })?;
+            artifact_bytes += extra.size;
+            cache_hit &= extra.cache_hit;
+            extras.push((extra.path, ex.extract_to.clone()));
         }
 
+        on_step(Step::Installing {
+            name: &manifest.name,
+            version: &manifest.version,
+            bytes: artifact_bytes,
+            cache_hit,
+        });
         let installed =
-            install::install_manifest(manifest, &archive, &extras, root, env_subkey, consent)?;
+            install::install_manifest(manifest, &archive.path, &extras, root, env_subkey, consent)?;
         on_step(Step::Installed(&installed));
         report.installed.push(installed);
     }
@@ -203,20 +500,32 @@ pub fn upgrade(
         version: &latest.version,
     });
     let cache = Paths::at(root).cache();
-    let archive = fetch::download(&source.url, source.hash(), &cache, &mut |done, total| {
-        on_step(Step::Progress { done, total })
-    })?;
+    let archive =
+        fetch::download_with_status(&source.url, source.hash(), &cache, &mut |done, total| {
+            on_step(Step::Progress { done, total })
+        })?;
+    let mut artifact_bytes = archive.size;
+    let mut cache_hit = archive.cache_hit;
 
     // Download extra archives (multi-URL sources).
     let mut extras: Vec<(std::path::PathBuf, String)> = Vec::new();
     for ex in &source.extra {
-        let extra_path = fetch::download(&ex.url, &ex.sha256, &cache, &mut |done, total| {
-            on_step(Step::Progress { done, total })
-        })?;
-        extras.push((extra_path, ex.extract_to.clone()));
+        let extra =
+            fetch::download_with_status(&ex.url, &ex.sha256, &cache, &mut |done, total| {
+                on_step(Step::Progress { done, total })
+            })?;
+        artifact_bytes += extra.size;
+        cache_hit &= extra.cache_hit;
+        extras.push((extra.path, ex.extract_to.clone()));
     }
 
-    let report = install::upgrade_install(&latest, &archive, &extras, root)?;
+    on_step(Step::Installing {
+        name: &latest.name,
+        version: &latest.version,
+        bytes: artifact_bytes,
+        cache_hit,
+    });
+    let report = install::upgrade_install(&latest, &archive.path, &extras, root)?;
     Ok(UpgradeOutcome::Upgraded(report))
 }
 

@@ -1,8 +1,7 @@
 //! Index builder (spec §5): parsed manifests → `index.sqlite`.
 //!
-//! One row per (name, version, arch) in `packages`, plus an FTS5 virtual table
-//! over (name, description, bin_names) with one row per package name (latest
-//! version) so `search` can match by name, description word, or bin name.
+//! App rows retain the v0.5 `packages` and `packages_fts` schema so released
+//! clients never see agent packages. Skills and MCPs use parallel typed tables.
 //!
 //! This is a library function so the registry CI compiler reuses it verbatim.
 
@@ -25,7 +24,20 @@ CREATE TABLE packages (
     manifest_toml TEXT NOT NULL,
     PRIMARY KEY (name, version, arch)
 );
-CREATE VIRTUAL TABLE packages_fts USING fts5(name, description, bin_names);";
+CREATE VIRTUAL TABLE packages_fts USING fts5(name, description, bin_names);
+CREATE TABLE agent_packages (
+    name          TEXT NOT NULL,
+    version       TEXT NOT NULL,
+    arch          TEXT NOT NULL,
+    description   TEXT,
+    homepage      TEXT,
+    license       TEXT,
+    kind          TEXT NOT NULL,
+    manifest_toml TEXT NOT NULL,
+    PRIMARY KEY (kind, name, version, arch)
+);
+CREATE VIRTUAL TABLE agent_packages_fts
+    USING fts5(kind UNINDEXED, name, description, bin_names);";
 
 /// Build an `index.sqlite` at `out` from the given manifests (overwrites `out`).
 ///
@@ -44,7 +56,13 @@ pub fn build(manifests: &[Manifest], out: &Path) -> Result<(), IndexError> {
     let tx = conn.transaction()?;
     for m in manifests {
         let manifest_toml = toml::to_string(m)?;
+        let table = if m.kind == crate::manifest::Kind::App {
+            "packages"
+        } else {
+            "agent_packages"
+        };
         for (arch, present) in [
+            ("any", m.source.any.is_some()),
             ("x64", m.source.x64.is_some()),
             ("arm64", m.source.arm64.is_some()),
         ] {
@@ -52,9 +70,11 @@ pub fn build(manifests: &[Manifest], out: &Path) -> Result<(), IndexError> {
                 continue;
             }
             tx.execute(
-                "INSERT INTO packages
+                &format!(
+                    "INSERT INTO {table}
                    (name, version, arch, description, homepage, license, kind, manifest_toml)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+                ),
                 rusqlite::params![
                     m.name,
                     m.version,
@@ -62,31 +82,41 @@ pub fn build(manifests: &[Manifest], out: &Path) -> Result<(), IndexError> {
                     m.description,
                     m.homepage,
                     m.license,
-                    kind_str(m),
+                    m.kind.as_str(),
                     manifest_toml,
                 ],
             )?;
         }
     }
 
-    // FTS: one row per package name, using the newest version's manifest.
-    for m in latest_per_name(manifests) {
+    // FTS: one row per package identity, using the newest version's manifest.
+    for m in latest_per_identity(manifests) {
         let bin_names = bin_search_terms(m);
-        tx.execute(
-            "INSERT INTO packages_fts (name, description, bin_names) VALUES (?1, ?2, ?3)",
-            rusqlite::params![m.name, m.description, bin_names],
-        )?;
+        if m.kind == crate::manifest::Kind::App {
+            tx.execute(
+                "INSERT INTO packages_fts (name, description, bin_names)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![m.name, m.description, bin_names],
+            )?;
+        } else {
+            tx.execute(
+                "INSERT INTO agent_packages_fts (kind, name, description, bin_names)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![m.kind.as_str(), m.name, m.description, bin_names],
+            )?;
+        }
     }
 
     tx.commit()?;
     Ok(())
 }
 
-/// One manifest per distinct name — the one with the newest version.
-fn latest_per_name(manifests: &[Manifest]) -> Vec<&Manifest> {
-    let mut best: std::collections::BTreeMap<&str, &Manifest> = std::collections::BTreeMap::new();
+/// One manifest per distinct package identity, the one with the newest version.
+fn latest_per_identity(manifests: &[Manifest]) -> Vec<&Manifest> {
+    let mut best: std::collections::BTreeMap<(&str, &str), &Manifest> =
+        std::collections::BTreeMap::new();
     for m in manifests {
-        best.entry(&m.name)
+        best.entry((m.kind.as_str(), &m.name))
             .and_modify(|cur| {
                 if cmp_version(&m.version, &cur.version).is_gt() {
                     *cur = m;
@@ -110,12 +140,4 @@ fn bin_search_terms(m: &Manifest) -> String {
         }
     }
     terms.join(" ")
-}
-
-fn kind_str(m: &Manifest) -> &'static str {
-    match m.kind {
-        crate::manifest::Kind::App => "app",
-        crate::manifest::Kind::Mcp => "mcp",
-        crate::manifest::Kind::Skill => "skill",
-    }
 }

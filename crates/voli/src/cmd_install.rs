@@ -12,34 +12,49 @@
 use std::cell::RefCell;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
+use voli_core::remote::{PrefetchStep, prefetch_remote};
 use voli_core::{
-    Manifest, RemoteError, RemoteReport, Step, env, install_manifest, install_remote_env,
+    Kind, Manifest, PackageRef, RemoteError, RemoteReport, SkillInstallReport, SkillRemoteReport,
+    SkillStep, SkillTarget, Step, env, install_manifest, install_remote_env, install_skill_archive,
+    install_skill_remote,
 };
-
-use crate::cmd_index;
 
 const EXIT_OK: i32 = 0;
 const EXIT_ERROR: i32 = 1;
 
+pub struct Options<'a> {
+    pub root: &'a Path,
+    pub json: bool,
+    pub yes: bool,
+    pub no_env: bool,
+    pub for_agent: Option<&'a str>,
+    pub parallel: bool,
+}
+
 /// Entry point for the `install` subcommand.
-pub fn run(
-    packages: &[String],
-    archive: Option<&Path>,
-    root: &Path,
-    json: bool,
-    yes: bool,
-    no_env: bool,
-) -> i32 {
+pub fn run(packages: &[String], archive: Option<&Path>, options: Options<'_>) -> i32 {
+    let Options {
+        root,
+        json,
+        yes,
+        no_env,
+        for_agent,
+        parallel,
+    } = options;
     // `--yes`, `--json`, or a non-TTY stdin all mean "don't wait for input":
     // apply env without prompting (spec §8, §9).
     let auto = yes || json || !std::io::stdin().is_terminal();
-    if let Some((manifest, name)) = local_manifest(packages) {
-        return install_local_path(manifest, name, archive, root, auto, no_env);
+    if let Some(manifest) = local_manifest(packages) {
+        if parallel {
+            eprintln!("error: --parallel is only available for registry app packages");
+            return EXIT_ERROR;
+        }
+        return install_local_path(manifest, archive, root, json, auto, no_env, for_agent);
     }
-    install_network(packages, root, json, auto, no_env)
+    install_network(packages, root, json, auto, no_env, for_agent, parallel)
 }
 
 /// Build the per-package env consent closure (spec §8). Prints the requested
@@ -70,23 +85,24 @@ fn env_consent(auto: bool, no_env: bool) -> impl FnMut(&str, &[(String, String)]
 }
 
 /// If this is the local-manifest form (exactly one `<name>.toml` file arg),
-/// return (manifest path, arg). Otherwise `None` → treat as network install.
-fn local_manifest(packages: &[String]) -> Option<(&Path, &str)> {
+/// return its path. Otherwise `None` means network install.
+fn local_manifest(packages: &[String]) -> Option<&Path> {
     if packages.len() != 1 {
         return None;
     }
     let arg = &packages[0];
     let p = Path::new(arg);
-    (arg.ends_with(".toml") && p.is_file()).then_some((p, arg.as_str()))
+    (arg.ends_with(".toml") && p.is_file()).then_some(p)
 }
 
 fn install_local_path(
     manifest: &Path,
-    _arg: &str,
     archive: Option<&Path>,
     root: &Path,
+    json: bool,
     auto: bool,
     no_env: bool,
+    for_agent: Option<&str>,
 ) -> i32 {
     let Some(archive) = archive else {
         eprintln!("error: --archive <path> is required to install from a local manifest");
@@ -106,6 +122,50 @@ fn install_local_path(
             return EXIT_ERROR;
         }
     };
+    if parsed.kind == Kind::Skill {
+        let Some(target) = parse_target(for_agent) else {
+            return EXIT_ERROR;
+        };
+        let Some(home) = crate::user_home() else {
+            return EXIT_ERROR;
+        };
+        return match install_skill_archive(&parsed, archive, target, &home, root) {
+            Ok(report) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "ok": true,
+                            "installed": [{
+                                "kind": "skill",
+                                "name": report.name,
+                                "version": report.version,
+                                "target": report.target.as_str(),
+                                "install_dir": report.install_dir.display().to_string(),
+                                "files": report.files,
+                            }],
+                            "skipped": [],
+                        })
+                    );
+                } else {
+                    print_skill_installed(&report);
+                }
+                EXIT_OK
+            }
+            Err(error) => {
+                crate::print_remote_error("install", &parsed.name, &RemoteError::Skill(error));
+                EXIT_ERROR
+            }
+        };
+    }
+    if parsed.kind == Kind::Mcp {
+        eprintln!("error: MCP installation is not available yet");
+        return EXIT_ERROR;
+    }
+    if for_agent.is_some() {
+        eprintln!("error: --for is only valid for skill packages");
+        return EXIT_ERROR;
+    }
     let mut consent = env_consent(auto, no_env);
     match install_manifest(
         &parsed,
@@ -116,7 +176,12 @@ fn install_local_path(
         &mut consent,
     ) {
         Ok(r) => {
-            println!("✓ installed {} {}", r.name, r.version);
+            println!(
+                "{} installed {} {}",
+                crate::success_mark(),
+                r.name,
+                r.version
+            );
             println!("  files: {}", r.version_dir.display());
             for shim in &r.shims {
                 println!("  shim:  {}", shim.display());
@@ -125,7 +190,7 @@ fn install_local_path(
             EXIT_OK
         }
         Err(e) => {
-            eprintln!("error: install failed: {e}");
+            crate::print_remote_error("install", &parsed.name, &RemoteError::Install(e));
             EXIT_ERROR
         }
     }
@@ -140,49 +205,313 @@ fn parse_spec(spec: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn install_network(packages: &[String], root: &Path, json: bool, auto: bool, no_env: bool) -> i32 {
-    let mut agg = RemoteReport::default();
-    let mut failure: Option<(String, RemoteError)> = None;
-    let subkey = env::env_subkey();
+struct PackageRows {
+    _multi: MultiProgress,
+    bars: Vec<ProgressBar>,
+}
 
-    for (i, spec) in packages.iter().enumerate() {
-        let (name, version) = parse_spec(spec);
-        let reporter = RefCell::new(Reporter::new(json, i + 1, packages.len()));
-        let result = {
-            let mut consent = env_consent(auto, no_env);
-            let mut visible_consent = |name: &str, resolved: &[(String, String)]| {
-                reporter.borrow_mut().pause_for_prompt();
-                consent(name, resolved)
-            };
-            install_remote_env(
+impl PackageRows {
+    fn new(packages: &[(PackageRef, Option<&str>)]) -> PackageRows {
+        let multi = MultiProgress::new();
+        let bars = packages
+            .iter()
+            .enumerate()
+            .map(|(index, (package, _))| {
+                let bar = multi.add(ProgressBar::new_spinner());
+                bar.set_style(row_style("dim"));
+                bar.set_message(format!(
+                    "[{}/{}] · waiting {}",
+                    index + 1,
+                    packages.len(),
+                    package.name
+                ));
+                bar
+            })
+            .collect();
+        PackageRows {
+            _multi: multi,
+            bars,
+        }
+    }
+
+    fn step(&self, step: PrefetchStep) {
+        match step {
+            PrefetchStep::Queued { .. } => {}
+            PrefetchStep::Downloading {
+                position,
+                total,
                 name,
                 version,
-                root,
-                &subkey,
-                &mut visible_consent,
-                &mut |step| reporter.borrow_mut().step(step),
-            )
-        };
-        let mut reporter = reporter.into_inner();
-        match result {
-            Ok(mut report) => {
-                agg.installed.append(&mut report.installed);
-                agg.skipped.append(&mut report.skipped);
+            } => {
+                let bar = &self.bars[position - 1];
+                bar.enable_steady_tick(Duration::from_millis(80));
+                bar.set_style(crate::download_spinner_style());
+                bar.set_message(format!("[{position}/{total}] downloading {name} {version}"));
             }
-            Err(e) => {
-                if let Some(pb) = reporter.bar.take() {
-                    pb.finish_and_clear();
+            PrefetchStep::Progress {
+                position,
+                done,
+                length,
+                ..
+            } => {
+                let bar = &self.bars[position - 1];
+                match length {
+                    Some(length) if done < length => {
+                        bar.set_length(length);
+                        bar.set_style(crate::download_bar_style());
+                    }
+                    None => bar.set_style(crate::download_spinner_style()),
+                    Some(_) => {}
                 }
-                failure = Some((name.to_string(), e));
-                break; // a failure stops the chain (spec §9)
+                bar.set_position(done);
+                crate::set_taskbar_progress(crate::TaskbarProgress::Indeterminate);
+            }
+            PrefetchStep::Prepared {
+                position,
+                total,
+                name,
+                bytes,
+                cache_hit,
+            } => {
+                let bar = &self.bars[position - 1];
+                bar.disable_steady_tick();
+                bar.set_style(row_style("cyan"));
+                let source = if cache_hit {
+                    "cache ready"
+                } else {
+                    "downloads ready"
+                };
+                bar.set_message(format!(
+                    "[{position}/{total}] {} {source} for {name} · {}",
+                    crate::cache_mark(),
+                    HumanBytes(bytes)
+                ));
+            }
+        }
+    }
+
+    fn bar(&self, position: usize) -> ProgressBar {
+        self.bars[position - 1].clone()
+    }
+
+    fn cancel_after(&self, position: usize, packages: &[(PackageRef, Option<&str>)]) {
+        for (index, bar) in self.bars.iter().enumerate().skip(position) {
+            bar.disable_steady_tick();
+            bar.set_style(row_style("dim"));
+            bar.finish_with_message(format!(
+                "[{}/{}] · not run {}",
+                index + 1,
+                packages.len(),
+                packages[index].0.name
+            ));
+        }
+    }
+
+    fn fail_all(&self) {
+        for bar in &self.bars {
+            bar.disable_steady_tick();
+            bar.set_style(row_style("red"));
+            bar.finish_with_message("× parallel download failed");
+        }
+    }
+}
+
+fn row_style(color: &str) -> ProgressStyle {
+    let template = if crate::progress_colors_enabled() {
+        match color {
+            "green" => "{msg:.green}",
+            "red" => "{msg:.red}",
+            "cyan" => "{msg:.cyan}",
+            "plain" => "{msg}",
+            _ => "{msg:.dim}",
+        }
+    } else {
+        "{msg}"
+    };
+    ProgressStyle::with_template(template).unwrap_or_else(|_| ProgressStyle::default_spinner())
+}
+
+fn install_network(
+    packages: &[String],
+    root: &Path,
+    json: bool,
+    auto: bool,
+    no_env: bool,
+    for_agent: Option<&str>,
+    parallel: bool,
+) -> i32 {
+    let mut parsed = Vec::with_capacity(packages.len());
+    for spec in packages {
+        let (package, version) = parse_spec(spec);
+        let package = match PackageRef::parse(package) {
+            Ok(package) => package,
+            Err(error) => {
+                eprintln!("error: invalid package '{spec}': {error}");
+                return EXIT_ERROR;
+            }
+        };
+        parsed.push((package, version));
+    }
+    let kind = parsed[0].0.kind;
+    if parsed.iter().any(|(package, _)| package.kind != kind) {
+        eprintln!("error: install app and skill packages in separate commands");
+        return EXIT_ERROR;
+    }
+    if kind == Kind::Mcp {
+        eprintln!("error: MCP installation is not available yet");
+        return EXIT_ERROR;
+    }
+    if kind == Kind::App && for_agent.is_some() {
+        eprintln!("error: --for is only valid for skill packages");
+        return EXIT_ERROR;
+    }
+    if parallel && kind != Kind::App {
+        eprintln!("error: --parallel is only available for app packages");
+        return EXIT_ERROR;
+    }
+    let target = if kind == Kind::Skill {
+        let Some(target) = parse_target(for_agent) else {
+            return EXIT_ERROR;
+        };
+        Some(target)
+    } else {
+        None
+    };
+    let home = if kind == Kind::Skill {
+        let Some(home) = crate::user_home() else {
+            return EXIT_ERROR;
+        };
+        Some(home)
+    } else {
+        None
+    };
+
+    let package_rows = (!json && (parallel || parsed.len() > 1)).then(|| PackageRows::new(&parsed));
+    if parallel {
+        let requests: Vec<_> = parsed
+            .iter()
+            .map(|(package, version)| {
+                (
+                    package.name.clone(),
+                    version.map(std::string::ToString::to_string),
+                )
+            })
+            .collect();
+        crate::set_taskbar_progress(crate::TaskbarProgress::Indeterminate);
+        if let Err(error) = prefetch_remote(&requests, root, &mut |step| {
+            if let Some(rows) = &package_rows {
+                rows.step(step);
+            }
+        }) {
+            if let Some(rows) = &package_rows {
+                rows.fail_all();
+            }
+            crate::set_taskbar_progress(crate::TaskbarProgress::Error);
+            crate::print_remote_error("download", "requested packages", &error);
+            return EXIT_ERROR;
+        }
+    }
+
+    let mut agg = RemoteReport::default();
+    let mut installed_skills = Vec::new();
+    let mut skipped_skills = Vec::new();
+    let mut failure: Option<(String, RemoteError)> = None;
+    let started = Instant::now();
+    let mut total_installed = 0usize;
+    let mut total_bytes = 0u64;
+    let subkey = env::env_subkey();
+
+    for (i, (package, version)) in parsed.iter().enumerate() {
+        let reporter = RefCell::new(match &package_rows {
+            Some(rows) => Reporter::with_bar(json, i + 1, packages.len(), rows.bar(i + 1)),
+            None => Reporter::new(json, i + 1, packages.len()),
+        });
+        if package.kind == Kind::App {
+            let result = {
+                let mut consent = env_consent(auto, no_env);
+                let mut visible_consent = |name: &str, resolved: &[(String, String)]| {
+                    reporter
+                        .borrow_mut()
+                        .during_prompt(|| consent(name, resolved))
+                };
+                install_remote_env(
+                    &package.name,
+                    *version,
+                    root,
+                    &subkey,
+                    &mut visible_consent,
+                    &mut |step| reporter.borrow_mut().step(step),
+                )
+            };
+            let mut reporter = reporter.into_inner();
+            let (installed_count, bytes) = reporter.stats();
+            total_installed += installed_count;
+            total_bytes = total_bytes.saturating_add(bytes);
+            match result {
+                Ok(mut report) => {
+                    agg.installed.append(&mut report.installed);
+                    agg.skipped.append(&mut report.skipped);
+                    reporter.complete_row();
+                }
+                Err(error) => {
+                    reporter.fail_row(&package.name);
+                    if let Some(rows) = &package_rows {
+                        rows.cancel_after(i + 1, &parsed);
+                    }
+                    crate::set_taskbar_progress(crate::TaskbarProgress::Error);
+                    failure = Some((package.name.clone(), error));
+                    break;
+                }
+            }
+        } else {
+            let target = target.expect("skill target validated");
+            let result = install_skill_remote(
+                &package.name,
+                *version,
+                target,
+                home.as_deref().expect("skill home resolved"),
+                root,
+                &mut |step| reporter.borrow_mut().skill_step(step),
+            );
+            let mut reporter = reporter.into_inner();
+            match result {
+                Ok(SkillRemoteReport::Installed(report)) => {
+                    reporter.finish_skill_installed(&report);
+                    let (installed_count, bytes) = reporter.stats();
+                    total_installed += installed_count;
+                    total_bytes = total_bytes.saturating_add(bytes);
+                    installed_skills.push(report);
+                }
+                Ok(SkillRemoteReport::Skipped { name, version }) => {
+                    reporter.finish_skill_skipped(&name, &version, target);
+                    skipped_skills.push((name, version, target.as_str().to_string()));
+                }
+                Err(error) => {
+                    reporter.fail_row(&format!("skill/{}", package.name));
+                    if let Some(rows) = &package_rows {
+                        rows.cancel_after(i + 1, &parsed);
+                    }
+                    crate::set_taskbar_progress(crate::TaskbarProgress::Error);
+                    failure = Some((format!("skill/{}", package.name), error));
+                    break;
+                }
             }
         }
     }
 
     if json {
-        print_json(&agg, failure.as_ref());
-    } else if let Some((name, e)) = &failure {
-        print_error(name, e);
+        print_json(&agg, &installed_skills, &skipped_skills, failure.as_ref());
+    } else if let Some((name, error)) = &failure {
+        crate::print_remote_error("install", name, error);
+    } else if total_installed > 0 {
+        crate::set_taskbar_progress(crate::TaskbarProgress::Clear);
+        println!(
+            "{} installed {} package(s) · {} · {:.1}s",
+            crate::success_mark(),
+            total_installed,
+            HumanBytes(total_bytes),
+            started.elapsed().as_secs_f32()
+        );
     }
     if failure.is_some() {
         EXIT_ERROR
@@ -193,17 +522,20 @@ fn install_network(packages: &[String], root: &Path, json: bool, auto: bool, no_
 
 /// Drives the live per-package progress bar from [`Step`] events (human mode).
 /// In `--json` mode it does nothing — the report is printed once at the end.
-struct Reporter {
+pub(crate) struct Reporter {
     json: bool,
     prefix: String,
     bar: Option<ProgressBar>,
     package: Option<String>,
     installing: bool,
     showing_unknown_progress: bool,
+    bytes_processed: u64,
+    installed_count: usize,
+    retain_line: bool,
 }
 
 impl Reporter {
-    fn new(json: bool, position: usize, total: usize) -> Reporter {
+    pub(crate) fn new(json: bool, position: usize, total: usize) -> Reporter {
         Reporter {
             json,
             prefix: if total > 1 {
@@ -215,118 +547,327 @@ impl Reporter {
             package: None,
             installing: false,
             showing_unknown_progress: false,
+            bytes_processed: 0,
+            installed_count: 0,
+            retain_line: false,
         }
     }
 
-    fn step(&mut self, step: Step) {
+    fn with_bar(json: bool, position: usize, total: usize, bar: ProgressBar) -> Reporter {
+        let mut reporter = Reporter::new(json, position, total);
+        reporter.bar = Some(bar);
+        reporter.retain_line = true;
+        reporter
+    }
+
+    pub(crate) fn step(&mut self, step: Step) {
         if self.json {
             return;
         }
         match step {
-            Step::Downloading { name, version } => {
-                let package = format!("{name} {version}");
-                let pb = ProgressBar::new_spinner();
-                pb.enable_steady_tick(Duration::from_millis(100));
-                pb.set_style(
-                    ProgressStyle::with_template("{spinner} {msg}")
-                        .unwrap_or_else(|_| ProgressStyle::default_spinner()),
-                );
-                pb.set_message(format!("{}downloading {package}", self.prefix));
-                self.bar = Some(pb);
-                self.package = Some(package);
-                self.installing = false;
-                self.showing_unknown_progress = false;
-            }
-            Step::Progress { done, total } => {
-                if let Some(pb) = &self.bar {
-                    match total {
-                        Some(total) => {
-                            if done >= total {
-                                if !self.installing {
-                                    pb.set_style(
-                                        ProgressStyle::with_template("{spinner} {msg}")
-                                            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
-                                    );
-                                    pb.set_message(format!(
-                                        "{}installing {}",
-                                        self.prefix,
-                                        self.package.as_deref().unwrap_or("package")
-                                    ));
-                                    self.installing = true;
-                                }
-                            } else if self.installing || pb.length() != Some(total) {
-                                pb.set_length(total);
-                                pb.set_style(
-                                    ProgressStyle::with_template(
-                                        "{msg} [{bar:30}] {bytes}/{total_bytes} {percent}% \
-                                         ({bytes_per_sec}, {eta})",
-                                    )
-                                    .unwrap_or_else(|_| ProgressStyle::default_bar())
-                                    .progress_chars("=> "),
-                                );
-                                pb.set_message(format!(
-                                    "{}downloading {}",
-                                    self.prefix,
-                                    self.package.as_deref().unwrap_or("package")
-                                ));
-                                self.installing = false;
-                                self.showing_unknown_progress = false;
-                            }
-                            pb.set_position(done);
-                        }
-                        None => {
-                            if self.installing || !self.showing_unknown_progress {
-                                pb.set_style(
-                                    ProgressStyle::with_template(
-                                        "{spinner} {msg} {bytes} ({bytes_per_sec})",
-                                    )
-                                    .unwrap_or_else(|_| ProgressStyle::default_spinner()),
-                                );
-                                pb.set_message(format!(
-                                    "{}downloading {}",
-                                    self.prefix,
-                                    self.package.as_deref().unwrap_or("package")
-                                ));
-                                self.installing = false;
-                                self.showing_unknown_progress = true;
-                            }
-                            pb.set_position(done);
-                        }
-                    }
-                }
-            }
+            Step::Downloading { name, version } => self.start_download(name, version),
+            Step::Progress { done, total } => self.download_progress(done, total),
+            Step::Installing {
+                name,
+                version,
+                bytes,
+                cache_hit,
+            } => self.start_install(name, version, bytes, cache_hit),
             Step::Installed(r) => {
-                if let Some(pb) = self.bar.take() {
-                    pb.finish_and_clear();
-                }
                 self.package = None;
                 self.installing = false;
                 self.showing_unknown_progress = false;
-                println!("{}✓ installed {} {}", self.prefix, r.name, r.version);
-                for shim in &r.shims {
-                    println!("  shim: {}", shim.display());
+                self.installed_count += 1;
+                crate::set_taskbar_progress(crate::TaskbarProgress::Clear);
+                let status = format!(
+                    "{}{} installed {} {}",
+                    self.prefix,
+                    crate::success_mark(),
+                    r.name,
+                    r.version
+                );
+                if self.retain_line {
+                    if let Some(pb) = &self.bar {
+                        pb.disable_steady_tick();
+                        pb.set_style(row_style("plain"));
+                        pb.set_message(status.clone());
+                    }
+                } else {
+                    if let Some(pb) = self.bar.take() {
+                        pb.finish_and_clear();
+                    }
+                    println!("{status}");
                 }
-                print_env_note(&r.env_applied);
+                for shim in &r.shims {
+                    self.print_above(format!("  shim: {}", shim.display()));
+                }
+                for (key, value) in &r.env_applied {
+                    self.print_above(format!("  env:  {key} = {value}"));
+                }
             }
             Step::Skipped { name, version } => {
-                if let Some(pb) = self.bar.take() {
-                    pb.finish_and_clear();
-                }
                 self.package = None;
                 self.installing = false;
-                println!(
-                    "{}✓ {name} {version} already installed - skipped",
-                    self.prefix
+                crate::set_taskbar_progress(crate::TaskbarProgress::Clear);
+                let status = format!(
+                    "{}{} {name} {version} already installed - skipped",
+                    self.prefix,
+                    crate::success_mark()
                 );
+                if self.retain_line {
+                    if let Some(pb) = &self.bar {
+                        pb.disable_steady_tick();
+                        pb.set_style(row_style("plain"));
+                        pb.set_message(status.clone());
+                    }
+                } else {
+                    if let Some(pb) = self.bar.take() {
+                        pb.finish_and_clear();
+                    }
+                    println!("{status}");
+                }
             }
         }
     }
 
-    fn pause_for_prompt(&mut self) {
+    fn skill_step(&mut self, step: SkillStep) {
+        if self.json {
+            return;
+        }
+        match step {
+            SkillStep::Downloading { name, version } => self.start_download(name, version),
+            SkillStep::Progress { done, total } => self.download_progress(done, total),
+            SkillStep::Installing {
+                name,
+                version,
+                bytes,
+                cache_hit,
+            } => self.start_install(name, version, bytes, cache_hit),
+        }
+    }
+
+    fn start_download(&mut self, name: &str, version: &str) {
+        let package = format!("{name} {version}");
+        let pb = self.bar.take().unwrap_or_else(ProgressBar::new_spinner);
+        pb.enable_steady_tick(Duration::from_millis(80));
+        pb.set_style(crate::download_spinner_style());
+        pb.set_message(format!("{}downloading {package}", self.prefix));
+        self.bar = Some(pb);
+        self.package = Some(package);
+        self.installing = false;
+        self.showing_unknown_progress = false;
+        crate::set_taskbar_progress(crate::TaskbarProgress::Indeterminate);
+    }
+
+    fn download_progress(&mut self, done: u64, total: Option<u64>) {
+        let Some(pb) = &self.bar else {
+            return;
+        };
+        match total {
+            Some(total) => {
+                if done < total && (self.installing || pb.length() != Some(total)) {
+                    pb.set_length(total);
+                    pb.set_style(crate::download_bar_style());
+                    pb.set_message(format!(
+                        "{}downloading {}",
+                        self.prefix,
+                        self.package.as_deref().unwrap_or("package")
+                    ));
+                    self.installing = false;
+                    self.showing_unknown_progress = false;
+                }
+                let percent = done
+                    .saturating_mul(100)
+                    .checked_div(total)
+                    .unwrap_or(100)
+                    .min(100) as u8;
+                crate::set_taskbar_progress(crate::TaskbarProgress::Value(percent));
+            }
+            None => {
+                if self.installing || !self.showing_unknown_progress {
+                    pb.set_style(crate::download_spinner_style());
+                    pb.set_message(format!(
+                        "{}downloading {}",
+                        self.prefix,
+                        self.package.as_deref().unwrap_or("package")
+                    ));
+                    self.installing = false;
+                    self.showing_unknown_progress = true;
+                }
+                crate::set_taskbar_progress(crate::TaskbarProgress::Indeterminate);
+            }
+        }
+        pb.set_position(done);
+    }
+
+    fn start_install(&mut self, name: &str, version: &str, bytes: u64, cache_hit: bool) {
+        let package = format!("{name} {version}");
+        let pb = if self.retain_line {
+            let pb = self.bar.take().unwrap_or_else(ProgressBar::new_spinner);
+            if cache_hit {
+                pb.println(format!(
+                    "{}{} found verified download in cache",
+                    self.prefix,
+                    crate::cache_mark()
+                ));
+            }
+            pb.enable_steady_tick(Duration::from_millis(80));
+            pb.set_style(crate::stage_spinner_style());
+            pb.set_message(format!("{}installing {package}", self.prefix));
+            pb
+        } else {
+            if let Some(pb) = self.bar.take() {
+                pb.finish_and_clear();
+            }
+            if cache_hit {
+                println!(
+                    "{}{} found verified download in cache",
+                    self.prefix,
+                    crate::cache_mark()
+                );
+            }
+            crate::stage_spinner(format!("{}installing {package}", self.prefix))
+        };
+        self.bar = Some(pb);
+        self.package = Some(package);
+        self.installing = true;
+        self.showing_unknown_progress = false;
+        self.bytes_processed = self.bytes_processed.saturating_add(bytes);
+        crate::set_taskbar_progress(crate::TaskbarProgress::Indeterminate);
+    }
+
+    pub(crate) fn finish_bar(&mut self) {
         if let Some(pb) = self.bar.take() {
             pb.finish_and_clear();
         }
+        self.package = None;
+        self.installing = false;
+        self.showing_unknown_progress = false;
     }
+
+    pub(crate) fn stats(&self) -> (usize, u64) {
+        (self.installed_count, self.bytes_processed)
+    }
+
+    fn print_above(&self, message: String) {
+        if self.retain_line
+            && let Some(pb) = &self.bar
+        {
+            pb.println(message);
+        } else {
+            println!("{message}");
+        }
+    }
+
+    fn complete_row(&mut self) {
+        if self.retain_line
+            && let Some(pb) = self.bar.take()
+        {
+            pb.finish();
+        }
+    }
+
+    fn fail_row(&mut self, name: &str) {
+        if self.retain_line
+            && let Some(pb) = self.bar.take()
+        {
+            pb.disable_steady_tick();
+            pb.set_style(row_style("red"));
+            pb.finish_with_message(format!("{}× failed {name}", self.prefix));
+        } else {
+            self.finish_bar();
+        }
+    }
+
+    fn finish_skill_installed(&mut self, report: &SkillInstallReport) {
+        self.installed_count += 1;
+        self.installing = false;
+        crate::set_taskbar_progress(crate::TaskbarProgress::Clear);
+        if self.json {
+            self.finish_bar();
+            return;
+        }
+        let status = format!(
+            "{}{} installed skill/{} {} for {}",
+            self.prefix,
+            crate::success_mark(),
+            report.name,
+            report.version,
+            report.target.as_str()
+        );
+        if self.retain_line {
+            if let Some(pb) = self.bar.take() {
+                pb.disable_steady_tick();
+                pb.println(format!("  files: {}", report.install_dir.display()));
+                pb.set_style(row_style("plain"));
+                pb.finish_with_message(status);
+            }
+        } else {
+            self.finish_bar();
+            print_skill_installed(report);
+        }
+    }
+
+    fn finish_skill_skipped(&mut self, name: &str, version: &str, target: SkillTarget) {
+        self.installing = false;
+        crate::set_taskbar_progress(crate::TaskbarProgress::Clear);
+        if self.json {
+            self.finish_bar();
+            return;
+        }
+        let status = format!(
+            "{}{} skill/{name} {version} already installed for {} - skipped",
+            self.prefix,
+            crate::success_mark(),
+            target.as_str()
+        );
+        if self.retain_line {
+            if let Some(pb) = self.bar.take() {
+                pb.disable_steady_tick();
+                pb.set_style(row_style("plain"));
+                pb.finish_with_message(status);
+            }
+        } else {
+            self.finish_bar();
+            println!("{status}");
+        }
+    }
+
+    fn during_prompt<T>(&mut self, prompt: impl FnOnce() -> T) -> T {
+        if self.retain_line
+            && let Some(pb) = &self.bar
+        {
+            pb.suspend(prompt)
+        } else {
+            self.finish_bar();
+            prompt()
+        }
+    }
+}
+
+fn parse_target(value: Option<&str>) -> Option<SkillTarget> {
+    let Some(value) = value else {
+        eprintln!("error: skill packages require --for <agent>");
+        return None;
+    };
+    match value.parse() {
+        Ok(target) => Some(target),
+        Err(error) => {
+            eprintln!("error: {error}");
+            None
+        }
+    }
+}
+
+fn print_skill_installed(report: &SkillInstallReport) {
+    println!(
+        "{} installed skill/{} {} for {}",
+        crate::success_mark(),
+        report.name,
+        report.version,
+        report.target.as_str()
+    );
+    println!("  files: {}", report.install_dir.display());
 }
 
 /// Confirm the env vars that were actually applied (spec §8). Empty when the
@@ -337,22 +878,18 @@ fn print_env_note(env_applied: &[(String, String)]) {
     }
 }
 
-fn print_error(name: &str, e: &RemoteError) {
-    match e {
-        RemoteError::NotFound { suggestions, .. } => {
-            eprintln!("error: package '{name}' not found");
-            cmd_index::print_suggestions(suggestions);
-        }
-        other => eprintln!("error: install failed: {other}"),
-    }
-}
-
-fn print_json(agg: &RemoteReport, failure: Option<&(String, RemoteError)>) {
-    let installed: Vec<_> = agg
+fn print_json(
+    agg: &RemoteReport,
+    installed_skills: &[SkillInstallReport],
+    skipped_skills: &[(String, String, String)],
+    failure: Option<&(String, RemoteError)>,
+) {
+    let mut installed: Vec<_> = agg
         .installed
         .iter()
         .map(|r| {
             serde_json::json!({
+                "kind": "app",
                 "name": r.name,
                 "version": r.version,
                 "version_dir": r.version_dir.display().to_string(),
@@ -363,11 +900,29 @@ fn print_json(agg: &RemoteReport, failure: Option<&(String, RemoteError)>) {
             })
         })
         .collect();
-    let skipped: Vec<_> = agg
+    installed.extend(installed_skills.iter().map(|report| {
+        serde_json::json!({
+            "kind": "skill",
+            "name": report.name,
+            "version": report.version,
+            "target": report.target.as_str(),
+            "install_dir": report.install_dir.display().to_string(),
+            "files": report.files,
+        })
+    }));
+    let mut skipped: Vec<_> = agg
         .skipped
         .iter()
-        .map(|(n, v)| serde_json::json!({ "name": n, "version": v }))
+        .map(|(n, v)| serde_json::json!({ "kind": "app", "name": n, "version": v }))
         .collect();
+    skipped.extend(skipped_skills.iter().map(|(name, version, target)| {
+        serde_json::json!({
+            "kind": "skill",
+            "name": name,
+            "version": version,
+            "target": target,
+        })
+    }));
 
     let mut obj = serde_json::json!({
         "ok": failure.is_none(),
@@ -380,6 +935,7 @@ fn print_json(agg: &RemoteReport, failure: Option<&(String, RemoteError)>) {
                 .iter()
                 .map(|s| {
                     serde_json::json!({
+                        "kind": s.kind.as_str(),
                         "name": s.name,
                         "bin": s.bin,
                         "description": s.description,
