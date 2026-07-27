@@ -1080,7 +1080,9 @@ pub fn prompt(dir: &Path) -> String {
 
 `{TOOL}` is your long-term memory. It lives in `{dir}` and persists across
 restarts, context resets, and model changes -- the one place a fact you learn
-now is still here next session.
+now is still here next session. The store is on the machine you run these
+commands on: in a sandbox or a remote environment it persists there, not on the
+user's own machine -- say so, and use `{TOOL} export` if they need it moved.
 
 ### Start every session here
 

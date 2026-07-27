@@ -518,6 +518,12 @@
           <li><strong>Firewalled recall.</strong> Secrets are masked and <code>--private</code> notes withheld before an agent ever sees them.</li>
           <li><strong>Honest scale.</strong> Old memories fold into summaries on request; pinned facts never compress.</li>
         </ul>
+        <div class="note">
+          <strong>Where memory lives.</strong> The store sits on the machine where the
+          <code>voli memory</code> commands run. If your agent runs in a sandbox or a remote
+          environment, its memory persists there, not on your own machine. Move it with
+          <code>voli memory export</code> where the agent runs, then re-import.
+        </div>
       </section>
 
       <section id="quickstart">
