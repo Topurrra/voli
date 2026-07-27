@@ -17,9 +17,13 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Placeholder index location (spec §5); overridable via `voli config set index_url`.
+/// Default index location: the pinned `index` release tag (spec §5),
+/// overridable via `voli config set index_url`. Deliberately NOT
+/// `/releases/latest/download` — "latest" resolves to whatever release was
+/// published most recently, so creating any other release (e.g. `skills`)
+/// would silently repoint every client's index fetch and 404 it.
 pub const DEFAULT_INDEX_URL: &str =
-    "https://github.com/Topurrra/voli-registry/releases/latest/download";
+    "https://github.com/Topurrra/voli-registry/releases/download/index";
 
 /// The recognised config keys. Anything else warns on load.
 const KNOWN_KEYS: &[&str] = &["root", "index_url"];
