@@ -94,7 +94,7 @@ impl Store {
         let dir = dir.into();
         if !dir.is_dir() {
             return msg(format!(
-                "no memory at {}. Run: {TOOL} init  (or set STELA_DIR)",
+                "no memory at {}. Run: {TOOL} init  (or set VOLI_MEMORY_DIR)",
                 dir.display()
             ));
         }
@@ -673,7 +673,7 @@ impl Store {
         let superseded = recs.iter().filter(|r| r.stale).count();
 
         out.push(format!(
-            "STELA memory - {} live memories ({} core, {} superseded).",
+            "voli memory - {} live memories ({} core, {} superseded).",
             alive.len(),
             core.len(),
             superseded
@@ -1024,13 +1024,14 @@ fn within_window(r: &Record, now: i64) -> bool {
     now >= r.valid_from && r.valid_until.is_none_or(|u| now < u)
 }
 
-/// Contradiction detection is on unless `$STELA_CONTRADICT` is `0`/`false`/`off`/
-/// `no`. Mirrors the crate's other env gates.
+/// Contradiction detection is on unless `$VOLI_MEMORY_CONTRADICT` is `0`/`false`/
+/// `off`/`no` (`$STELA_CONTRADICT` is accepted as a legacy alias). Mirrors the
+/// crate's other env gates.
 fn contradiction_enabled() -> bool {
-    !std::env::var("STELA_CONTRADICT")
-        .ok()
-        .as_deref()
-        .is_some_and(|v| matches!(v.trim(), "0" | "false" | "off" | "no"))
+    !["VOLI_MEMORY_CONTRADICT", "STELA_CONTRADICT"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .any(|v| matches!(v.trim(), "0" | "false" | "off" | "no"))
 }
 
 // ---------------------------------------------------------------- rendering

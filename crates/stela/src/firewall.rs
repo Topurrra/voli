@@ -74,15 +74,17 @@ pub(crate) fn disclose_block(block: String) -> Disclosed {
     Disclosed(redact_secrets(&block))
 }
 
-/// The human kill switch: `$STELA_SHOW_SECRETS` truthy disables redaction.
+/// The human kill switch: `$VOLI_MEMORY_SHOW_SECRETS` truthy disables redaction
+/// (`$STELA_SHOW_SECRETS` is accepted as a legacy alias).
 ///
 // ponytail: one env-var escape hatch (global, greppable) rather than threading a
 // `--show-secrets` bool through every render method. Promote to a threaded flag if
 // per-invocation control is ever needed.
 pub fn show_secrets() -> bool {
-    std::env::var("STELA_SHOW_SECRETS")
-        .ok()
-        .is_some_and(|v| matches!(v.trim(), "1" | "true" | "on" | "yes"))
+    ["VOLI_MEMORY_SHOW_SECRETS", "STELA_SHOW_SECRETS"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .any(|v| matches!(v.trim(), "1" | "true" | "on" | "yes"))
 }
 
 // ---------------------------------------------------------------- findings

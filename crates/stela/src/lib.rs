@@ -139,9 +139,9 @@ pub fn kind_help(kind: &str) -> &'static str {
 /// The fence the model is told never to treat as instructions. Any occurrence of
 /// these tokens inside memory text is neutralised at write time by [`sanitize`],
 /// so a memory can never close the fence and smuggle in instructions.
-pub const FENCE_OPEN: &str = "<<<STELA_MEMORY_DATA>>>";
+pub const FENCE_OPEN: &str = "<<<VOLI_MEMORY_DATA>>>";
 /// The closing fence token.
-pub const FENCE_CLOSE: &str = "<<<END_STELA_MEMORY_DATA>>>";
+pub const FENCE_CLOSE: &str = "<<<END_VOLI_MEMORY_DATA>>>";
 
 // ---------------------------------------------------------------- errors
 

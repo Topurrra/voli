@@ -3,9 +3,9 @@
 //! The engine is embeddable and keychain-free; this layer resolves the master
 //! key (passphrase custody, or the Windows keychain) and formats output.
 //!
-//! The memory directory is `$STELA_DIR` / `$VOLI_MEMORY_DIR`, else
+//! The memory directory is `$VOLI_MEMORY_DIR` / `$STELA_DIR`, else
 //! `%LOCALAPPDATA%\voli\memory` (or `~/.stela/memory`). A passphrase memory reads
-//! `$STELA_PASSPHRASE` / `$VOLI_MEMORY_PASSPHRASE`.
+//! `$VOLI_MEMORY_PASSPHRASE` / `$STELA_PASSPHRASE`.
 
 use std::path::PathBuf;
 
@@ -93,7 +93,7 @@ pub enum MemoryCmd {
     /// Restore access from the recovery blob after a keychain wipe (`--save` to
     /// create the blob while access still works).
     Recover {
-        /// Recovery passphrase (else $STELA_PASSPHRASE / $VOLI_MEMORY_PASSPHRASE).
+        /// Recovery passphrase (else $VOLI_MEMORY_PASSPHRASE / $STELA_PASSPHRASE).
         #[arg(long)]
         passphrase: Option<String>,
         /// Save a recovery blob for the CURRENT master key instead of restoring.
@@ -184,7 +184,7 @@ pub fn run(action: &MemoryCmd) -> i32 {
 // ---------------------------------------------------------------- key custody
 
 fn memory_dir() -> PathBuf {
-    for var in ["STELA_DIR", "VOLI_MEMORY_DIR"] {
+    for var in ["VOLI_MEMORY_DIR", "STELA_DIR"] {
         if let Some(v) = std::env::var_os(var)
             && !v.is_empty()
         {
@@ -195,7 +195,7 @@ fn memory_dir() -> PathBuf {
 }
 
 fn passphrase() -> Option<String> {
-    for var in ["STELA_PASSPHRASE", "VOLI_MEMORY_PASSPHRASE"] {
+    for var in ["VOLI_MEMORY_PASSPHRASE", "STELA_PASSPHRASE"] {
         if let Ok(v) = std::env::var(var)
             && !v.is_empty()
         {
@@ -209,8 +209,8 @@ fn passphrase() -> Option<String> {
 fn open_key(dir: &std::path::Path) -> Result<[u8; 32], String> {
     match custody_mode(dir) {
         CustodyMode::Passphrase => {
-            let pass =
-                passphrase().ok_or("this memory is passphrase-protected; set STELA_PASSPHRASE")?;
+            let pass = passphrase()
+                .ok_or("this memory is passphrase-protected; set VOLI_MEMORY_PASSPHRASE")?;
             stela::derive_master_for_open(dir, &pass)
                 .map(|k| *k)
                 .map_err(|e| e.to_string())
@@ -238,14 +238,14 @@ fn keyring_open() -> Result<[u8; 32], String> {
     match stela::key::load_master_key().map_err(|e| e.to_string())? {
         Some(k) => Ok(k),
         None => Err(format!(
-            "no key found; run `{TOOL} init` or set STELA_PASSPHRASE"
+            "no key found; run `{TOOL} init` or set VOLI_MEMORY_PASSPHRASE"
         )),
     }
 }
 
 #[cfg(not(windows))]
 fn keyring_open() -> Result<[u8; 32], String> {
-    Err("this platform has no keychain; set STELA_PASSPHRASE for a passphrase memory".into())
+    Err("this platform has no keychain; set VOLI_MEMORY_PASSPHRASE for a passphrase memory".into())
 }
 
 #[cfg(windows)]
@@ -255,7 +255,10 @@ fn keyring_init() -> Result<[u8; 32], String> {
 
 #[cfg(not(windows))]
 fn keyring_init() -> Result<[u8; 32], String> {
-    Err("this platform has no keychain; set STELA_PASSPHRASE to create a passphrase memory".into())
+    Err(
+        "this platform has no keychain; set VOLI_MEMORY_PASSPHRASE to create a passphrase memory"
+            .into(),
+    )
 }
 
 fn with_store(f: impl FnOnce(Store) -> i32) -> i32 {
@@ -453,7 +456,7 @@ fn cmd_forget(store: &Store, block: &str) -> i32 {
 fn cmd_recover(pass_flag: Option<&str>, save: bool) -> i32 {
     let dir = memory_dir();
     let Some(pass) = pass_flag.map(str::to_string).or_else(passphrase) else {
-        return fail("a recovery passphrase is required (--passphrase or STELA_PASSPHRASE)");
+        return fail("a recovery passphrase is required (--passphrase or VOLI_MEMORY_PASSPHRASE)");
     };
     if save {
         if !dir.is_dir() {
@@ -488,7 +491,7 @@ fn cmd_recover(pass_flag: Option<&str>, save: bool) -> i32 {
 fn reestablish_custody(dir: &std::path::Path, key: &[u8; 32]) -> i32 {
     if custody_mode(dir) == CustodyMode::Passphrase {
         return fail(
-            "this memory uses passphrase custody, not the keychain; just set STELA_PASSPHRASE \
+            "this memory uses passphrase custody, not the keychain; just set VOLI_MEMORY_PASSPHRASE \
              and run read (no recovery blob needed)",
         );
     }
@@ -514,7 +517,7 @@ fn reestablish_custody(dir: &std::path::Path, key: &[u8; 32]) -> i32 {
 fn reestablish_custody(_dir: &std::path::Path, _key: &[u8; 32]) -> i32 {
     eprintln!(
         "error: keychain restore is Windows-only. The recovery passphrase is correct, but on \
-         this platform use passphrase custody (STELA_PASSPHRASE) instead of a recovery blob."
+         this platform use passphrase custody (VOLI_MEMORY_PASSPHRASE) instead of a recovery blob."
     );
     1
 }
