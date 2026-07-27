@@ -111,15 +111,14 @@ Without `--purge`, persist directories survive so a later reinstall can reuse
 them. The older `uninstall` and `self-uninstall` spellings remain supported as
 hidden compatibility aliases.
 
-## Agent skills preview
+## Agent skills
 
 Voli validates Agent Skills archives, installs them atomically into a verified
 agent directory, and records each target separately in its ledger. The public
-Tier-1 skill catalog is generated but publishing is deferred, so registry
-commands such as `voli install skill/tdd --for codex` become available after
-those assets are published.
+Tier-1 skill catalog is live: 267 skills you can install straight from the
+signed registry, for example `voli install skill/tdd --for codex`.
 
-Local archives can be tested now:
+You can also install a local archive:
 
 ```powershell
 voli install .\skill.toml --archive .\skill.zip --for codex
