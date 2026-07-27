@@ -18,7 +18,7 @@ The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else - read it first
 if you like: [`install.ps1`](install.ps1).
 
-> **Status: v0.5.7, still pre-1.0.** The core workflow is released and working,
+> **Status: v0.6.0, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)
@@ -42,7 +42,9 @@ Global options:
 | Command | Purpose |
 |---|---|
 | `voli install <pkg>[@version] ...` | Install one or more packages from the signed registry. |
+| `voli install skill/<name> --for <agent>` | Install a published skill globally for one supported agent. |
 | `voli delete <pkg> ...` | Delete packages by replaying their ledger. Persist data is kept by default. |
+| `voli delete skill/<name> --for <agent>` | Delete one target-scoped skill installation. |
 | `voli update` | Refresh the local signed package index. |
 | `voli upgrade [pkg ...]` | Upgrade named packages. Use `--all` to upgrade everything except pinned packages. |
 | `voli list` | List installed packages and versions. |
@@ -70,6 +72,7 @@ voli install ripgrep fd fzf
 voli install ripgrep@15.2.0
 voli install .\local-package.toml --archive .\local-package.zip
 voli install googlechrome --no-env
+voli install skill/tdd --for codex
 
 voli list
 voli info ripgrep
@@ -83,6 +86,7 @@ voli upgrade --all
 
 voli delete ripgrep
 voli delete ripgrep --purge
+voli delete skill/tdd --for codex
 
 voli cleanup --dry-run
 voli cleanup --cache-days 7
@@ -101,6 +105,27 @@ voli self-delete
 Without `--purge`, persist directories survive so a later reinstall can reuse
 them. The older `uninstall` and `self-uninstall` spellings remain supported as
 hidden compatibility aliases.
+
+## Agent skills preview
+
+Voli validates Agent Skills archives, installs them atomically into a verified
+agent directory, and records each target separately in its ledger. The public
+Tier-1 skill catalog is generated but publishing is deferred, so registry
+commands such as `voli install skill/tdd --for codex` become available after
+those assets are published.
+
+Local archives can be tested now:
+
+```powershell
+voli install .\skill.toml --archive .\skill.zip --for codex
+voli list
+voli delete skill/example-skill --for codex
+```
+
+Current skill installation is global, uses a direct copy, and accepts one
+`--for` target. Interactive agent selection, repeatable targets,
+`--for detected`, `--for all`, project scope, and optional link mode are
+planned for a future release.
 
 ## How it works
 
