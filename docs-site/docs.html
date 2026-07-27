@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Documentation · Voli</title>
+  <meta name="description"
+    content="Voli documentation - installing packages and agent skills, the encrypted voli memory for AI agents, and what's on the roadmap.">
+  <link rel="icon" href="assets/logo.png">
+  <style>
+    @font-face {
+      font-family: "Space Grotesk";
+      font-style: normal;
+      font-weight: 400 700;
+      font-display: swap;
+      src: url("assets/fonts/space-grotesk-latin.woff2") format("woff2");
+    }
+
+    :root {
+      --bg: #001C16;
+      --bg-dark: #00120E;
+      --bg-darker: #000F0C;
+      --panel: #023A2E;
+      --panel-2: #04463A;
+      --border: rgba(233, 226, 210, .14);
+      --border-strong: rgba(233, 226, 210, .24);
+      --cream: #EEE3CE;
+      --cream-muted: #D1C8B4;
+      --ink: #10241D;
+      --verm: #ED5126;
+      --verm-bright: #FF5526;
+      --verm-deep: #891f01;
+      --sage: #8BA399;
+      --sage-bright: #A7BDB3;
+      --amber: #E0A23C;
+      --pos: #6ED08C;
+      --mono: "Cascadia Code", "Cascadia Mono", "SF Mono", ui-monospace, Consolas, monospace;
+      --sans: "Space Grotesk", "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 84px;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--cream);
+      font: 16px/1.65 var(--sans);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+
+    ::selection { background: var(--verm); color: #fff; }
+    a { color: var(--cream); text-underline-offset: 3px; }
+    :focus-visible { outline: 2px solid var(--verm-bright); outline-offset: 3px; border-radius: 6px; }
+
+    /* site-wide film grain: static SVG fractal noise over everything, so the
+       flat greens/creams read tactile instead of digital. */
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 240px 240px;
+      mix-blend-mode: overlay;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .5rem 1rem;
+      border-radius: 999px;
+      font-weight: 500;
+      font-size: .88rem;
+      text-decoration: none;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: transform .15s, background .15s, border-color .15s;
+      white-space: nowrap;
+    }
+
+    .btn-cream { background: var(--cream); color: var(--bg); }
+    .btn-cream:hover { transform: translateY(-2px); background: #fff; }
+    .btn-ghost { background: transparent; color: var(--cream); border-color: var(--border-strong); }
+    .btn-ghost:hover { border-color: var(--cream); transform: translateY(-2px); }
+    .btn-sm { padding: .5rem 1rem; font-size: .88rem; }
+
+    /* ---------- docs layout ---------- */
+    .docs {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2.4rem 1.5rem 7rem;
+      display: grid;
+      grid-template-columns: 232px minmax(0, 1fr);
+      gap: 3.2rem;
+    }
+
+    .docs-side {
+      position: sticky;
+      top: 84px;
+      align-self: start;
+      max-height: calc(100vh - 100px);
+      overflow-y: auto;
+    }
+
+    .docs-side .side-group {
+      font: .68rem var(--mono);
+      text-transform: uppercase;
+      letter-spacing: .16em;
+      color: var(--sage);
+      margin: 1.4rem 0 .45rem;
+      padding: 0 .7rem;
+    }
+
+    .docs-side .side-group:first-child { margin-top: 0; }
+
+    .docs-side nav { display: flex; flex-direction: column; gap: .1rem; }
+
+    .docs-side a {
+      color: var(--sage-bright);
+      text-decoration: none;
+      font-size: .9rem;
+      padding: .34rem .7rem;
+      border-radius: 7px;
+      border-left: 2px solid transparent;
+      transition: color .14s, background .14s, border-color .14s;
+    }
+
+    .docs-side a:hover { color: var(--cream); background: color-mix(in srgb, var(--panel) 50%, transparent); }
+
+    .docs-side a.active {
+      color: var(--cream);
+      border-left-color: var(--verm);
+      background: color-mix(in srgb, var(--panel) 60%, transparent);
+    }
+
+    /* ---------- content ---------- */
+    .docs-main { min-width: 0; max-width: 760px; }
+
+    .doc-hero { margin-bottom: 3.2rem; }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      font-size: .74rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: .16em;
+      color: var(--sage);
+      margin: 0 0 1rem;
+    }
+
+    .doc-hero h1 {
+      font-size: clamp(2.1rem, 5vw, 3rem);
+      font-weight: 500;
+      line-height: 1.05;
+      letter-spacing: -.04em;
+      margin: 0 0 .9rem;
+    }
+
+    .doc-hero h1 .accent { color: var(--verm); }
+
+    .doc-hero .lede {
+      color: var(--sage-bright);
+      font-size: 1.12rem;
+      max-width: 60ch;
+      margin: 0;
+    }
+
+    .docs-main section { scroll-margin-top: 84px; padding-top: 2.6rem; }
+
+    .docs-main h2 {
+      font-size: 1.6rem;
+      font-weight: 500;
+      letter-spacing: -.02em;
+      margin: 0 0 .5rem;
+    }
+
+    .docs-main h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin: 2rem 0 .4rem;
+      color: var(--cream);
+    }
+
+    .docs-main p { color: var(--cream-muted); max-width: 66ch; }
+    .docs-main p strong { color: var(--cream); font-weight: 600; }
+    .docs-main a.inline { color: var(--verm); }
+
+    .docs-main ul { color: var(--cream-muted); max-width: 66ch; padding-left: 1.1rem; }
+    .docs-main li { margin: .35rem 0; }
+
+    /* inline + block code */
+    code {
+      font: .86em var(--mono);
+      color: var(--cream);
+      background: color-mix(in srgb, var(--panel) 55%, transparent);
+      padding: .05rem .34rem;
+      border-radius: 5px;
+    }
+
+    .snip {
+      margin: 1.1rem 0;
+      background: var(--bg-darker);
+      border: 1px solid var(--border-strong);
+      border-radius: 11px;
+      padding: 1.05rem 1.2rem;
+      font: .9rem/1.75 var(--mono);
+      color: var(--cream);
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .snip code { background: none; padding: 0; color: inherit; font-size: inherit; }
+    .snip .p { color: var(--amber); user-select: none; }
+    .snip .ok { color: var(--pos); }
+    .snip .mut { color: var(--sage); }
+    .snip .warn { color: var(--amber); }
+    .snip .cmt { color: var(--sage); }
+
+    /* command highlighting: bold command, amber flags, muted strings */
+    .snip .cmd, .term .cmd { color: var(--verm-bright); font-weight: 600; }
+    .snip .flag, .term .flag { color: var(--amber); }
+    .snip .str, .term .str { color: var(--sage-bright); }
+    .docs-main td:first-child code { color: var(--cream); font-weight: 600; }
+    .docs-main td:first-child code .tok { color: var(--verm-bright); }
+    .docs-main td:first-child code .arg { color: var(--sage); font-weight: 400; }
+
+    /* terminal card (quickstart) */
+    .term {
+      margin: 1.4rem 0;
+      background: var(--bg-darker);
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 30px 70px -30px rgba(0, 0, 0, .7);
+    }
+
+    .term-bar {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .6rem .85rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .term-bar .dot { width: 11px; height: 11px; border-radius: 50%; }
+    .term-bar .dot:nth-of-type(1) { background: #ff5f57; }
+    .term-bar .dot:nth-of-type(2) { background: #febc2e; }
+    .term-bar .dot:nth-of-type(3) { background: #28c840; }
+    .term-bar .tt { margin-left: .4rem; font: .74rem var(--mono); color: var(--sage); }
+
+    .term pre {
+      margin: 0;
+      padding: 1.1rem 1.2rem;
+      font: .9rem/1.75 var(--mono);
+      color: var(--cream);
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .term .p { color: var(--amber); user-select: none; }
+    .term .ok { color: var(--pos); }
+    .term .mut { color: var(--sage); }
+    .term .warn { color: var(--amber); }
+
+    /* reference table */
+    .tbl-wrap { overflow-x: auto; margin: 1.2rem 0; }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: .92rem;
+      min-width: 520px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: .6rem .8rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    th { color: var(--sage); font-weight: 500; font-size: .78rem; text-transform: uppercase; letter-spacing: .1em; }
+    td:first-child { white-space: nowrap; }
+    td code { background: none; padding: 0; color: var(--cream); }
+
+    .note {
+      margin: 1.3rem 0;
+      padding: 1rem 1.2rem;
+      border-left: 2px solid var(--verm);
+      background: color-mix(in srgb, var(--panel) 40%, transparent);
+      border-radius: 0 10px 10px 0;
+      color: var(--cream-muted);
+      font-size: .95rem;
+    }
+
+    .note strong { color: var(--cream); }
+
+    @media (max-width: 820px) {
+      .docs { grid-template-columns: 1fr; gap: 1.5rem; }
+      .docs-side {
+        position: static;
+        max-height: none;
+        margin: -.5rem -.4rem 1rem;
+        padding: .3rem;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+      }
+      .docs-side nav { flex-flow: row wrap; }
+      .docs-side a { border-left: none; }
+      .docs-side a.active { border-left: none; }
+      .docs-side .side-group { flex-basis: 100%; margin: .5rem .3rem .15rem; }
+    }
+  </style>
+  <link rel="stylesheet" href="assets/site-header.css">
+</head>
+
+<body>
+  <header class="site" id="site-header"></header>
+
+  <div class="docs">
+    <aside class="docs-side">
+      <nav id="side-nav" aria-label="Documentation">
+        <span class="side-group">Packages</span>
+        <a href="#pkg-install">Install &amp; search</a>
+        <a href="#pkg-upgrade">Upgrade</a>
+        <a href="#pkg-delete">Delete</a>
+        <a href="#pkg-pins">Pins &amp; environment</a>
+        <a href="#pkg-config">Config</a>
+        <span class="side-group">Skills</span>
+        <a href="#skills">Overview</a>
+        <a href="#skills-install">Installing skills</a>
+        <span class="side-group">Memory</span>
+        <a href="#overview">Overview</a>
+        <a href="#quickstart">Quickstart</a>
+        <a href="#loop">The loop</a>
+        <a href="#commands">Command reference</a>
+        <a href="#recording">Recording &amp; flags</a>
+        <a href="#retrieval">Retrieval</a>
+        <a href="#privacy">Privacy &amp; firewall</a>
+        <a href="#validity">Validity &amp; contradictions</a>
+        <a href="#crypto">Encryption &amp; custody</a>
+        <a href="#recovery">Recovery &amp; upkeep</a>
+        <a href="#agent">Wiring an agent</a>
+        <a href="#env">Environment</a>
+        <span class="side-group">MCP</span>
+        <a href="#mcp">Planned</a>
+      </nav>
+    </aside>
+
+    <main class="docs-main">
+      <div class="doc-hero">
+        <span class="eyebrow">Documentation</span>
+        <h1>Everything Voli does, <span class="accent">one page.</span></h1>
+        <p class="lede">
+          How Voli installs packages and agent skills, how <code>voli memory</code> gives an AI agent a durable
+          encrypted store, and what is still on the roadmap - grounded in the CLI you actually run.
+        </p>
+      </div>
+
+      <section id="pkg-install">
+        <h2>Install &amp; search</h2>
+        <p>
+          Voli installs from a signed registry index. <code>voli install &lt;pkg&gt;</code> fetches one or more
+          packages, and each install is <strong>transactional per package</strong> - download, verify the SHA-256,
+          extract, shim. Pin an exact version with <code>@</code>, and if you mistype a name Voli suggests the
+          closest match instead of failing.
+        </p>
+        <p>
+          <code>voli search &lt;query&gt;</code> runs full text over the local index by name, description, or binary
+          - instant and offline, because the index is a <strong>signed sqlite snapshot</strong> on disk.
+          <code>voli update</code> refreshes it in one small download, not a git clone.
+        </p>
+        <div class="term">
+          <div class="term-bar">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="tt">packages</span>
+          </div>
+          <pre><span class="p">PS&gt;</span> voli update                  <span class="mut"># refresh the signed index</span>
+<span class="p">PS&gt;</span> voli search regex            <span class="mut"># full-text, offline</span>
+<span class="p">PS&gt;</span> voli install ripgrep fd fzf  <span class="mut"># transactional per package</span>
+<span class="p">PS&gt;</span> voli install ripgrep@15.2.0  <span class="mut"># pin an exact version</span></pre>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>install &lt;pkg&gt;[@version] …</code></td><td>Install one or more packages from the signed registry; pin with <code>@</code>.</td></tr>
+              <tr><td><code>search &lt;query&gt;</code></td><td>Full-text search over the local index by name, description, or binary.</td></tr>
+              <tr><td><code>update</code></td><td>Refresh the local signed package index - one small download.</td></tr>
+              <tr><td><code>list</code></td><td>List installed packages and versions.</td></tr>
+              <tr><td><code>info &lt;pkg&gt;</code></td><td>Show package metadata and available binaries.</td></tr>
+              <tr><td><code>which &lt;bin&gt;</code></td><td>Resolve a shim to its real executable.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="pkg-upgrade">
+        <h2>Upgrade</h2>
+        <p>
+          Every version lives in its own directory, and a <code>current</code> junction points at the active one.
+          Upgrading is an <strong>atomic flip</strong> of that junction, so a program that is already running keeps
+          using its files and never breaks. <code>voli upgrade &lt;pkg&gt;</code> upgrades named packages;
+          <code>voli upgrade --all</code> upgrades everything except pinned packages.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli upgrade ripgrep
+<span class="p">PS&gt;</span> voli upgrade --all      <span class="cmt"># skips pinned packages</span></div>
+      </section>
+
+      <section id="pkg-delete">
+        <h2>Delete</h2>
+        <p>
+          <code>voli delete &lt;pkg&gt;</code> removes a package by <strong>replaying its ledger</strong> backwards -
+          directory, shims, env vars, and PATH entries all come out, leaving zero trace. Persisted user data is kept
+          by default so a later reinstall can reuse it; add <code>--purge</code> to remove that too.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli delete ripgrep
+<span class="p">PS&gt;</span> voli delete ripgrep --purge   <span class="cmt"># also removes persisted data</span></div>
+        <div class="note">
+          The older <code>uninstall</code> and <code>self-uninstall</code> spellings still work as hidden
+          compatibility aliases.
+        </div>
+      </section>
+
+      <section id="pkg-pins">
+        <h2>Pins &amp; environment</h2>
+        <p>
+          <code>voli pin &lt;pkg&gt;</code> freezes a package at its current version, excluding it from
+          <code>upgrade --all</code>; <code>voli unpin &lt;pkg&gt;</code> releases it. When a package wants an
+          environment variable, Voli <strong>asks before setting it</strong> - it never edits your environment behind
+          your back - and records the change in the ledger, so <code>delete</code> takes it back out again.
+          <code>voli env &lt;pkg&gt;</code> shows the variables recorded for a package.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli pin ripgrep
+<span class="p">PS&gt;</span> voli install googlechrome --no-env   <span class="cmt"># skip env prompts</span>
+<span class="p">PS&gt;</span> voli env googlechrome</div>
+      </section>
+
+      <section id="pkg-config">
+        <h2>Config</h2>
+        <p>
+          <code>voli config get &lt;key&gt;</code> and <code>voli config set &lt;key&gt; &lt;value&gt;</code> read or
+          set configuration. Two keys are available: <code>root</code>, where Voli installs everything under your
+          user profile, and <code>index_url</code>, the signed index it fetches.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli config get root
+<span class="p">PS&gt;</span> voli config set root D:\Apps\voli
+<span class="p">PS&gt;</span> voli config get index_url</div>
+        <div class="note">
+          Related upkeep: <code>voli cleanup</code> removes non-current versions and stale cache,
+          <code>voli doctor</code> checks PATH, environment drift, and shims, and <code>voli setup</code> /
+          <code>voli self-update</code> / <code>voli self-delete</code> manage Voli's own installation.
+        </div>
+      </section>
+
+      <section id="skills">
+        <h2>Agent skills</h2>
+        <p>
+          Voli installs Agent Skills with the same rigor as apps. It validates the skill archive, installs it
+          <strong>atomically into a verified agent directory</strong>, and records each target separately in its
+          ledger. Skills are signed and hash-verified, <strong>no scripts ever run</strong>, and because every file
+          is ledgered, deleting a skill is zero-trace.
+        </p>
+        <div class="note">
+          <strong>Preview.</strong> Publishing the public skill catalog is deferred, so registry installs like
+          <code>voli install skill/tdd --for codex</code> light up once those assets ship. Local skill archives work
+          today.
+        </div>
+      </section>
+
+      <section id="skills-install">
+        <h2>Installing skills</h2>
+        <p>
+          <code>voli install skill/&lt;name&gt; --for &lt;agent&gt;</code> installs a published skill for one or more
+          agents. <code>--for</code> is repeatable and also accepts <code>--for detected</code> (agents found on your
+          machine) or <code>--for all</code>. Choose where it lands with <code>--project</code> or
+          <code>--global</code> scope. Targets that share one physical directory are installed once and
+          reference-counted for safe deletion.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli install skill/tdd --for codex
+<span class="p">PS&gt;</span> voli install skill/tdd --for codex --for cursor
+<span class="p">PS&gt;</span> voli install skill/tdd --for detected --global
+<span class="p">PS&gt;</span> voli install skill/tdd --for all --project
+<span class="p">PS&gt;</span> voli delete skill/tdd --for codex</div>
+        <p>
+          Without <code>--for</code>, an interactive terminal offers a filtered multi-select and remembers your last
+          selection; non-interactive commands must name an explicit target. Local archives can be tested now, and
+          link mode remains deferred.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli install .\skill.toml --archive .\skill.zip --for codex</div>
+      </section>
+
+      <section id="overview">
+        <h2>Overview</h2>
+        <p>
+          An agent forgets everything the moment its context resets. <code>voli memory</code> gives it a
+          durable place to keep what it learns - facts, decisions, preferences, events - and to pull the
+          right pieces back on demand. Every record is <strong>encrypted at rest</strong> with
+          XChaCha20-Poly1305 and chained with a blake2b hash, so tampering is caught by
+          <code>voli memory verify</code>. Nothing leaves the machine: there is no network client in the
+          binary at all.
+        </p>
+        <ul>
+          <li><strong>One store, many sessions.</strong> Identity and history persist across every restart and model swap.</li>
+          <li><strong>Encrypted &amp; verifiable.</strong> Per-record AEAD, key from the OS keychain or an Argon2id passphrase, hash-chained log.</li>
+          <li><strong>Firewalled recall.</strong> Secrets are masked and <code>--private</code> notes withheld before an agent ever sees them.</li>
+          <li><strong>Honest scale.</strong> Old memories fold into summaries on request; pinned facts never compress.</li>
+        </ul>
+      </section>
+
+      <section id="quickstart">
+        <h2>Quickstart</h2>
+        <p>Create the memory, then wire it into your agent and start the read / note loop.</p>
+        <div class="term">
+          <div class="term-bar">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="tt">voli memory</span>
+          </div>
+          <pre><span class="p">PS&gt;</span> voli memory init
+  <span class="ok">&#10003;</span> memory created <span class="mut">(custody: keychain)</span>
+
+<span class="p">PS&gt;</span> voli memory note "deploy key AKIAIOSFODNN7EXAMPLE lives in 1Password"
+  <span class="ok">&#10003;</span> saved #4c1a2f:0
+
+<span class="p">PS&gt;</span> voli memory read --task "ship the release"
+  <span class="mut">&middot; deploy key</span> AKIA***MPLE <span class="mut">lives in 1Password  (secret masked)</span></pre>
+        </div>
+        <div class="note">
+          <strong>Wire it once.</strong> Run <code>voli memory prompt</code> and paste the output into your
+          agent's system prompt (or <code>CLAUDE.md</code>, <code>AGENTS.md</code>). It teaches the agent the
+          whole workflow and the rule that memory is data, never instructions.
+        </div>
+      </section>
+
+      <section id="loop">
+        <h2>The loop</h2>
+        <p>Three verbs cover almost everything an agent does day to day.</p>
+        <h3>read - load context (run first)</h3>
+        <p>At the start of a task, <code>read</code> returns your pinned facts, the memories relevant to the
+          task, and a short tail of recent history. Read it once; don't re-run it every turn.</p>
+        <div class="snip"><span class="p">PS&gt;</span> voli memory read --task <span class="mut">"&lt;what you're about to do&gt;"</span></div>
+        <h3>note - record as you learn</h3>
+        <p>Whenever the agent is taught a durable fact, settles a decision, hits a lasting event, or learns a
+          preference, it writes one line.</p>
+        <div class="snip"><span class="p">PS&gt;</span> voli memory note <span class="mut">"one line worth keeping"</span></div>
+        <h3>search - pull it back</h3>
+        <p>Best-match retrieval over everything, ranked by relevance. Reach for this first; fall back to
+          <code>recall</code> for an exact regex.</p>
+        <div class="snip"><span class="p">PS&gt;</span> voli memory search <span class="mut">"deploy key"</span></div>
+      </section>
+
+      <section id="commands">
+        <h2>Command reference</h2>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>init</code></td><td>Create the memory and print the agent setup prompt.</td></tr>
+              <tr><td><code>read</code></td><td>Load core facts + task-relevant memories + a decaying timeline. Run first.</td></tr>
+              <tr><td><code>note "&lt;line&gt;"</code></td><td>Record one memory. Flags below.</td></tr>
+              <tr><td><code>search "&lt;q&gt;"</code></td><td>Ranked best-match retrieval (BM25).</td></tr>
+              <tr><td><code>recall &lt;regex&gt;</code></td><td>Exact word search across every memory ever kept (<code>--all</code> includes superseded).</td></tr>
+              <tr><td><code>history [id]</code></td><td>How one fact changed over time - the audit trail.</td></tr>
+              <tr><td><code>expand &lt;a-b&gt;</code></td><td>Open a compacted block into its two halves.</td></tr>
+              <tr><td><code>compact</code></td><td>Fold blocks that are due into one-line summaries.</td></tr>
+              <tr><td><code>retract &lt;id&gt;</code></td><td>Mark a memory wrong (never deletes; stays for audit).</td></tr>
+              <tr><td><code>verify</code></td><td>Prove the log has not been altered.</td></tr>
+              <tr><td><code>recover</code></td><td>Restore access from the recovery blob (<code>--save</code> to create it).</td></tr>
+              <tr><td><code>stats</code> / <code>doctor</code></td><td>Show statistics; diagnose caches that are out of step.</td></tr>
+              <tr><td><code>export</code></td><td>Print every memory in time order (<code>--json</code> for machine output).</td></tr>
+              <tr><td><code>prompt</code></td><td>Print the agent setup prompt.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="recording">
+        <h2>Recording &amp; flags</h2>
+        <p>Everything rides on <code>note</code>. The flags shape how a memory is kept and surfaced.</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+            <tbody>
+              <tr><td><code>--pin</code></td><td>Identity-critical. Never compacted, always loaded by <code>read</code>.</td></tr>
+              <tr><td><code>--supersedes &lt;id&gt;</code></td><td>The truth changed. The old line stays for audit; only the new one is current. Prefer this over recording a contradiction.</td></tr>
+              <tr><td><code>--private</code></td><td>Keep it but never re-surface the text (secrets, PII). Shows as <code>&bull;&bull;&bull; (private, withheld)</code>.</td></tr>
+              <tr><td><code>--valid-from</code> / <code>--valid-until</code></td><td>The window the fact holds (a role, an address). Outside it, the fact is history, not current. Dates: <code>YYYY</code>, <code>YYYY-MM-DD</code>, or unix millis.</td></tr>
+              <tr><td><code>--kind</code></td><td><code>dcsn</code> | <code>pref</code> | <code>evnt</code> | <code>fact</code>.</td></tr>
+              <tr><td><code>--tags a,b</code> &middot; <code>--conf 0-100</code></td><td>Free-form tags and a confidence score.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="retrieval">
+        <h2>Retrieval</h2>
+        <p>Four ways to look, from broad to exact:</p>
+        <ul>
+          <li><code>read</code> - the working view: core + task-relevant + recent, fenced as data.</li>
+          <li><code>search "&lt;question&gt;"</code> - ranked best-match. The default reach.</li>
+          <li><code>recall &lt;regex&gt;</code> - literal search across every memory ever written.</li>
+          <li><code>history &lt;id&gt;</code> - the full supersession trail of one fact.</li>
+          <li><code>expand &lt;a-b&gt;</code> - open a compacted summary back into its parts.</li>
+        </ul>
+      </section>
+
+      <section id="privacy">
+        <h2>Privacy &amp; the disclosure firewall</h2>
+        <p>
+          Recall output is screened before an agent sees it. Secrets - API keys, private keys, card numbers
+          (Luhn-checked), SSNs - are masked automatically, and <code>--private</code> memories are withheld
+          entirely. This is by design, not a setting to defeat.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli memory read
+  <span class="mut">&middot;</span> deploy uses AWS key <span class="warn">AKIA***MPLE</span> for s3
+  <span class="mut">&middot;</span> card <span class="warn">**** **** **** 1111</span> on file
+  <span class="mut">&middot; &bull;&bull;&bull; (private, withheld)</span></div>
+        <p>The escape hatch <code>VOLI_MEMORY_SHOW_SECRETS=1</code> reveals raw values for the current command
+          only - use it deliberately.</p>
+      </section>
+
+      <section id="validity">
+        <h2>Validity &amp; contradictions</h2>
+        <p>
+          A fact can be <strong>true then, false now</strong>. Give it a validity window and it drops out of
+          the current view once the window closes, while <code>recall</code> and <code>history</code> still
+          show it.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli memory note "lives in Lisbon" --valid-from 2019 --valid-until 2022
+<span class="p">PS&gt;</span> voli memory note "lives in Berlin" --valid-from 2022
+  <span class="mut"># read shows Berlin; recall shows both</span></div>
+        <p>
+          When a new note clashes with a live fact on the same subject, <code>note</code> warns you and names
+          the conflict so you can <code>--supersede</code> it. Turn the check off with
+          <code>VOLI_MEMORY_CONTRADICT=off</code>.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli memory note "I prefer spaces"
+  <span class="warn">warning:</span> may contradict 1ea342:5: <span class="mut">"I prefer tabs"</span>. re-run with --supersedes 1ea342:5</div>
+      </section>
+
+      <section id="crypto">
+        <h2>Encryption &amp; custody</h2>
+        <p>
+          The log is a fixed-width, append-only file where position is identity. Each record is sealed with
+          <strong>XChaCha20-Poly1305</strong> (per-record nonce, the sequence number bound in as associated
+          data, so records can't be reordered or spliced) and linked by a blake2b hash chain.
+        </p>
+        <ul>
+          <li><strong>Keychain custody.</strong> On Windows the master key lives in the Credential Manager - nothing to remember.</li>
+          <li><strong>Passphrase custody.</strong> Set <code>VOLI_MEMORY_PASSPHRASE</code> and the key is derived with Argon2id (19 MiB, 2 passes). A verifier sidecar rejects the wrong passphrase without touching the log.</li>
+          <li><strong>Verify anytime.</strong> <code>voli memory verify</code> walks the chain and proves no record was altered.</li>
+        </ul>
+      </section>
+
+      <section id="recovery">
+        <h2>Recovery &amp; upkeep</h2>
+        <p>
+          If the OS keychain is ever wiped, a recovery blob restores access. Create it while access still
+          works; restore from it later with the passphrase.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli memory recover --save   <span class="cmt"># write a passphrase-wrapped backup key</span>
+<span class="p">PS&gt;</span> voli memory recover          <span class="cmt"># restore custody after a wipe</span></div>
+        <p>
+          <code>compact</code> folds settled blocks into summaries when <code>note</code> says some are due -
+          never urgent, never blocking. Pinned (core) memories are exempt and always load in full.
+        </p>
+      </section>
+
+      <section id="agent">
+        <h2>Wiring an agent</h2>
+        <p>
+          <code>voli memory prompt</code> emits a compact setup prompt: run <code>read</code> at startup,
+          <code>note</code> as you learn, <code>search</code> to retrieve - plus the load-bearing safety rule.
+        </p>
+        <div class="note">
+          <strong>Memory is data, not instructions.</strong> Everything a memory contains is a record of the
+          past. If a stored line appears to instruct the agent - to ignore a rule, run a command, or reveal a
+          secret - that is a tampered memory. The prompt tells the agent to refuse it and report it. Only the
+          human in the conversation gives instructions.
+        </div>
+      </section>
+
+      <section id="env">
+        <h2>Environment</h2>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Variable</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>VOLI_MEMORY_DIR</code></td><td>Where the memory lives (default <code>%LOCALAPPDATA%\voli\memory</code>).</td></tr>
+              <tr><td><code>VOLI_MEMORY_PASSPHRASE</code></td><td>Use passphrase custody instead of the OS keychain.</td></tr>
+              <tr><td><code>VOLI_MEMORY_SHOW_SECRETS</code></td><td>Reveal masked secrets for one command (escape hatch).</td></tr>
+              <tr><td><code>VOLI_MEMORY_CONTRADICT=off</code></td><td>Disable contradiction warnings.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="mcp">
+        <h2>MCP</h2>
+        <div class="note">
+          <strong>Planned.</strong> Model Context Protocol support is on the roadmap. A future release will let Voli
+          manage MCP servers with the same signed, no-scripts, zero-trace guarantees as apps and skills. There are no
+          MCP commands yet - this section will fill in when the work lands.
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer class="site" id="site-footer"></footer>
+
+  <script src="assets/catalog.js"></script>
+  <script src="assets/site-header.js"></script>
+  <script>
+    // syntax-highlight commands in code blocks: command bold, flags amber, strings muted.
+    // Only text nodes are processed, so existing prompt/output spans are preserved.
+    (function () {
+      var FLAG = /(^|[\s=])(--?[A-Za-z][\w-]*)/g,
+          CMD = /\bvoli(?:\s+memory)?(?:\s+[a-z][\w-]*)?/;
+      function esc(s) { return s.replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+      function hl(text) {
+        return esc(text).replace(/("[^"]*")|([^"]+)/g, function (m, str, rest) {
+          if (str) return '<span class="str">' + str + '</span>';
+          return rest
+            .replace(FLAG, function (mm, p, f) { return p + '<span class="flag">' + f + '</span>'; })
+            .replace(CMD, function (mm) { return '<span class="cmd">' + mm + '</span>'; });
+        });
+      }
+      document.querySelectorAll('.snip, .term pre').forEach(function (block) {
+        Array.prototype.slice.call(block.childNodes).forEach(function (node) {
+          if (node.nodeType === 3 && /\S/.test(node.nodeValue)) {
+            var span = document.createElement('span');
+            span.innerHTML = hl(node.nodeValue);
+            node.parentNode.replaceChild(span, node);
+          }
+        });
+      });
+    })();
+
+    // color command tokens in reference tables orange (like the landing #commands)
+    (function () {
+      function esc(s) { return s.replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+      document.querySelectorAll('.docs-main td:first-child code').forEach(function (code) {
+        var full = code.textContent;
+        var first = (full.trim().split(/\s+/)[0] || '');
+        if (first.charAt(0) === '-' || /^[A-Z0-9_]+$/.test(first)) return; // skip flags + env vars
+        var m = full.match(/^(\s*)(\S+)([\s\S]*)$/);
+        if (m) code.innerHTML = m[1] + '<span class="tok">' + esc(m[2]) + '</span><span class="arg">' + esc(m[3]) + '</span>';
+      });
+    })();
+
+    // scroll-spy: highlight the sidebar link for the section in view
+    (function () {
+      var links = Array.prototype.slice.call(document.querySelectorAll('#side-nav a'));
+      var byId = {};
+      links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) {
+            links.forEach(function (a) { a.classList.remove('active'); });
+            var a = byId[e.target.id];
+            if (a) a.classList.add('active');
+          }
+        });
+      }, { rootMargin: '-40% 0px -55% 0px' });
+      document.querySelectorAll('.docs-main section[id]').forEach(function (s) { io.observe(s); });
+    })();
+  </script>
+</body>
+
+</html>

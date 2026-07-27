@@ -131,119 +131,6 @@
       top: 12px;
     }
 
-    /* ---------- nav ---------- */
-    header.site {
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      backdrop-filter: saturate(140%) blur(14px);
-      background: color-mix(in srgb, var(--bg) 74%, transparent);
-      border-bottom: 1px solid var(--border);
-    }
-
-    .nav {
-      max-width: 1280px;
-      margin: 0 auto;
-      padding: .7rem 1.5rem;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(260px, 360px) minmax(0, 1fr);
-      align-items: center;
-      gap: 1rem;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: .55rem;
-      font-weight: 700;
-      color: var(--cream);
-      text-decoration: none;
-      font-size: 1.35rem;
-    }
-
-    .brand img {
-      width: 60px;
-      height: 60px;
-      border-radius: 50px;
-    }
-
-    /* mono tagline next to the wordmark */
-    .brand-tag {
-      display: inline-flex;
-      align-items: baseline;
-      gap: .5rem;
-      margin-left: .1rem;
-      font-weight: 400;
-    }
-
-    .brand-dot {
-      color: var(--vermilion);
-      font-weight: 700;
-    }
-
-    .brand-tag code {
-      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-      font-size: .78em;
-      letter-spacing: -.01em;
-      color: var(--sage-bright);
-      background: none;
-      padding: 0;
-      font-style: oblique;
-    }
-
-    @media (max-width: 720px) {
-      .brand-tag { display: none; }
-    }
-
-    .nav-links {
-      display: flex;
-      gap: .2rem;
-      margin-left: 0;
-      align-items: center;
-      justify-self: end;
-    }
-
-    .nav-links a.navlink {
-      color: var(--sage-bright);
-      text-decoration: none;
-      font-size: .92rem;
-      padding: .45rem .75rem;
-      border-radius: 8px;
-      white-space: nowrap;
-    }
-
-    .nav-links a.navlink:hover {
-      color: var(--cream);
-      background: color-mix(in srgb, var(--panel) 60%, transparent);
-    }
-
-    .icon-btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 38px;
-      height: 38px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      color: var(--cream);
-      text-decoration: none;
-      transition: border-color .15s, transform .15s;
-    }
-
-    .icon-btn:hover {
-      border-color: var(--verm);
-      transform: translateY(-1px);
-    }
-
-    .icon-btn svg {
-      width: 18px;
-      height: 18px;
-    }
-
-    .nav-cta {
-      margin-left: .35rem;
-    }
-
     /* ---------- buttons ---------- */
     .btn {
       display: inline-flex;
@@ -637,18 +524,6 @@
       to   { opacity: 1; transform: none; filter: blur(0); }
     }
 
-    /* ---------- nav scroll-spy ---------- */
-    .navlink { position: relative; }
-    .navlink.active { color: var(--cream); }
-    .navlink.active::after {
-      content: "";
-      position: absolute;
-      left: .55rem; right: .55rem; bottom: .18rem;
-      height: 2px;
-      border-radius: 2px;
-      background: var(--verm);
-    }
-
     /* ---------- comparison table ---------- */
     .cmp-wrap { overflow-x: auto; margin-top: 2rem; }
     .cmp {
@@ -747,8 +622,8 @@
 
     .term pre {
       margin: 0;
-      padding: 1.1rem 1.2rem;
-      font: .92rem/1.7 var(--mono);
+      padding: 1rem 1.05rem;
+      font: .84rem/1.7 var(--mono);
       color: var(--cream);
       overflow-x: auto;
       white-space: pre;
@@ -910,15 +785,6 @@
       color: var(--ink-muted);
     }
 
-    .agent-blurb {
-      margin: 3rem 0 0;
-    }
-
-    .agent-blurb a {
-      color: var(--verm-deep);
-      font-weight: 650;
-    }
-
     .g-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
@@ -979,9 +845,13 @@
 
     .feature .wrap {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 3.2rem;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 2.6rem;
       align-items: center;
+    }
+
+    .feature:nth-of-type(even) .wrap {
+      grid-template-columns: 0.8fr 1.2fr;
     }
 
     .feature:nth-of-type(even) .fx-term {
@@ -1372,7 +1242,8 @@
         grid-template-columns: 1fr;
       }
 
-      .feature .wrap {
+      .feature .wrap,
+      .feature:nth-of-type(even) .wrap {
         grid-template-columns: 1fr;
         gap: 2rem;
       }
@@ -1431,269 +1302,14 @@
       }
     }
 
-    /* ---------- header package search ---------- */
-    .header-search {
-      position: relative;
-      width: 100%;
-      max-width: 300px;
-    }
-
-    .header-search-field {
-      position: relative;
-    }
-
-    .header-search-input {
-      width: 100%;
-      padding: .68rem 2.6rem .68rem 2.35rem;
-      background: color-mix(in srgb, var(--bg-dark) 88%, transparent);
-      color: var(--cream);
-      border: 1px solid var(--border-strong);
-      border-radius: 10px;
-      font: .84rem var(--mono);
-      outline: none;
-      transition: border-color .15s, box-shadow .15s;
-    }
-
-    .header-search-input::placeholder {
-      color: var(--sage);
-      opacity: .8;
-    }
-
-    .header-search-input:focus {
-      border-color: var(--verm);
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--verm) 22%, transparent);
-    }
-
-    .header-search-icon {
-      position: absolute;
-      left: .75rem;
-      top: 50%;
-      transform: translateY(-50%);
-      color: var(--sage);
-      pointer-events: none;
-    }
-
-    .header-search-key {
-      position: absolute;
-      right: .7rem;
-      top: 50%;
-      transform: translateY(-50%);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: .08rem .35rem;
-      color: var(--sage);
-      background: color-mix(in srgb, var(--panel) 55%, transparent);
-      font: .68rem var(--mono);
-      pointer-events: none;
-    }
-
-    .header-search-popover {
-      position: absolute;
-      top: calc(100% + .55rem);
-      left: 0;
-      right: 0;
-      overflow: hidden;
-      background: color-mix(in srgb, var(--bg-dark) 96%, var(--panel));
-      border: 1px solid var(--border-strong);
-      border-radius: 12px;
-      box-shadow: 0 24px 70px rgba(0, 0, 0, .38);
-      z-index: 70;
-    }
-
-    .header-search-popover[hidden] {
-      display: none;
-    }
-
-    .quick-status {
-      margin: 0;
-      padding: .7rem .8rem;
-      color: var(--sage);
-      font-size: .78rem;
-    }
-
-    .quick-status a {
-      color: var(--verm-bright);
-    }
-
-    .quick-result {
-      display: grid;
-      grid-template-columns: 32px minmax(0, 1fr) auto;
-      align-items: center;
-      gap: .65rem;
-      width: 100%;
-      padding: .62rem .72rem;
-      border: 0;
-      border-top: 1px solid var(--border);
-      background: transparent;
-      color: inherit;
-      text-align: left;
-      cursor: pointer;
-      font: inherit;
-      transition: background .12s;
-    }
-
-    .quick-result:hover,
-    .quick-result.active {
-      background: color-mix(in srgb, var(--cream) 8%, transparent);
-    }
-
-    .quick-icon {
-      display: grid;
-      place-items: center;
-      width: 32px;
-      height: 32px;
-      border-radius: 8px;
-      color: var(--verm-bright);
-      background: color-mix(in srgb, var(--verm) 15%, var(--panel));
-      border: 1px solid color-mix(in srgb, var(--verm) 36%, transparent);
-      font: 700 .8rem var(--mono);
-      text-transform: uppercase;
-      overflow: hidden;
-    }
-
-    .quick-icon img {
-      grid-area: 1 / 1;
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-      opacity: 0;
-    }
-
-    .quick-icon .icon-fallback {
-      grid-area: 1 / 1;
-    }
-
-    .quick-icon.has-image img {
-      opacity: 1;
-    }
-
-    .quick-icon.has-image .icon-fallback {
-      display: none;
-    }
-
-    .quick-copy {
-      color: var(--sage);
-      font: .68rem var(--mono);
-      white-space: nowrap;
-      text-decoration: none;
-      padding: .45rem .75rem;
-      border-radius: 8px;
-    }
-
-    .quick-copy:hover {
-      color: var(--cream);
-      background: color-mix(in srgb, var(--panel) 60%, transparent);
-    }
-
-    .quick-result.copied .quick-copy {
-      color: var(--pos);
-    }
-
-    .quick-name {
-      display: block;
-      color: var(--cream);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      font: 600 .82rem var(--mono);
-      white-space: nowrap;
-    }
-
-    .quick-meta {
-      display: block;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      color: var(--sage);
-      font-size: .72rem;
-      white-space: nowrap;
-    }
-
-    .quick-all {
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      padding: .72rem .8rem;
-      border-top: 1px solid var(--border);
-      color: var(--verm-bright);
-      text-decoration: none;
-      font-size: .78rem;
-    }
-
-    .quick-all:hover {
-      background: color-mix(in srgb, var(--cream) 5%, transparent);
-    }
-
-    @media (max-width: 1180px) {
-      .nav-links .navlink {
-        display: none;
-      }
-    }
-
-    @media (max-width: 720px) {
-      .nav {
-        display: flex;
-        flex-wrap: wrap;
-        gap: .55rem;
-      }
-
-      .brand {
-        margin-right: auto;
-      }
-
-      .header-search {
-        order: 3;
-        flex-basis: 100%;
-        max-width: none;
-        margin-left: 0;
-      }
-    }
   </style>
+  <link rel="stylesheet" href="assets/site-header.css">
 </head>
 
 <body>
   <a class="skip" href="#install">Skip to install</a>
 
-  <header class="site">
-    <nav class="nav" aria-label="Primary">
-      <a class="brand" href="#top">
-        <img src="assets/logo.png" alt="" width="30" height="30">
-        Voli<span class="brand-tag"><span class="brand-dot">·</span><code>The Bear That Delivers</code></span>
-      </a>
-      <form class="header-search" id="header-search" action="search.html" role="search">
-        <div class="header-search-field">
-          <svg class="header-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="8"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-          </svg>
-          <input class="header-search-input" id="pkg-search" name="q" type="search" placeholder="Search packages"
-            autocomplete="off" spellcheck="false" role="combobox" aria-label="Search packages"
-            aria-controls="search-results" aria-expanded="false" aria-autocomplete="list" aria-haspopup="listbox">
-          <kbd class="header-search-key" aria-hidden="true">/</kbd>
-        </div>
-        <div class="header-search-popover" id="search-popover" hidden>
-          <p class="quick-status" id="search-status" aria-live="polite"></p>
-          <div id="search-results" role="listbox" aria-label="Package suggestions"></div>
-          <a class="quick-all" id="search-all" href="search.html">
-            <span>View all results</span><span aria-hidden="true">→</span>
-          </a>
-        </div>
-      </form>
-      <div class="nav-links">
-        <a class="navlink" href="#why">Why</a>
-        <a class="navlink" href="#commands">Commands</a>
-        <a class="navlink" href="#add">Add your app</a>
-        <a class="navlink" href="#faq">FAQ</a>
-        <a class="icon-btn" href="https://github.com/Topurrra/voli" aria-label="voli on GitHub" rel="noopener">
-          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path
-              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z">
-            </path>
-          </svg>
-        </a>
-        <a class="btn btn-cream btn-sm nav-cta" href="#install">Install</a>
-      </div>
-    </nav>
-  </header>
+  <header class="site" id="site-header"></header>
 
   <main id="top">
     <!-- ---------- HERO ---------- -->
@@ -1857,13 +1473,6 @@
               the signature doesn't check out.</p>
           </div>
         </div>
-        <div class="sec-head agent-blurb reveal">
-          <span class="eyebrow on-cream">For AI agents</span>
-          <h2 class="h-sec">Skills that leave <span class="accent on-cream">no surprises.</span></h2>
-          <p class="sub">Voli installs Agent Skills into your agent's directory with the same signed, no-scripts,
-            zero-trace rigor as apps. <a href="search.html?kind=skill">Browse skills and copy the command for your
-              agent.</a></p>
-        </div>
       </div>
     </section>
 
@@ -1949,6 +1558,65 @@
           </p>
           <div class="fx-btns">
             <a class="btn btn-cream btn-sm" href="#faq">How it works</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- FEATURE ROW: skills ---------- -->
+    <section class="band feature">
+      <div class="wrap">
+        <div class="fx-term reveal">
+          <div class="term">
+            <div class="term-bar">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <span class="tt">skills</span>
+            </div>
+            <pre><span class="p">PS&gt;</span> voli install skill/tdd --for codex
+  <span class="ok">&#10003;</span> tdd <span class="mut">&rarr;</span> codex   <span class="mut">(signed &middot; no scripts &middot; zero-trace)</span>
+<span class="p">PS&gt;</span> voli install skill/tdd --for all --project</pre>
+          </div>
+        </div>
+        <div class="fx-copy reveal">
+          <span class="eyebrow">Skills</span>
+          <h2>Agent skills with <span class="accent">no surprises.</span></h2>
+          <p>Voli installs Agent Skills straight into your agent's own directory - signed, hash-verified, and
+            never executed. Every file is written to the ledger, so deleting a skill is zero-trace, just like an
+            app. Point one install at many agents with repeatable <code>--for</code> targets.</p>
+          <div class="fx-btns">
+            <a class="btn btn-cream btn-sm" href="docs.html#skills">Read the skills docs</a>
+            <a class="btn btn-ghost btn-sm" href="search.html?kind=skill">Browse skills</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- FEATURE ROW 4: memory ---------- -->
+    <section class="band feature">
+      <div class="wrap">
+        <div class="fx-term reveal">
+          <div class="term">
+            <div class="term-bar">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <span class="tt">voli memory</span>
+            </div>
+            <pre><span class="p">PS&gt;</span> voli memory note "deploy key AKIAIOSFODNN7EXAMPLE"
+  <span class="ok">&#10003;</span> saved <span class="mut">#4c1a2f:0</span>
+<span class="p">PS&gt;</span> voli memory read --task "ship the release"
+  <span class="mut">&middot; deploy key</span> AKIA***MPLE <span class="mut">&middot; secret masked</span>
+<span class="p">PS&gt;</span> voli memory search "deploy"
+  <span class="ok">&#10003;</span> <span class="mut">#4c1a2f:0</span>  deploy key AKIA***MPLE</pre>
+          </div>
+        </div>
+        <div class="fx-copy reveal">
+          <span class="eyebrow">Memory</span>
+          <h2>Memory that outlives <span class="accent">every session.</span></h2>
+          <p>Give your AI agent a persistent, encrypted, on-disk memory - one store that survives restarts,
+            context resets, and model changes. Zero network. Recall is firewalled, so secrets are masked
+            before the agent ever sees them.</p>
+          <div class="fx-btns">
+            <a class="btn btn-cream btn-sm" href="docs.html">Read the memory docs</a>
+            <a class="btn btn-ghost btn-sm" href="https://github.com/Topurrra/voli" rel="noopener">Read the source</a>
           </div>
         </div>
       </div>
@@ -2088,8 +1756,8 @@
         <div class="sec-head reveal">
           <span class="eyebrow">Comparison</span>
           <h2 class="h-sec">How Voli differs from <span class="accent">the others.</span></h2>
-          <p class="sub">Same job, different architecture. The rows below are structural properties, not
-            feature-checklist marketing.</p>
+          <p class="sub">Same job, different architecture. Some rows are structural properties; the top two
+            are capabilities the alternatives simply don't have.</p>
         </div>
 
         <div class="cmp-wrap reveal">
@@ -2104,6 +1772,20 @@
               </tr>
             </thead>
             <tbody>
+              <tr>
+                <th scope="row">Installs agent skills</th>
+                <td class="is-voli"><span class="y">Yes - signed, per-agent</span></td>
+                <td><span class="n">No</span></td>
+                <td><span class="n">No</span></td>
+                <td><span class="n">No</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Encrypted agent memory</th>
+                <td class="is-voli"><span class="y">Yes - voli memory</span></td>
+                <td><span class="n">No</span></td>
+                <td><span class="n">No</span></td>
+                <td><span class="n">No</span></td>
+              </tr>
               <tr>
                 <th scope="row">Runs without admin</th>
                 <td class="is-voli"><span class="y">Always</span></td>
@@ -2248,22 +1930,10 @@
     </section>
   </main>
 
-  <footer class="site">
-    <div class="foot">
-      <div class="foot-links">
-        <a href="https://github.com/Topurrra/voli" target="_blank" rel="noopener noreferrer">GitHub</a>
-        <a href="https://github.com/Topurrra/voli-registry" target="_blank" rel="noopener noreferrer">Registry</a>
-        <a href="https://github.com/Topurrra/voli/tree/main/license" target="_blank" rel="noopener noreferrer">License</a>
-        <p class="made">
-          Made with &#128059;
-          <a href="https://github.com/Topurrra" target="_blank" rel="noopener noreferrer">By Topurrra</a>
-          &middot; a fast, no-admin package manager for Windows.
-        </p>
-      </div>
-    </div>
-  </footer>
+  <footer class="site" id="site-footer"></footer>
 
   <script src="assets/catalog.js"></script>
+  <script src="assets/site-header.js"></script>
   <script>
     // ---- Copy the install one-liner ----
     (function () {
@@ -2433,199 +2103,6 @@
         });
       }, { threshold: .25 });
       document.querySelectorAll('.fx-term').forEach(function (t) { io.observe(t); });
-    })();
-
-    // ---- Nav scroll-spy ----
-    (function () {
-      var links = Array.prototype.slice.call(document.querySelectorAll('.navlink'));
-      if (!links.length || !('IntersectionObserver' in window)) return;
-      var map = {};
-      links.forEach(function (a) {
-        var id = (a.getAttribute('href') || '').replace('#', '');
-        var sec = id && document.getElementById(id);
-        if (sec) map[id] = a;
-      });
-      var ids = Object.keys(map);
-      if (!ids.length) return;
-      var visible = {};
-      var io = new IntersectionObserver(function (entries) {
-        entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting; });
-        var current = ids.filter(function (id) { return visible[id]; })[0];
-        links.forEach(function (a) { a.classList.remove('active'); });
-        if (current && map[current]) map[current].classList.add('active');
-      }, { rootMargin: '-45% 0px -50% 0px', threshold: 0 });
-      ids.forEach(function (id) { io.observe(document.getElementById(id)); });
-    })();
-
-    // ---- Header package search ----
-    (function () {
-      var form = document.getElementById('header-search');
-      var input = document.getElementById('pkg-search');
-      var results = document.getElementById('search-results');
-      var popover = document.getElementById('search-popover');
-      var status = document.getElementById('search-status');
-      var all = document.getElementById('search-all');
-      var pkgs = null;
-      var active = -1;
-      var rendered = [];
-      var timer = null;
-
-      function open() {
-        popover.hidden = false;
-        input.setAttribute('aria-expanded', 'true');
-      }
-
-      function close() {
-        popover.hidden = true;
-        input.setAttribute('aria-expanded', 'false');
-        setActive(-1);
-      }
-
-      function render() {
-        var query = input.value.trim();
-        setActive(-1);
-        rendered = [];
-        results.innerHTML = '';
-        if (!query) {
-          close();
-          return;
-        }
-
-        var searchable = pkgs.filter(function (pkg) {
-          var kind = VoliCatalog.kind(pkg);
-          return kind === 'app' || kind === 'skill';
-        });
-        var matches = VoliCatalog.search(searchable, query);
-        var total = matches.length;
-        var show = matches.slice(0, 5);
-        status.textContent = total
-          ? total + ' package' + (total === 1 ? '' : 's') + ' found'
-          : 'No matching packages';
-        all.href = 'search.html?q=' + encodeURIComponent(query);
-        all.firstElementChild.textContent = total ? 'View all ' + total + ' results' : 'Search the full catalog';
-
-        for (var j = 0; j < show.length; j++) {
-          (function (item) {
-            var p = item.p;
-            var row = document.createElement('button');
-            var command = VoliCatalog.command(p);
-            row.type = 'button';
-            row.id = 'search-option-' + rendered.length;
-            row.className = 'quick-result';
-            row.setAttribute('role', 'option');
-            row.setAttribute('aria-selected', 'false');
-            row.setAttribute('aria-label', 'Copy ' + command);
-            row.innerHTML =
-              VoliCatalog.icon(p, 'quick-icon') +
-              '<span><span class="quick-name">' + VoliCatalog.escape(p.n) + '</span>' +
-              '<span class="quick-meta">' + VoliCatalog.escape(p.v + ' · ' + (p.d || 'No description')) + '</span></span>' +
-              '<span class="quick-copy">Copy</span>';
-            VoliCatalog.wireIcon(row.querySelector('.quick-icon'));
-            row.addEventListener('click', function () { copyText(command, row); });
-            results.appendChild(row);
-            rendered.push(row);
-          })(show[j]);
-        }
-        open();
-      }
-
-      function loadAndRender() {
-        if (!input.value.trim()) {
-          close();
-          return;
-        }
-        status.textContent = 'Loading catalog...';
-        setActive(-1);
-        rendered = [];
-        results.innerHTML = '';
-        open();
-        VoliCatalog.load().then(function (data) {
-          pkgs = data;
-          render();
-        }).catch(function () {
-          status.innerHTML = 'Search unavailable: <a href="https://github.com/Topurrra/voli-registry/tree/main/manifests" rel="noopener">browse the registry on GitHub</a>';
-        });
-      }
-
-      function copyText(text, row) {
-        function done() {
-          var label = row.querySelector('.quick-copy');
-          row.classList.add('copied');
-          label.textContent = 'Copied';
-          setTimeout(function () {
-            row.classList.remove('copied');
-            label.textContent = 'Copy';
-          }, 1400);
-        }
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).then(done, function () { fb(text); done(); });
-        } else {
-          fb(text);
-          done();
-        }
-      }
-
-      function fb(text) {
-        var ta = document.createElement('textarea');
-        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand('copy'); } catch (e) { }
-        document.body.removeChild(ta);
-      }
-
-      function setActive(idx) {
-        if (active >= 0 && active < rendered.length) {
-          rendered[active].classList.remove('active');
-          rendered[active].setAttribute('aria-selected', 'false');
-        }
-        active = idx;
-        if (active >= 0 && active < rendered.length) {
-          rendered[active].classList.add('active');
-          rendered[active].setAttribute('aria-selected', 'true');
-          input.setAttribute('aria-activedescendant', rendered[active].id);
-        } else {
-          input.removeAttribute('aria-activedescendant');
-        }
-      }
-
-      form.addEventListener('submit', function (e) {
-        if (!input.value.trim()) e.preventDefault();
-      });
-
-      input.addEventListener('focus', function () {
-        if (input.value.trim()) loadAndRender();
-      });
-      input.addEventListener('input', function () {
-        clearTimeout(timer);
-        timer = setTimeout(loadAndRender, 80);
-      });
-
-      input.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') {
-          close();
-          input.blur();
-          return;
-        }
-        if (e.key === 'ArrowDown') { e.preventDefault(); setActive(Math.min(active + 1, rendered.length - 1)); return; }
-        if (e.key === 'ArrowUp') { e.preventDefault(); setActive(Math.max(active - 1, 0)); return; }
-        if (e.key === 'Enter' && active >= 0 && active < rendered.length) {
-          e.preventDefault();
-          rendered[active].click();
-        }
-      });
-
-      document.addEventListener('click', function (e) {
-        if (!form.contains(e.target)) close();
-      });
-
-      document.addEventListener('keydown', function (e) {
-        if (e.key === '/' && document.activeElement !== input && !e.ctrlKey && !e.metaKey) {
-          var tag = document.activeElement.tagName;
-          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-          e.preventDefault();
-          input.focus();
-        }
-      });
     })();
   </script>
   <script src="assets/hero-bg.js" defer></script>

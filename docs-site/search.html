@@ -76,117 +76,6 @@
       border-radius: 6px;
     }
 
-    /* ---------- nav ---------- */
-    header.site {
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      backdrop-filter: saturate(140%) blur(14px);
-      background: color-mix(in srgb, var(--bg) 74%, transparent);
-      border-bottom: 1px solid var(--border);
-    }
-
-    .nav {
-      max-width: 1280px;
-      margin: 0 auto;
-      padding: .7rem 1.5rem;
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: .55rem;
-      font-weight: 700;
-      color: var(--cream);
-      text-decoration: none;
-      font-size: 1.35rem;
-    }
-
-    .brand img {
-      width: 60px;
-      height: 60px;
-      border-radius: 50px;
-    }
-
-    /* mono tagline next to the wordmark */
-    .brand-tag {
-      display: inline-flex;
-      align-items: baseline;
-      gap: .5rem;
-      margin-left: .1rem;
-      font-weight: 400;
-    }
-
-    .brand-dot {
-      color: var(--vermilion);
-      font-weight: 700;
-    }
-
-    .brand-tag code {
-      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-      font-size: .78em;
-      letter-spacing: -.01em;
-      color: var(--sage-bright);
-      background: none;
-      padding: 0;
-      font-style: oblique;
-    }
-
-    @media (max-width: 720px) {
-      .brand-tag { display: none; }
-    }
-
-    .nav-links {
-      display: flex;
-      gap: .2rem;
-      margin-left: auto;
-      align-items: center;
-    }
-
-    .nav-links a.navlink {
-      color: var(--sage-bright);
-      text-decoration: none;
-      font-size: .92rem;
-      padding: .45rem .75rem;
-      border-radius: 8px;
-      white-space: nowrap;
-    }
-
-    .nav-links a.navlink:hover {
-      color: var(--cream);
-      background: color-mix(in srgb, var(--panel) 60%, transparent);
-    }
-
-    .icon-btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 38px;
-      height: 38px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      color: var(--cream);
-      text-decoration: none;
-      transition: border-color .15s, transform .15s;
-    }
-
-    .icon-btn:hover {
-      border-color: var(--verm);
-      transform: translateY(-1px);
-    }
-
-    .icon-btn svg {
-      width: 18px;
-      height: 18px;
-    }
-
-    .nav-cta {
-      margin-left: .35rem;
-    }
-
     .btn {
       display: inline-flex;
       align-items: center;
@@ -215,12 +104,6 @@
     .btn-sm {
       padding: .5rem 1rem;
       font-size: .88rem;
-    }
-
-    @media (max-width: 1180px) {
-      .nav-links .navlink {
-        display: none;
-      }
     }
 
     main {
@@ -628,31 +511,11 @@
       }
     }
   </style>
+  <link rel="stylesheet" href="assets/site-header.css">
 </head>
 
 <body>
-  <header class="site">
-    <nav class="nav" aria-label="Primary">
-      <a class="brand" href="./index.html#top">
-        <img src="assets/logo.png" alt="" width="30" height="30">
-        Voli<span class="brand-tag"><span class="brand-dot">·</span><code>The Bear That Delivers</code></span>
-      </a>
-      <div class="nav-links">
-        <a class="navlink" href="./index.html#why">Why</a>
-        <a class="navlink" href="./index.html#commands">Commands</a>
-        <a class="navlink" href="./index.html#add">Add your app</a>
-        <a class="navlink" href="./index.html#faq">FAQ</a>
-        <a class="icon-btn" href="https://github.com/Topurrra/voli" aria-label="voli on GitHub" rel="noopener">
-          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path
-              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z">
-            </path>
-          </svg>
-        </a>
-        <a class="btn btn-cream btn-sm nav-cta" href="./index.html#install">Install</a>
-      </div>
-    </nav>
-  </header>
+  <header class="site" id="site-header"></header>
 
   <main>
     <section class="intro">
@@ -694,22 +557,10 @@
     <section class="results" id="results" aria-label="Package results"></section>
   </main>
 
-  <footer class="site">
-    <div class="foot">
-      <div class="foot-links">
-        <a href="https://github.com/Topurrra/voli" target="_blank" rel="noopener noreferrer">GitHub</a>
-        <a href="https://github.com/Topurrra/voli-registry" target="_blank" rel="noopener noreferrer">Registry</a>
-        <a href="https://github.com/Topurrra/voli/tree/main/license" target="_blank" rel="noopener noreferrer">License</a>
-        <p class="made">
-          Made with &#128059;
-          <a href="https://github.com/Topurrra" target="_blank" rel="noopener noreferrer">By Topurrra</a>
-          &middot; a fast, no-admin package manager for Windows.
-        </p>
-      </div>
-    </div>
-  </footer>
+  <footer class="site" id="site-footer"></footer>
 
   <script src="assets/catalog.js"></script>
+  <script src="assets/site-header.js"></script>
   <script>
     (function () {
       'use strict';
