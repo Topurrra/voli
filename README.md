@@ -18,7 +18,7 @@ The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else - read it first
 if you like: [`install.ps1`](install.ps1).
 
-> **Status: v0.9.0, still pre-1.0.** The core workflow is released and working,
+> **Status: v0.9.1, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)
@@ -152,6 +152,23 @@ Recall is firewalled - secrets (keys, cards, SSNs) are masked before an agent
 sees them and `--private` notes are withheld. `voli memory prompt` prints the
 setup prompt that wires an agent to the whole workflow. Bitemporal validity,
 supersession, contradiction warnings, and passphrase recovery are built in.
+
+### Per-project memory
+
+A project can keep its own store for knowledge about that codebase, separate
+from what you know about the user:
+
+```powershell
+voli memory init --project      # creates .voli\memory here, git-ignores .voli\
+voli memory prompt --per-project # the agent prompt for that store
+```
+
+Every `voli memory` command run anywhere inside the project then finds it
+automatically - the nearest `.voli\memory` in the current directory or an
+ancestor wins, so nested repositories each keep their own. Detection requires
+the store to exist, so a directory that never ran `init --project` keeps using
+the machine-wide store. Add `--global` to any command to reach that store from
+inside a project, and `$VOLI_MEMORY_DIR` still overrides everything.
 
 ## How it works
 

@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
-use crate::manifest::{Manifest, ManifestError, SourceKind};
+use crate::manifest::{Manifest, ManifestError, Source, SourceKind};
 use crate::paths::Paths;
 use crate::state::State;
 
@@ -206,11 +206,12 @@ const MAX_EXTRACTED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 /// Install a package from a local manifest + local archive (spec §11 step 3).
 ///
-/// Verifies the archive hash before any mutation, extracts to a staging dir,
-/// atomically moves it into place, creates the `current` junction, wires up
-/// persist dirs, and writes shims — recording every step. On any failure the
-/// filesystem is rolled back and the error returned; the staging dir is always
-/// cleaned up.
+/// Verifies the artifact hash before any mutation, fills a staging dir (by
+/// extracting it, or — for `kind = "binary"` — by copying the single file in
+/// under its manifest name), atomically moves it into place, creates the
+/// `current` junction, wires up persist dirs, and writes shims — recording every
+/// step. On any failure the filesystem is rolled back and the error returned;
+/// the staging dir is always cleaned up.
 pub fn install_local(
     manifest_path: &Path,
     archive_path: &Path,
@@ -267,8 +268,7 @@ pub fn install_manifest(
     }
 
     // Perform every filesystem mutation, rolling those back internally on error.
-    let (mut actions, mut report) =
-        do_install_fs(&paths, manifest, source.kind, archive_path, extras)?;
+    let (mut actions, mut report) = do_install_fs(&paths, manifest, source, archive_path, extras)?;
 
     // Env consent flow (spec §8): resolve `{dir}` -> apps\<name>\current, prompt
     // (via `consent`), and — if applied — append EnvSet/PathAdded to the SAME
@@ -373,19 +373,12 @@ fn apply_env(
 fn do_install_fs(
     paths: &Paths,
     manifest: &Manifest,
-    source_kind: SourceKind,
+    source: &Source,
     archive_path: &Path,
     extras: &[(PathBuf, String)],
 ) -> Result<(Vec<Action>, InstallReport)> {
     let mut actions: Vec<Action> = Vec::new();
-    match install_fs_inner(
-        paths,
-        manifest,
-        source_kind,
-        archive_path,
-        extras,
-        &mut actions,
-    ) {
+    match install_fs_inner(paths, manifest, source, archive_path, extras, &mut actions) {
         Ok(report) => Ok((actions, report)),
         Err(e) => {
             // Only filesystem actions exist at this point (env is applied later,
@@ -399,7 +392,7 @@ fn do_install_fs(
 fn install_fs_inner(
     paths: &Paths,
     manifest: &Manifest,
-    source_kind: SourceKind,
+    source: &Source,
     archive_path: &Path,
     extras: &[(PathBuf, String)],
     actions: &mut Vec<Action>,
@@ -407,18 +400,28 @@ fn install_fs_inner(
     let name = &manifest.name;
     let version = &manifest.version;
 
-    // 1. Extract into a staging dir under cache\ (same volume as apps\, so the
-    //    later move is a real atomic rename). TempDir cleans itself up on drop,
+    // 1. Fill a staging dir under cache\ (same volume as apps\, so the later
+    //    move is a real atomic rename). TempDir cleans itself up on drop,
     //    including on early return or panic.
     let staging = tempfile::Builder::new()
         .prefix("staging-")
         .tempdir_in(paths.cache())?;
     let extract_root = staging.path().join("x");
     fs::create_dir_all(&extract_root)?;
-    if source_kind == SourceKind::InstallerArchive {
-        extract_installer(archive_path, &extract_root)?;
-    } else {
-        extract_archive(archive_path, &extract_root)?;
+    match source.kind {
+        SourceKind::InstallerArchive => extract_installer(archive_path, &extract_root)?,
+        SourceKind::Archive => extract_archive(archive_path, &extract_root)?,
+        // Not a container: the verified download IS the payload. Copy, don't
+        // move — `archive_path` is the hash-keyed cache entry.
+        SourceKind::Binary => {
+            let file_name = manifest.binary_file_name(source);
+            // The manifest layer already restricts this to one plain component;
+            // this is the same containment check every extractor applies to an
+            // archive entry, at the site that actually writes to disk.
+            let rel =
+                safe_rel(file_name).ok_or_else(|| InstallError::ZipSlip(file_name.to_string()))?;
+            fs::copy(archive_path, extract_root.join(rel))?;
+        }
     }
 
     // 2. Apply extract_dir stripping.
@@ -853,7 +856,7 @@ pub fn upgrade_install(
     let new_report = match install_fs_inner(
         &paths,
         manifest_new,
-        source.kind,
+        source,
         archive_path,
         extras,
         &mut new_actions,
@@ -1285,10 +1288,35 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<()> {
 
 fn extract_7z(archive: &Path, dest: &Path) -> Result<()> {
     let file = File::open(archive)?;
-    let offset = embedded_7z_offset(file.try_clone()?)?;
-    let source = OffsetReader::new(file, offset)?;
-    let mut reader = sevenz_rust2::ArchiveReader::new(source, sevenz_rust2::Password::empty())
-        .map_err(|e| InstallError::SevenZ(e.to_string()))?;
+    let offsets = embedded_7z_offsets(file.try_clone()?)?;
+    // Try each candidate and let the parser adjudicate: a coincidental signature
+    // in the stub fails to open, the real payload succeeds.
+    let mut reader = {
+        let mut opened = None;
+        let mut last = None;
+        for offset in &offsets {
+            let source = OffsetReader::new(file.try_clone()?, *offset)?;
+            match sevenz_rust2::ArchiveReader::new(source, sevenz_rust2::Password::empty()) {
+                Ok(r) => {
+                    opened = Some(r);
+                    break;
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        match opened {
+            Some(r) => r,
+            None => {
+                let detail = last
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "no 7z payload".to_string());
+                return Err(InstallError::SevenZ(format!(
+                    "no readable 7z payload in {} candidate offset(s): {detail}",
+                    offsets.len()
+                )));
+            }
+        }
+    };
 
     // Validate every entry name before extracting anything (zip-slip, §10).
     if reader.archive().files.len() > MAX_ARCHIVE_ENTRIES {
@@ -1322,28 +1350,68 @@ fn extract_7z(archive: &Path, dest: &Path) -> Result<()> {
 
 const SEVEN_Z_SIGNATURE: [u8; 6] = [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c];
 
-fn embedded_7z_offset(mut file: File) -> Result<u64> {
+/// How many candidate payload offsets to try in one self-extracting archive.
+/// The six-byte signature occurs by chance in real installer stubs, so the first
+/// hit is a guess, not an answer — but an unbounded retry loop on a hostile file
+/// would be a denial of service. A handful covers every real SFX.
+const MAX_SFX_CANDIDATES: usize = 8;
+
+/// Byte offsets where a 7z signature appears, in order.
+///
+/// The signature is only six bytes, so it shows up by coincidence inside
+/// installer stubs. 7-Zip's own `7z2602-x64.exe` is the proof: the first match
+/// is at 36192 and the real payload starts at 45568, so trusting the first hit
+/// fails with a checksum error on the vendor's own installer. Callers must try
+/// these in order and let the archive reader decide which one is real —
+/// validating by parsing is the only reliable test.
+fn embedded_7z_offsets(mut file: File) -> Result<Vec<u64>> {
     let mut head = [0; 6];
     file.read_exact(&mut head)?;
     if head == SEVEN_Z_SIGNATURE {
-        return Ok(0);
+        return Ok(vec![0]);
     }
     if !head.starts_with(b"MZ") {
-        return Ok(0);
+        return Ok(vec![0]);
     }
 
     file.seek(SeekFrom::Start(0))?;
-    let mut window = [0; 6];
-    for (position, byte) in BufReader::new(file).bytes().enumerate() {
-        window.rotate_left(1);
-        window[5] = byte?;
-        if window == SEVEN_Z_SIGNATURE {
-            return Ok(position.saturating_sub(5) as u64);
+    // Chunked rather than `.bytes()`: that iterator costs a Result per byte and
+    // made scanning a large installer pathologically slow.
+    let mut reader = BufReader::new(file);
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut carry: Vec<u8> = Vec::with_capacity(SEVEN_Z_SIGNATURE.len() - 1);
+    let mut consumed = 0u64;
+    let mut found = Vec::new();
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
         }
+        // Prepend the tail of the previous chunk so a signature straddling the
+        // boundary is still seen exactly once.
+        let mut window = carry.clone();
+        window.extend_from_slice(&buffer[..read]);
+        let base = consumed - carry.len() as u64;
+        for (i, slice) in window.windows(SEVEN_Z_SIGNATURE.len()).enumerate() {
+            if slice == SEVEN_Z_SIGNATURE {
+                found.push(base + i as u64);
+                if found.len() >= MAX_SFX_CANDIDATES {
+                    return Ok(found);
+                }
+            }
+        }
+        consumed += read as u64;
+        let keep = window.len().saturating_sub(SEVEN_Z_SIGNATURE.len() - 1);
+        carry = window[keep..].to_vec();
     }
-    Err(InstallError::SevenZ(
-        "self-extracting archive contains no 7z payload".to_string(),
-    ))
+
+    if found.is_empty() {
+        return Err(InstallError::SevenZ(
+            "self-extracting archive contains no 7z payload".to_string(),
+        ));
+    }
+    Ok(found)
 }
 
 struct OffsetReader<R> {
@@ -1520,7 +1588,7 @@ mod tests {
         archive.write_all(b"MZstub").unwrap();
         archive.write_all(&SEVEN_Z_SIGNATURE).unwrap();
 
-        let offset = embedded_7z_offset(archive.reopen().unwrap()).unwrap();
+        let offset = embedded_7z_offsets(archive.reopen().unwrap()).unwrap()[0];
         assert_eq!(offset, 6);
 
         let mut reader = OffsetReader::new(archive.reopen().unwrap(), offset).unwrap();
@@ -1528,6 +1596,38 @@ mod tests {
         reader.read_exact(&mut signature).unwrap();
         assert_eq!(signature, SEVEN_Z_SIGNATURE);
         assert_eq!(reader.seek(SeekFrom::Start(0)).unwrap(), 0);
+    }
+
+    /// The six-byte signature occurs by chance inside installer stubs. 7-Zip's
+    /// own `7z2602-x64.exe` has a false positive at 36192 with the real payload
+    /// at 45568, so returning only the first hit made the vendor's installer
+    /// fail with a checksum error. Every candidate must be offered.
+    #[test]
+    fn every_candidate_7z_offset_is_reported_not_just_the_first() {
+        let mut archive = tempfile::NamedTempFile::new().unwrap();
+        archive.write_all(b"MZstub").unwrap();
+        archive.write_all(&SEVEN_Z_SIGNATURE).unwrap(); // decoy
+        archive.write_all(&[0u8; 300]).unwrap();
+        archive.write_all(&SEVEN_Z_SIGNATURE).unwrap(); // the real one
+        archive.flush().unwrap();
+
+        let offsets = embedded_7z_offsets(archive.reopen().unwrap()).unwrap();
+        assert_eq!(offsets, vec![6, 312], "both candidates must be offered");
+    }
+
+    /// A signature straddling the read-chunk boundary must still be found once.
+    #[test]
+    fn a_7z_signature_spanning_a_chunk_boundary_is_found_once() {
+        let mut archive = tempfile::NamedTempFile::new().unwrap();
+        archive.write_all(b"MZstub").unwrap();
+        // Land the signature across the 64 KiB read boundary.
+        let pad = 64 * 1024 - 6 - 3;
+        archive.write_all(&vec![0u8; pad]).unwrap();
+        archive.write_all(&SEVEN_Z_SIGNATURE).unwrap();
+        archive.flush().unwrap();
+
+        let offsets = embedded_7z_offsets(archive.reopen().unwrap()).unwrap();
+        assert_eq!(offsets, vec![(6 + pad) as u64]);
     }
 
     /// The shortcut path used to be spliced into a PowerShell DOUBLE-quoted

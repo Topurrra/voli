@@ -152,6 +152,9 @@ enum Command {
     SelfDelete,
     /// Permanent, verifiable, encrypted memory for AI agents (STELA).
     Memory {
+        /// Use the machine-wide store even inside a project that has its own.
+        #[arg(long, global = true)]
+        global: bool,
         #[command(subcommand)]
         action: cmd_memory::MemoryCmd,
     },
@@ -238,7 +241,7 @@ fn main() {
         Command::Info { package } => cmd_index::run_info(&root(), package, cli.json),
         Command::SelfUpdate => cmd_self_update(),
         Command::SelfDelete => cmd_self_delete(cli.yes),
-        Command::Memory { action } => cmd_memory::run(action),
+        Command::Memory { action, global } => cmd_memory::run(action, *global),
     };
     std::process::exit(code);
 }
@@ -1084,6 +1087,23 @@ pub(crate) fn print_index_error(action: &str, error: &voli_core::index::IndexErr
             "the downloaded package index is damaged",
             &error.to_string(),
             "run `voli update` again; if it repeats, report the problem",
+        ),
+        // Retrying cannot fix this one: the published index has to be rebuilt
+        // before any client can accept it. Saying "try again" would send people
+        // in a loop against a server that will keep serving the same snapshot.
+        IndexError::UnsignedEpoch => print_problem(
+            "the published package index is older than this version of voli",
+            &error.to_string(),
+            "your installed packages are unaffected; the registry needs to \
+             republish its index. Retrying will not help — check \
+             https://github.com/Topurrra/voli/issues for status",
+        ),
+        IndexError::BadEpoch(_) => print_problem(
+            "the package index reported an implausible version number",
+            &error.to_string(),
+            "this can mean the index was tampered with in transit; your local \
+             index was left untouched. Retry on a trusted network, and report \
+             it if it repeats",
         ),
         _ => print_problem(
             &format!("couldn't {action}"),

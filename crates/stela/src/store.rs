@@ -1198,17 +1198,69 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 /// The agent-facing prompt (STELA's `PROMPT`), pointing at `voli memory …`.
-pub fn prompt(dir: &Path) -> String {
-    format!(
-        "## Memory (`{TOOL}`)
+/// Which store a rendered prompt describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// The machine-wide store: everything you learn, one place.
+    Global,
+    /// A store inside the project directory, for knowledge about THIS codebase.
+    Project,
+}
 
-`{TOOL}` is your long-term memory. It lives in `{dir}` and persists across
+/// The agent setup prompt for the global store.
+pub fn prompt(dir: &Path) -> String {
+    prompt_for(dir, Scope::Global)
+}
+
+/// The agent setup prompt for `scope`.
+pub fn prompt_for(dir: &Path, scope: Scope) -> String {
+    let intro = match scope {
+        Scope::Global => format!(
+            "`{TOOL}` is your long-term memory. It lives in `{dir}` and persists across
 restarts, context resets, and model changes -- the one place a fact you learn
 now is still here next session. The store is on the machine you run these
 commands on: in a sandbox or a remote environment it persists there, not on the
-user's own machine -- say so, and use `{TOOL} export` if they need it moved.
+user's own machine -- say so, and use `{TOOL} export` if they need it moved.",
+            dir = dir.display()
+        ),
+        Scope::Project => format!(
+            "`{TOOL}` is your long-term memory. This project has its own store at
+`{dir}`. It is the one you are using: any `{TOOL}` command run from anywhere
+inside this project finds it automatically, so you never pass a path.
+
+Keep what you learn ABOUT THIS CODEBASE here -- how it is laid out, why a
+decision went the way it did, the command that actually builds it, the test
+that is always flaky, what broke last time. It stays with the project, so the
+next session in this directory starts knowing them.
+
+`.voli/` is git-ignored: this store is yours and the user's, not something to
+commit. It is NOT encrypted differently from the global store and it is NOT a
+secret vault -- treat anything you write as readable by anyone with the
+machine.
+
+The machine-wide store still exists, and some things belong there instead:
+who the user is, how they like to work, preferences that follow them from
+project to project. Reach it with `{TOOL} --global <verb>` from anywhere.
+Rule of thumb: if the fact would still be true in a different repository, it
+is global; if it is about this code, it is here.",
+            dir = dir.display()
+        ),
+    };
+    let start = match scope {
+        Scope::Global => String::new(),
+        Scope::Project => format!(
+            "\nIf a command ever reports no memory here, the project store was never
+created -- run `{TOOL} init --project` from the project root once, which also
+adds `.voli/` to `.gitignore`.\n"
+        ),
+    };
+    format!(
+        "## Memory (`{TOOL}`)
+
+{intro}
 
 ### Start every session here
+{start}
 
 Before your first real action, run `{TOOL} read --task \"<what you are about to do>\"`.
 It prints your pinned facts, the memories that bear on this task, and a short

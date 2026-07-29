@@ -78,6 +78,10 @@ pub enum SourceKind {
     /// Installer binary (.exe/.msi) — extracted with 7-Zip (no-execute),
     /// never run. Hash-verified before extraction.
     InstallerArchive,
+    /// A single bare file that is NOT a container (`jq.exe`, `yt-dlp.exe`).
+    /// Hash-verified exactly like an archive, then copied into the version dir
+    /// under [`Manifest::binary_file_name`] instead of being extracted.
+    Binary,
 }
 
 impl SourceKind {
@@ -250,6 +254,12 @@ pub struct Manifest {
 
     #[serde(default)]
     pub extract_dir: Option<String>,
+    /// The name a `kind = "binary"` payload takes inside the version dir
+    /// (default: the URL's last path segment). Top-level, not per-source, for
+    /// the same reason `bin` is: one `bin = ["jq.exe"]` has to find the file
+    /// whichever arch it came from.
+    #[serde(default)]
+    pub file_name: Option<String>,
     #[serde(default)]
     pub bin: Vec<Bin>,
 
@@ -324,9 +334,33 @@ pub enum ManifestError {
 
     #[error("field '{0}' is not allowed for skill packages")]
     SkillField(&'static str),
+
+    #[error("field '{0}' is meaningless with a source of kind \"binary\" (nothing is extracted)")]
+    BinaryField(&'static str),
+
+    #[error("'file_name' names a downloaded file and requires a source of kind \"binary\"")]
+    FileNameWithoutBinary,
 }
 
 impl Manifest {
+    /// The on-disk name a `kind = "binary"` payload takes inside the version
+    /// dir: `file_name` when set, else the URL's last path segment.
+    ///
+    /// The URL default is only ever right by accident (`jq-windows-amd64.exe`
+    /// is not what anyone wants on PATH), which is why `file_name` exists — but
+    /// it keeps a manifest whose URL already ends in the right name free of
+    /// boilerplate. The `#/name.ext` rename fragment wins when present, the same
+    /// convention [`crate::fetch`] uses to name the cached download; a query
+    /// string or any other fragment is dropped, never written to disk.
+    ///
+    /// Validated with [`check_component`], so `bin = ["jq.exe"]` finds it.
+    pub fn binary_file_name<'a>(&'a self, source: &'a Source) -> &'a str {
+        match &self.file_name {
+            Some(name) => name,
+            None => url_file_name(&source.url),
+        }
+    }
+
     /// Parse and validate a manifest from a TOML string.
     pub fn from_toml_str(s: &str) -> Result<Manifest, ManifestError> {
         let m: Manifest = toml::from_str(s)?;
@@ -372,6 +406,28 @@ impl Manifest {
                 check_source_hash(s, "arm64")?;
                 check_extra_sources(s, "arm64")?;
             }
+        }
+
+        // A binary source is one downloaded FILE, not a container, so there is
+        // no wrapper to strip: `extract_dir` is rejected rather than ignored.
+        // The destination name lands verbatim in the version dir, so it gets the
+        // same single-component check as the version dir itself — a registry PR
+        // is allowed to carry a hostile URL.
+        let mut any_binary = false;
+        for source in [&self.source.x64, &self.source.arm64].into_iter().flatten() {
+            if source.kind == SourceKind::Binary {
+                any_binary = true;
+                check_component(self.binary_file_name(source), "source file name")?;
+            }
+        }
+        if any_binary {
+            // Blunt on a mixed archive/binary pair across arches — but such a
+            // manifest is pathological, and silently ignoring the field is worse.
+            if self.extract_dir.is_some() {
+                return Err(ManifestError::BinaryField("extract_dir"));
+            }
+        } else if self.file_name.is_some() {
+            return Err(ManifestError::FileNameWithoutBinary);
         }
 
         if let Some(dir) = &self.extract_dir {
@@ -449,6 +505,19 @@ impl Manifest {
         }
         Ok(())
     }
+}
+
+/// The last path segment of a URL, with any query string or fragment stripped
+/// and the `#/name.ext` rename fragment honoured.
+///
+/// String-based like everything else here: `Path::file_name` would treat `\` as
+/// a separator only on Windows, and this runs in Linux CI too.
+fn url_file_name(url: &str) -> &str {
+    let path = match url.split_once("#/") {
+        Some((_, fragment)) if !fragment.is_empty() => fragment,
+        _ => url.split(['?', '#']).next().unwrap_or(url),
+    };
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 fn check_icon_url(url: &str) -> Result<(), ManifestError> {
@@ -743,6 +812,123 @@ sha256 = "{hash}"
                 .unwrap()
                 .contains("kind = \"installer-archive\"")
         );
+    }
+
+    /// A bare-binary source: `jq`, `yt-dlp` and the ~178 other Scoop packages
+    /// that ship one `.exe` with no archive around it.
+    fn binary(extra: &str, url: &str) -> String {
+        format!(
+            r#"
+name = "app"
+version = "1.0.0"
+kind = "app"
+{extra}
+
+[source.x64]
+url = "{url}"
+sha256 = "{hash}"
+kind = "binary"
+"#,
+            hash = "c".repeat(64),
+        )
+    }
+
+    #[test]
+    fn binary_source_names_the_file_from_file_name_or_the_url() {
+        let jq = Manifest::from_toml_str(&binary(
+            r#"file_name = "jq.exe"
+bin = ["jq.exe"]"#,
+            "https://example.com/download/jq-windows-amd64.exe",
+        ))
+        .expect("a binary source should parse");
+        let source = jq.source.x64.as_ref().unwrap();
+        assert_eq!(source.kind, SourceKind::Binary);
+        // The name users want on PATH wins over the URL's.
+        assert_eq!(jq.binary_file_name(source), "jq.exe");
+        assert_eq!(jq.bin[0].shim_name(), "jq");
+        assert!(toml::to_string(&jq).unwrap().contains("kind = \"binary\""));
+
+        // No file_name: the URL's last path segment, with any query string or
+        // fragment dropped, and `#/name.ext` honoured (the fetch-cache rename
+        // convention that published manifests already use).
+        for (url, want) in [
+            ("https://example.com/d/yt-dlp.exe", "yt-dlp.exe"),
+            ("https://example.com/d/yt-dlp.exe?token=1", "yt-dlp.exe"),
+            ("https://example.com/d/download#/yt-dlp.exe", "yt-dlp.exe"),
+            ("https://example.com/d/yt-dlp.exe#fragment", "yt-dlp.exe"),
+        ] {
+            let m = Manifest::from_toml_str(&binary("", url))
+                .unwrap_or_else(|e| panic!("url {url:?} must stay valid: {e}"));
+            assert_eq!(
+                m.binary_file_name(m.source.x64.as_ref().unwrap()),
+                want,
+                "file name for {url:?}"
+            );
+        }
+    }
+
+    /// The chosen name is written verbatim into the version dir, and a registry
+    /// PR is free to carry a hostile URL — so it gets the same single-component
+    /// check as the version dir itself, from BOTH sources it can come from.
+    #[test]
+    fn rejects_hostile_binary_file_name() {
+        for name in [
+            "../evil.exe",
+            r"..\evil.exe",
+            r"C:\evil.exe",
+            "sub/jq.exe",
+            "CON",
+            "lpt9.exe",
+            "jq.exe.",
+            "jq.exe ",
+            "jq|calc.exe",
+            "",
+        ] {
+            let s = binary(
+                &format!(r#"file_name = "{}""#, name.escape_default()),
+                "https://example.com/d/jq.exe",
+            );
+            assert!(
+                matches!(
+                    Manifest::from_toml_str(&s),
+                    Err(ManifestError::Component {
+                        field: "source file name",
+                        ..
+                    })
+                ),
+                "file_name {name:?} should be rejected"
+            );
+        }
+        // Same gate for a name that arrives through the URL instead.
+        for url in [
+            "https://example.com/d/download#/..",
+            "https://example.com/d/download#/C:evil.exe",
+            "https://example.com/d/download#/CON",
+            "https://example.com/d/",
+        ] {
+            assert!(
+                Manifest::from_toml_str(&binary("", url)).is_err(),
+                "url {url:?} should be rejected"
+            );
+        }
+    }
+
+    /// Nothing is extracted, so a wrapper dir to strip is a manifest bug —
+    /// reported, not ignored. And `file_name` names a downloaded file, so it is
+    /// meaningless (and misleading) on an archive.
+    #[test]
+    fn extract_dir_and_file_name_are_rejected_on_the_wrong_source_kind() {
+        assert!(matches!(
+            Manifest::from_toml_str(&binary(
+                r#"extract_dir = "wrapper""#,
+                "https://example.com/d/jq.exe"
+            )),
+            Err(ManifestError::BinaryField("extract_dir"))
+        ));
+        assert!(matches!(
+            Manifest::from_toml_str(&minimal(r#"file_name = "jq.exe""#)),
+            Err(ManifestError::FileNameWithoutBinary)
+        ));
     }
 
     #[test]

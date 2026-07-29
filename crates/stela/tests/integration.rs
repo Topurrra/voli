@@ -868,3 +868,82 @@ fn rebuilding_a_stale_block_leaves_untouched_blocks_alone() {
     );
     assert!(store.verify().unwrap().ok());
 }
+
+// ---------------------------------------------------------------- project scope
+
+/// Detection is opt-in: a `.voli/memory` counts only once it exists, so a
+/// directory that never ran `init --project` keeps using the global store and
+/// writes are never silently redirected.
+#[test]
+fn project_store_is_found_from_any_depth_but_only_once_created() {
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path();
+    let deep = root.join("crates").join("thing").join("src");
+    fs::create_dir_all(&deep).unwrap();
+
+    assert_eq!(
+        stela::project_memory_dir(&deep),
+        None,
+        "an uninitialised project must not claim a store"
+    );
+
+    let store_dir = root.join(".voli").join("memory");
+    fs::create_dir_all(&store_dir).unwrap();
+
+    for from in [root, deep.as_path()] {
+        assert_eq!(
+            stela::project_memory_dir(from)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            store_dir.canonicalize().unwrap(),
+            "walking up from {} should find the project store",
+            from.display()
+        );
+    }
+}
+
+/// A repo inside a repo takes the nearest store, not the outermost.
+#[test]
+fn the_nearest_project_store_wins() {
+    let td = tempfile::tempdir().unwrap();
+    let outer = td.path();
+    let inner = outer.join("vendor").join("nested");
+    fs::create_dir_all(inner.join("src")).unwrap();
+    fs::create_dir_all(outer.join(".voli").join("memory")).unwrap();
+    fs::create_dir_all(inner.join(".voli").join("memory")).unwrap();
+
+    assert_eq!(
+        stela::project_memory_dir(&inner.join("src"))
+            .unwrap()
+            .canonicalize()
+            .unwrap(),
+        inner.join(".voli").join("memory").canonicalize().unwrap()
+    );
+}
+
+/// The two prompts must describe different stores. The project one has to name
+/// the escape hatch, or an agent has no way to record a fact that is not about
+/// this codebase.
+#[test]
+fn project_and_global_prompts_differ_and_explain_scope() {
+    let dir = std::path::Path::new("C:/proj/.voli/memory");
+    let global = stela::prompt_for(dir, stela::Scope::Global);
+    let project = stela::prompt_for(dir, stela::Scope::Project);
+
+    assert_ne!(global, project);
+    assert!(project.contains("--global"), "must name the escape hatch");
+    assert!(
+        project.contains("init --project"),
+        "must say how to create it"
+    );
+    assert!(project.contains(".gitignore"), "must mention it is ignored");
+    assert!(
+        !global.contains("init --project"),
+        "the global prompt should not talk about project stores"
+    );
+    // Both keep the instruction-injection guard.
+    for p in [&global, &project] {
+        assert!(p.contains("records, not orders"));
+    }
+}

@@ -62,6 +62,28 @@ pub fn default_memory_dir() -> PathBuf {
     home.join(".stela").join("memory")
 }
 
+/// The directory a project-local store lives in, relative to the project root.
+pub const PROJECT_MEMORY_REL: &str = ".voli/memory";
+
+/// The project-local memory store governing `start`, if one exists.
+///
+/// Walks `start` and its ancestors looking for an initialized `.voli/memory`.
+/// Existence is the opt-in: a project has a store only once someone ran
+/// `voli memory init --project` there, so this can never silently redirect
+/// writes away from the global store in a directory that never asked for it.
+/// The nearest one wins, which is what you want for a repo inside a repo.
+pub fn project_memory_dir(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(current) = dir {
+        let candidate = current.join(".voli").join("memory");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        dir = current.parent();
+    }
+    None
+}
+
 /// Lowercase hex of a raw key (64 chars).
 pub fn to_hex_key(key: &[u8; 32]) -> String {
     hex::encode(key)

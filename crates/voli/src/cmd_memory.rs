@@ -3,11 +3,13 @@
 //! The engine is embeddable and keychain-free; this layer resolves the master
 //! key (passphrase custody, or the Windows keychain) and formats output.
 //!
-//! The memory directory is `$VOLI_MEMORY_DIR` / `$STELA_DIR`, else
-//! `%LOCALAPPDATA%\voli\memory` (or `~/.stela/memory`). A passphrase memory reads
-//! `$VOLI_MEMORY_PASSPHRASE` / `$STELA_PASSPHRASE`.
+//! The memory directory is `$VOLI_MEMORY_DIR` / `$STELA_DIR`, else the nearest
+//! `.voli\memory` in the current directory or an ancestor (unless `--global`),
+//! else `%LOCALAPPDATA%\voli\memory` (or `~/.stela/memory`). A passphrase memory
+//! reads `$VOLI_MEMORY_PASSPHRASE` / `$STELA_PASSPHRASE`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Subcommand;
 use stela::{CustodyMode, Store, custody_mode, parse_block_id};
@@ -15,7 +17,11 @@ use stela::{CustodyMode, Store, custody_mode, parse_block_id};
 #[derive(Subcommand)]
 pub enum MemoryCmd {
     /// Create this memory and print the agent setup prompt.
-    Init,
+    Init {
+        /// Create a project-local store in the current directory and git-ignore it.
+        #[arg(long)]
+        project: bool,
+    },
     /// Load memory: core + task-relevant + a decaying timeline. Run first.
     Read {
         /// What you are about to do (ranks the task-relevant section).
@@ -110,16 +116,28 @@ pub enum MemoryCmd {
         json: bool,
     },
     /// Print the agent setup prompt.
-    Prompt,
+    Prompt {
+        /// Describe the project-local store instead of the machine-wide one.
+        #[arg(long = "per-project")]
+        per_project: bool,
+    },
 }
 
 const TOOL: &str = "voli memory";
 
-pub fn run(action: &MemoryCmd) -> i32 {
+pub fn run(action: &MemoryCmd, force_global: bool) -> i32 {
+    // `--global` pins every verb to the machine-wide store, so an agent working
+    // inside a project can still record a fact that is not about this codebase.
+    GLOBAL_ONLY.store(force_global, Ordering::Relaxed);
     match action {
-        MemoryCmd::Init => cmd_init(),
-        MemoryCmd::Prompt => {
-            println!("{}", stela::prompt(&memory_dir()));
+        MemoryCmd::Init { project } => cmd_init(*project),
+        MemoryCmd::Prompt { per_project } => {
+            let (dir, scope) = if *per_project {
+                (project_dir_for_prompt(), stela::Scope::Project)
+            } else {
+                (stela::default_memory_dir(), stela::Scope::Global)
+            };
+            println!("{}", stela::prompt_for(&dir, scope));
             0
         }
         MemoryCmd::Read { task, budget, k } => {
@@ -183,6 +201,20 @@ pub fn run(action: &MemoryCmd) -> i32 {
 
 // ---------------------------------------------------------------- key custody
 
+/// Set by `--global`, read by [`memory_dir`]. A flag rather than a parameter
+/// because every verb resolves the store the same way and threading it through
+/// each one would be noise.
+static GLOBAL_ONLY: AtomicBool = AtomicBool::new(false);
+
+/// Which store this invocation acts on.
+///
+/// 1. `$VOLI_MEMORY_DIR` / `$STELA_DIR` — an explicit path always wins.
+/// 2. `--global` — skip project detection.
+/// 3. A `.voli/memory` in the current directory or an ancestor.
+/// 4. The machine-wide default.
+///
+/// Detection requires the directory to already exist, so a project only gets
+/// its own store after `init --project`; nothing is ever silently redirected.
 fn memory_dir() -> PathBuf {
     for var in ["VOLI_MEMORY_DIR", "STELA_DIR"] {
         if let Some(v) = std::env::var_os(var)
@@ -191,7 +223,43 @@ fn memory_dir() -> PathBuf {
             return PathBuf::from(v);
         }
     }
+    if !GLOBAL_ONLY.load(Ordering::Relaxed)
+        && let Ok(cwd) = std::env::current_dir()
+        && let Some(dir) = stela::project_memory_dir(&cwd)
+    {
+        return dir;
+    }
     stela::default_memory_dir()
+}
+
+/// The path `prompt --per-project` should describe: the project store governing
+/// the current directory if there is one, else where `init --project` would put
+/// it. The prompt is generated before the store exists, so this must not
+/// require one.
+fn project_dir_for_prompt() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    stela::project_memory_dir(&cwd).unwrap_or_else(|| cwd.join(".voli").join("memory"))
+}
+
+/// Add `.voli/` to the project's `.gitignore`, creating the file if needed.
+/// Returns what happened, for the caller to report.
+fn ignore_project_store(project_root: &Path) -> std::io::Result<&'static str> {
+    let path = project_root.join(".gitignore");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    // Match the entry, not a substring: `.volirc` must not count as a hit.
+    if existing
+        .lines()
+        .any(|l| matches!(l.trim().trim_end_matches('/'), ".voli"))
+    {
+        return Ok("already ignored");
+    }
+    let mut out = existing;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("\n# voli project memory (local knowledge, not for the repo)\n.voli/\n");
+    std::fs::write(&path, out)?;
+    Ok("added .voli/ to .gitignore")
 }
 
 fn passphrase() -> Option<String> {
@@ -279,8 +347,28 @@ fn with_store(f: impl FnOnce(Store) -> i32) -> i32 {
 
 // ---------------------------------------------------------------- commands
 
-fn cmd_init() -> i32 {
-    let dir = memory_dir();
+fn cmd_init(project: bool) -> i32 {
+    let mut gitignore_note = None;
+    let dir = if project {
+        let root = match std::env::current_dir() {
+            Ok(d) => d,
+            Err(e) => return fail(&e.to_string()),
+        };
+        match ignore_project_store(&root) {
+            Ok(note) => gitignore_note = Some(note),
+            // Not fatal: the store is still usable, the user just has to ignore
+            // it themselves. Saying so beats failing the init.
+            Err(e) => {
+                gitignore_note = Some(Box::leak(
+                    format!("could not update .gitignore ({e}) - add .voli/ yourself")
+                        .into_boxed_str(),
+                ))
+            }
+        }
+        root.join(".voli").join("memory")
+    } else {
+        memory_dir()
+    };
     let (key, mode) = match init_key(&dir) {
         Ok(k) => k,
         Err(e) => return fail(&e),
@@ -291,12 +379,21 @@ fn cmd_init() -> i32 {
     };
     let dev = store.device().unwrap_or_default();
     println!(
-        "Memory {} at {} (device {dev}, custody: {mode}).",
+        "{} memory {} at {} (device {dev}, custody: {mode}).",
+        if project { "Project" } else { "Global" },
         if fresh { "created" } else { "found" },
         dir.display()
     );
+    if let Some(note) = gitignore_note {
+        println!("{note}");
+    }
     println!();
-    println!("{}", stela::prompt(&dir));
+    let scope = if project {
+        stela::Scope::Project
+    } else {
+        stela::Scope::Global
+    };
+    println!("{}", stela::prompt_for(&dir, scope));
     0
 }
 

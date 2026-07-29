@@ -61,11 +61,12 @@ pub mod store;
 pub use firewall::Disclosed;
 
 pub use key::{
-    CustodyMode, create_passphrase_custody, custody_mode, default_memory_dir,
-    derive_master_for_open, recover_master, recovery_blob_path, write_recovery_blob,
+    CustodyMode, PROJECT_MEMORY_REL, create_passphrase_custody, custody_mode, default_memory_dir,
+    derive_master_for_open, project_memory_dir, recover_master, recovery_blob_path,
+    write_recovery_blob,
 };
 pub use record::{Record, bm25, tokens};
-pub use store::{NoteOutcome, Stats, Store, VerifyReport, prompt};
+pub use store::{NoteOutcome, Scope, Stats, Store, VerifyReport, prompt, prompt_for};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

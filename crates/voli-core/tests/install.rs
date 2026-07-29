@@ -574,6 +574,183 @@ fn zip_slip_7z_rejected_mutates_nothing() {
     assert!(state.list().unwrap().is_empty());
 }
 
+// ---- kind = "binary": one bare .exe, no archive ----
+//
+// The payload is a COPY OF THE SHIM STUB, which is a real exe whenever
+// voli-shim has been built. That makes the installed `jq.exe` runnable, so
+// `shims\jq.exe` can actually be executed: it launches the version dir's copy,
+// which — being a shim with no `.shim` beside it — fails with 9009 naming its
+// own sibling. Nothing but a correctly resolved chain produces that.
+
+const BINARY_PAYLOAD_V1: &[u8] = b"MZ fake jq 1.0.0";
+
+/// A real executable to install, when one is available (see `ensure_stub`).
+fn runnable_payload() -> Option<Vec<u8>> {
+    let stub = std::env::var_os("VOLI_SHIM_STUB")?;
+    let bytes = fs::read(stub).ok()?;
+    bytes.starts_with(b"MZ").then_some(bytes)
+}
+
+/// jq-style manifest: a single downloaded file, renamed to what belongs on PATH.
+/// The URL basename (`jq-windows-amd64.exe`) is deliberately NOT the bin name.
+fn write_binary_manifest(dir: &Path, version: &str, sha256: &str) -> PathBuf {
+    let toml = format!(
+        r#"
+name = "jqbin"
+version = "{version}"
+kind = "app"
+file_name = "jq.exe"
+bin = ["jq.exe"]
+
+[source.x64]
+url = "https://example.com/download/jq-windows-amd64.exe"
+sha256 = "{sha256}"
+kind = "binary"
+"#
+    );
+    let p = dir.join(format!("jqbin-{version}.toml"));
+    fs::write(&p, toml).unwrap();
+    p
+}
+
+#[test]
+fn binary_source_installs_a_bare_exe_and_shims_it() {
+    let td = setup();
+    let root = td.path();
+    let payload = runnable_payload().unwrap_or_else(|| BINARY_PAYLOAD_V1.to_vec());
+    let download = root.join("jq-windows-amd64.exe");
+    fs::write(&download, &payload).unwrap();
+    let manifest = write_binary_manifest(root, "1.0.0", &sha256_hex(&payload));
+
+    let report = install_local(&manifest, &download, root).expect("install should succeed");
+
+    // The version dir holds exactly the one file, under the manifest's name —
+    // not the URL's.
+    let vdir = root.join("apps/jqbin/1.0.0");
+    assert_eq!(report.version_dir, vdir);
+    assert_eq!(fs::read(vdir.join("jq.exe")).unwrap(), payload);
+    let entries: Vec<_> = fs::read_dir(&vdir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec!["jq.exe".to_string()]);
+    assert!(!vdir.join("jq-windows-amd64.exe").exists());
+
+    // Same transaction as an archive: current junction, shim pair, ledger.
+    let current = root.join("apps/jqbin/current");
+    assert!(junction::exists(&current).unwrap());
+    let shim = root.join("shims/jq.shim");
+    let shim_exe = root.join("shims/jq.exe");
+    assert!(shim_exe.is_file());
+    let first = fs::read_to_string(&shim).unwrap();
+    let first = first.lines().next().unwrap().to_string();
+    assert!(
+        first.ends_with("current\\jq.exe"),
+        "shim target was {first}"
+    );
+    assert!(Path::new(&first).is_file(), "shim target must resolve");
+    let state = State::open(&root.join("db/state.sqlite")).unwrap();
+    assert_eq!(state.list().unwrap().len(), 1);
+    drop(state);
+
+    // The download is left in the cache, not consumed.
+    assert_eq!(fs::read(&download).unwrap(), payload);
+
+    // Run it for real when the stub is a genuine shim exe.
+    if runnable_payload().is_some() {
+        let out = std::process::Command::new(&shim_exe).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(9009), "stderr: {stderr}");
+        assert!(
+            stderr.contains("jqbin") && stderr.contains("jq.shim"),
+            "the shim must launch the installed copy, not itself: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn binary_hash_mismatch_mutates_nothing() {
+    let td = setup();
+    let root = td.path();
+    let download = root.join("jq-windows-amd64.exe");
+    fs::write(&download, BINARY_PAYLOAD_V1).unwrap();
+    let manifest = write_binary_manifest(root, "1.0.0", &"a".repeat(64));
+
+    let err = install_local(&manifest, &download, root).unwrap_err();
+    assert!(matches!(err, InstallError::HashMismatch { .. }), "{err:?}");
+
+    assert!(!root.join("apps/jqbin").exists());
+    assert!(!root.join("shims/jq.shim").exists());
+    assert!(!root.join("shims/jq.exe").exists());
+    let state = State::open(&root.join("db/state.sqlite")).unwrap();
+    assert!(state.list().unwrap().is_empty());
+}
+
+#[test]
+fn binary_uninstall_leaves_zero_trace() {
+    let td = setup();
+    let root = td.path();
+    let download = root.join("jq-windows-amd64.exe");
+    fs::write(&download, BINARY_PAYLOAD_V1).unwrap();
+    let manifest = write_binary_manifest(root, "1.0.0", &sha256_hex(BINARY_PAYLOAD_V1));
+
+    // Materialize the root exactly as install finds it, so the comparison is of
+    // the install's own footprint.
+    voli_core::Paths::at(root).ensure().unwrap();
+    drop(State::open(&root.join("db/state.sqlite")).unwrap());
+    let mut before = snapshot(root);
+
+    install_local(&manifest, &download, root).unwrap();
+    let report = uninstall("jqbin", root, false).unwrap();
+    assert!(!report.kept_persist);
+
+    let mut after = snapshot(root);
+    // The sqlite file's bytes move with any write, even one that is fully
+    // undone; every other path must match byte for byte.
+    for tree in [&mut before, &mut after] {
+        tree.retain(|path, _| !path.starts_with("db"));
+    }
+    assert_eq!(before, after, "uninstall must leave zero trace");
+}
+
+#[test]
+fn binary_upgrade_flips_the_junction() {
+    let td = setup();
+    let root = td.path();
+    let v1 = BINARY_PAYLOAD_V1;
+    let v2 = b"MZ fake jq 2.0.0";
+    let d1 = root.join("jq-1.exe");
+    let d2 = root.join("jq-2.exe");
+    fs::write(&d1, v1).unwrap();
+    fs::write(&d2, v2).unwrap();
+
+    let m1 = write_binary_manifest(root, "1.0.0", &sha256_hex(v1));
+    install_local(&m1, &d1, root).unwrap();
+
+    let m2 = voli_core::Manifest::from_toml_str(
+        &fs::read_to_string(write_binary_manifest(root, "2.0.0", &sha256_hex(v2))).unwrap(),
+    )
+    .unwrap();
+    let up = voli_core::upgrade_install(&m2, &d2, &[], root).unwrap();
+    assert_eq!(up.from_version, "1.0.0");
+
+    // current follows the new version; the old dir survives for `cleanup`.
+    let current = root.join("apps/jqbin/current");
+    assert_eq!(fs::read(current.join("jq.exe")).unwrap(), v2);
+    assert_eq!(
+        fs::read(root.join("apps/jqbin/1.0.0/jq.exe")).unwrap(),
+        v1,
+        "the old version dir stays until cleanup"
+    );
+    // The shim never changed — it points through current\.
+    let first = fs::read_to_string(root.join("shims/jq.shim")).unwrap();
+    assert!(first.lines().next().unwrap().ends_with("current\\jq.exe"));
+
+    // Uninstall still removes every version dir.
+    uninstall("jqbin", root, false).unwrap();
+    assert!(!root.join("apps/jqbin").exists());
+}
+
 // ---- shortcut + Apps & Features integration test ----
 // These mutate process-global env vars (VOLI_UNINSTALL_SUBKEY,
 // VOLI_SHORTCUT_DIR), so they run as ONE test to avoid racing with
