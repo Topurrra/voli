@@ -21,8 +21,8 @@ pub mod net;
 pub mod query;
 pub mod sign;
 
-pub use build::build;
-pub use net::{UpdateOutcome, update};
+pub use build::{build, read_epoch, stamp_epoch};
+pub use net::{MAX_EPOCH, UpdateOutcome, update, update_with_pubkey};
 pub use query::{
     SearchHit, Suggestion, did_you_mean, did_you_mean_ref, info, info_ref, manifest_at,
     manifest_at_ref, search,
@@ -62,6 +62,15 @@ pub enum IndexError {
     BadSignature,
     #[error("bad Ed25519 key: {0}")]
     BadKey(String),
+    #[error("{url} is larger than the {limit}-byte cap for this index file")]
+    TooLarge { url: String, limit: u64 },
+    #[error(
+        "index snapshot carries no signed epoch — it was built by a registry older than this \
+         client; refusing it because an unsigned epoch can be replayed to force a downgrade"
+    )]
+    UnsignedEpoch,
+    #[error("index epoch {0} is out of range — refusing it")]
+    BadEpoch(u64),
 }
 
 /// Path to the local index sqlite: `<root>\db\index.sqlite`.

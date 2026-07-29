@@ -82,16 +82,15 @@ fn registry_triple_is_accepted_by_the_client() {
     });
 
     // 4. Client update against the served base URL, verifying with the test
-    //    pubkey via the env override (sole test in this binary — no race).
-    // SAFETY: single-threaded at this point; one writer, same value always.
-    unsafe {
-        std::env::set_var(
-            "VOLI_INDEX_PUBKEY",
-            voli_core::index::sign::public_key_hex(&TEST_SECRET),
-        )
-    };
+    //    pubkey passed explicitly (the VOLI_INDEX_PUBKEY env override is
+    //    debug-build-only, and CI runs these tests in release too).
     let client_root = TempDir::new().unwrap();
-    let outcome = voli_core::index::update(client_root.path(), &base).expect("update must succeed");
+    let outcome = voli_core::index::update_with_pubkey(
+        client_root.path(),
+        &base,
+        &voli_core::index::sign::public_key_hex(&TEST_SECRET),
+    )
+    .expect("update must succeed");
     handle.join().ok();
 
     match outcome {

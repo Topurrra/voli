@@ -173,7 +173,9 @@ pub fn validate(dir: &Path) -> Result<Vec<String>> {
 /// `index.sig`, and `index.json` into `out`.
 ///
 /// `epoch` is taken from `epoch_flag`, else `$SOURCE_DATE_EPOCH`, else the
-/// current system time — so CI can produce a reproducible index.
+/// current system time — so CI can produce a reproducible index. It is stamped
+/// *into* the snapshot before signing, and also mirrored into `index.json` for
+/// older clients.
 pub fn build(
     dir: &Path,
     out: &Path,
@@ -195,8 +197,27 @@ pub fn build(
 
     // ponytail: "latest N per package" == keep all versions in v1 (the index is
     // single-digit MB); add per-name truncation only if snapshot size demands it.
+    let epoch = epoch_flag
+        .or_else(|| {
+            std::env::var("SOURCE_DATE_EPOCH")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+        })
+        .unwrap_or_else(now_unix_secs);
+    if epoch > voli_core::index::MAX_EPOCH {
+        bail!(
+            "epoch {epoch} is beyond the client's accepted range (max {}); \
+             no client would install this index",
+            voli_core::index::MAX_EPOCH
+        );
+    }
+
     let db_path = out.join("index.sqlite");
     voli_core::index::build(&manifests, &db_path).context("compiling index.sqlite")?;
+    // The epoch must live inside the bytes we sign — index.json is a hint the
+    // client does not trust (see voli_core::index::stamp_epoch).
+    voli_core::index::stamp_epoch(&db_path, epoch)
+        .map_err(|e| anyhow::anyhow!("stamping index epoch: {e}"))?;
 
     let db_bytes = std::fs::read(&db_path).context("reading compiled index.sqlite")?;
     let size = db_bytes.len() as u64;
@@ -214,14 +235,8 @@ pub fn build(
     let sig = voli_core::index::sign(&db_bytes, &secret);
     std::fs::write(out.join("index.sig"), sig).context("writing index.sig")?;
 
-    let epoch = epoch_flag
-        .or_else(|| {
-            std::env::var("SOURCE_DATE_EPOCH")
-                .ok()
-                .and_then(|v| v.trim().parse().ok())
-        })
-        .unwrap_or_else(now_unix_secs);
-
+    // Still emitted for pre-0.9 clients, which read the epoch from here. Newer
+    // clients use it only to decide whether to download the snapshot.
     // Reuse the client's own struct so the JSON shape can never drift.
     let remote = RemoteIndex {
         epoch,
@@ -1110,6 +1125,13 @@ sha256 = "{hash}"
                 .unwrap()
                 .iter()
                 .any(|package| package["n"] == "tdd" && package["k"] == "skill")
+        );
+
+        // The epoch must be stamped *inside* the signed snapshot, not only in
+        // the unauthenticated index.json — otherwise it can be replayed.
+        assert_eq!(
+            voli_core::index::read_epoch(&out.path().join("index.sqlite")).unwrap(),
+            Some(1_753_315_200)
         );
 
         // Decompress .zst → must match sha + size in index.json.

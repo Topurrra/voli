@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use super::{IndexError, cmp_version};
 use crate::manifest::Manifest;
@@ -37,7 +37,8 @@ CREATE TABLE agent_packages (
     PRIMARY KEY (kind, name, version, arch)
 );
 CREATE VIRTUAL TABLE agent_packages_fts
-    USING fts5(kind UNINDEXED, name, description, bin_names);";
+    USING fts5(kind UNINDEXED, name, description, bin_names);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
 /// Build an `index.sqlite` at `out` from the given manifests (overwrites `out`).
 ///
@@ -109,6 +110,42 @@ pub fn build(manifests: &[Manifest], out: &Path) -> Result<(), IndexError> {
 
     tx.commit()?;
     Ok(())
+}
+
+/// Stamp the snapshot's epoch into its `meta` table — i.e. *inside* the bytes
+/// the registry signs.
+///
+/// `index.json` is fetched over plain HTTP with no signature, so the epoch it
+/// advertises is attacker-controlled: replaying a genuine older snapshot under
+/// a forged huge epoch would otherwise downgrade the client *and* freeze it at
+/// that epoch forever. The client compares this signed value, never the JSON.
+pub fn stamp_epoch(db: &Path, epoch: u64) -> Result<(), IndexError> {
+    Connection::open(db)?.execute(
+        "INSERT INTO meta (key, value) VALUES ('epoch', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [epoch.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Read the signed epoch stamped by [`stamp_epoch`]. `None` means the snapshot
+/// predates the `meta` table — the client treats that as untrusted.
+pub fn read_epoch(db: &Path) -> Result<Option<u64>, IndexError> {
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let has_meta: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_meta {
+        return Ok(None);
+    }
+    let raw: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'epoch'", [], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(raw.and_then(|v| v.trim().parse().ok()))
 }
 
 /// One manifest per distinct package identity, the one with the newest version.

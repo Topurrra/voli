@@ -1,11 +1,19 @@
 //! `voli update`: fetch, verify, and atomically swap the index (spec §5, §10).
 //!
-//! Flow: GET `index.json` (tiny: epoch/sha256/size) → if newer than local meta,
-//! GET `index.sqlite.zst` → decompress → sha256- and size-check against
-//! `index.json` → verify the Ed25519 signature over the *decompressed* bytes →
-//! atomic temp+rename into `db\index.sqlite` → save meta. Any verification
-//! failure leaves the existing index untouched (we only rename after all checks
-//! pass). Offline is soft: we report the local copy's date rather than erroring.
+//! Flow: GET `index.json` (tiny: epoch/sha256/size) → if it *hints* at something
+//! newer, GET `index.sqlite.zst` → decompress bounded by the declared size →
+//! sha256- and size-check → verify the Ed25519 signature over the *decompressed*
+//! bytes → read the epoch stamped **inside** the signed snapshot → install only
+//! if that signed epoch beats the local one → atomic temp+rename into
+//! `db\index.sqlite` → save meta. Any verification failure leaves the existing
+//! index untouched (we only rename after all checks pass). Offline is soft: we
+//! report the local copy's date rather than erroring.
+//!
+//! `index.json` is unauthenticated, so nothing it says is ever trusted: it is a
+//! fetch hint and nothing more. The epoch we persist and compare comes from the
+//! signed snapshot ([`super::stamp_epoch`]), which is what stops a replayed but
+//! genuinely-signed older snapshot from downgrading — and permanently freezing —
+//! the client.
 
 use std::io::Read;
 use std::path::Path;
@@ -53,18 +61,48 @@ pub enum UpdateOutcome {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Upper bound on any epoch we will accept: unix seconds at 2100-01-01. Epochs
+/// are build timestamps, so anything beyond this is forged. Enforcing it on the
+/// *local* meta too is what un-freezes a client whose meta was already poisoned
+/// with a huge epoch by a pre-fix build.
+pub const MAX_EPOCH: u64 = 4_102_444_800;
+
+/// Hard caps on bytes we read before we have verified anything. All three of
+/// these fetches happen pre-trust, so an attacker controls the response.
+const MAX_JSON_BYTES: u64 = 64 * 1024;
+/// An Ed25519 signature is exactly 64 bytes; there is nothing else to read.
+const MAX_SIG_BYTES: u64 = 64;
+/// Ceiling for both the compressed download and the inflated snapshot.
+const MAX_SNAPSHOT_BYTES: u64 = 256 * 1024 * 1024;
+
 fn meta_path(root: &Path) -> std::path::PathBuf {
     Paths::at(root).db().join("index.meta.json")
 }
 
 fn read_local_meta(root: &Path) -> Option<IndexMeta> {
     let text = std::fs::read_to_string(meta_path(root)).ok()?;
-    serde_json::from_str(&text).ok()
+    let meta: IndexMeta = serde_json::from_str(&text).ok()?;
+    // A meta claiming an impossible epoch can only have come from a forged
+    // index.json accepted by an older client. Ignoring it re-enables updates
+    // instead of leaving the client wedged at u64::MAX forever.
+    (meta.epoch <= MAX_EPOCH).then_some(meta)
 }
 
 /// Refresh the local index from `index_url` (the base URL that hosts
-/// `index.json`, `index.sqlite.zst`, and `index.sig`).
+/// `index.json`, `index.sqlite.zst`, and `index.sig`), verifying against the
+/// embedded production key.
 pub fn update(root: &Path, index_url: &str) -> Result<UpdateOutcome, IndexError> {
+    update_with_pubkey(root, index_url, &sign::active_pubkey_hex())
+}
+
+/// [`update`] against an explicit hex public key. Lets tests exercise the real
+/// flow with a throwaway key instead of the process-wide `VOLI_INDEX_PUBKEY`
+/// override, which release builds ignore (see [`sign::active_pubkey_hex`]).
+pub fn update_with_pubkey(
+    root: &Path,
+    index_url: &str,
+    pubkey_hex: &str,
+) -> Result<UpdateOutcome, IndexError> {
     Paths::at(root).ensure()?;
     let base = index_url.trim_end_matches('/');
     let agent = ureq::AgentBuilder::new()
@@ -74,9 +112,11 @@ pub fn update(root: &Path, index_url: &str) -> Result<UpdateOutcome, IndexError>
 
     let local = read_local_meta(root);
 
-    // 1. Freshness pointer. Unreachable here = offline; fall back to local copy.
-    let remote: RemoteIndex = match get_string(&agent, &format!("{base}/index.json")) {
-        Ok(body) => serde_json::from_str(&body)?,
+    // 1. Freshness *hint*. Unreachable here = offline; fall back to local copy.
+    //    Nothing in this file is authenticated — it only decides whether we
+    //    bother downloading the snapshot.
+    let json = match get_bytes(&agent, &format!("{base}/index.json"), MAX_JSON_BYTES) {
+        Ok(body) => body,
         Err(IndexError::Http { .. }) => {
             return Ok(UpdateOutcome::Offline {
                 local_epoch: local.as_ref().map(|m| m.epoch),
@@ -85,20 +125,41 @@ pub fn update(root: &Path, index_url: &str) -> Result<UpdateOutcome, IndexError>
         }
         Err(e) => return Err(e),
     };
+    let remote: RemoteIndex = serde_json::from_slice(&json)?;
+    if remote.epoch > MAX_EPOCH {
+        return Err(IndexError::BadEpoch(remote.epoch));
+    }
+    if remote.size > MAX_SNAPSHOT_BYTES {
+        return Err(IndexError::TooLarge {
+            url: format!("{base}/index.sqlite.zst"),
+            limit: MAX_SNAPSHOT_BYTES,
+        });
+    }
 
-    // 2. Epoch check — cheap no-op when unchanged.
+    // 2. Cheap no-op when the hint says we already have it.
     if let Some(m) = &local
         && m.epoch >= remote.epoch
     {
         return Ok(UpdateOutcome::UpToDate { epoch: m.epoch });
     }
 
-    // 3. Snapshot: download compressed, decompress.
-    let compressed = get_bytes(&agent, &format!("{base}/index.sqlite.zst"))?;
-    let db_bytes = zstd::stream::decode_all(&compressed[..])
+    // 3. Snapshot: download compressed, then inflate under a hard cap. The cap
+    //    is enforced *during* inflation, so a zstd bomb can never allocate more
+    //    than the declared size before we notice.
+    let compressed = get_bytes(
+        &agent,
+        &format!("{base}/index.sqlite.zst"),
+        MAX_SNAPSHOT_BYTES,
+    )?;
+    let mut db_bytes = Vec::new();
+    zstd::Decoder::new(&compressed[..])
+        .map_err(|e| IndexError::Decompress(e.to_string()))?
+        .take(remote.size.saturating_add(1))
+        .read_to_end(&mut db_bytes)
         .map_err(|e| IndexError::Decompress(e.to_string()))?;
 
-    // 4. Size + hash against index.json.
+    // 4. Size + hash against index.json. Still unauthenticated, but it means a
+    //    truncated or over-long inflation stops here.
     if db_bytes.len() as u64 != remote.size {
         return Err(IndexError::SizeMismatch {
             expected: remote.size,
@@ -113,19 +174,38 @@ pub fn update(root: &Path, index_url: &str) -> Result<UpdateOutcome, IndexError>
         });
     }
 
-    // 5. Signature over the decompressed bytes.
-    let sig = get_bytes(&agent, &format!("{base}/index.sig"))?;
-    sign::verify(&db_bytes, &sig, &sign::active_pubkey_hex())?;
+    // 5. Signature over the decompressed bytes. Everything past this point is
+    //    authentic — but authentic does not mean *current*.
+    let sig = get_bytes(&agent, &format!("{base}/index.sig"), MAX_SIG_BYTES)?;
+    sign::verify(&db_bytes, &sig, pubkey_hex)?;
 
-    // 6. Atomic swap: write temp beside the target, then rename over it.
+    // 6. Stage the verified snapshot, then read the epoch the registry signed
+    //    into it. Only now do we know how old this snapshot really is.
     let dst = index_db_path(root);
     let tmp = dst.with_extension("sqlite.tmp");
     std::fs::write(&tmp, &db_bytes)?;
+    let signed_epoch = match staged_epoch(&tmp, local.as_ref().map(|m| m.epoch)) {
+        Ok(epoch) => epoch,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+    };
+    let Some(signed_epoch) = signed_epoch else {
+        // Authentic, but not newer than what we already have: a replay. Keep
+        // the local index and report the truth.
+        let _ = std::fs::remove_file(&tmp);
+        return Ok(UpdateOutcome::UpToDate {
+            epoch: local.map(|m| m.epoch).unwrap_or(0),
+        });
+    };
+
+    // 7. Atomic swap.
     std::fs::rename(&tmp, &dst)?;
 
-    // 7. Persist meta.
+    // 8. Persist meta — with the *signed* epoch, never the one from index.json.
     let meta = IndexMeta {
-        epoch: remote.epoch,
+        epoch: signed_epoch,
         sha256: remote.sha256,
         size: remote.size,
         fetched_at: now_unix_ms(),
@@ -138,25 +218,34 @@ pub fn update(root: &Path, index_url: &str) -> Result<UpdateOutcome, IndexError>
     })
 }
 
-fn get_string(agent: &ureq::Agent, url: &str) -> Result<String, IndexError> {
-    agent
-        .get(url)
-        .call()
-        .map_err(|e| IndexError::Http {
-            url: url.to_string(),
-            source: Box::new(e),
-        })?
-        .into_string()
-        .map_err(IndexError::Io)
+/// Validate the epoch signed into the staged snapshot. `Ok(None)` means it is
+/// authentic but not newer than `local_epoch` — a downgrade attempt or a
+/// harmless race, either way we keep what we have.
+fn staged_epoch(tmp: &Path, local_epoch: Option<u64>) -> Result<Option<u64>, IndexError> {
+    let epoch = super::read_epoch(tmp)?.ok_or(IndexError::UnsignedEpoch)?;
+    if epoch > MAX_EPOCH {
+        return Err(IndexError::BadEpoch(epoch));
+    }
+    Ok((local_epoch.is_none_or(|local| epoch > local)).then_some(epoch))
 }
 
-fn get_bytes(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, IndexError> {
+fn get_bytes(agent: &ureq::Agent, url: &str, limit: u64) -> Result<Vec<u8>, IndexError> {
     let resp = agent.get(url).call().map_err(|e| IndexError::Http {
         url: url.to_string(),
         source: Box::new(e),
     })?;
     let mut buf = Vec::new();
-    resp.into_reader().read_to_end(&mut buf)?;
+    // Read one byte past the cap so an over-long body is detected, not silently
+    // truncated into something that might still hash correctly.
+    resp.into_reader()
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > limit {
+        return Err(IndexError::TooLarge {
+            url: url.to_string(),
+            limit,
+        });
+    }
     Ok(buf)
 }
 

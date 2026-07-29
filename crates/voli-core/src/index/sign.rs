@@ -12,7 +12,8 @@ use super::IndexError;
 /// Voli.md §10.1; the retired dev key remains only as a test fixture value).
 pub const DEV_PUBKEY: &str = "9fa724f7004638687ef8332d1bff3d15fd7792745b051f91cce0adefd303a2fa";
 
-/// Env override for the verification pubkey (hex), for tests and staging.
+/// Env override for the verification pubkey (hex). **Debug builds only** — see
+/// [`active_pubkey_hex`].
 pub const PUBKEY_ENV: &str = "VOLI_INDEX_PUBKEY";
 
 /// Sign `bytes` with a 32-byte Ed25519 secret key, returning the 64-byte
@@ -32,9 +33,20 @@ pub fn verify(bytes: &[u8], sig: &[u8], pubkey_hex: &str) -> Result<(), IndexErr
         .map_err(|_| IndexError::BadSignature)
 }
 
-/// The verification key to use: `$VOLI_INDEX_PUBKEY` if set, else [`DEV_PUBKEY`].
+/// The verification key to use.
+///
+/// A **release** build always uses the embedded [`DEV_PUBKEY`]. The
+/// `$VOLI_INDEX_PUBKEY` override is honoured in debug builds only: voli writes
+/// persistent user environment variables on a package's behalf, so in a shipped
+/// binary an installed package could otherwise repoint the trust root for every
+/// future `voli update`. Release-mode staging must use
+/// [`super::net::update_with_pubkey`] instead of an env var.
 pub fn active_pubkey_hex() -> String {
-    resolve_pubkey_hex(std::env::var(PUBKEY_ENV).ok())
+    if cfg!(debug_assertions) {
+        resolve_pubkey_hex(std::env::var(PUBKEY_ENV).ok())
+    } else {
+        DEV_PUBKEY.to_string()
+    }
 }
 
 fn resolve_pubkey_hex(env_val: Option<String>) -> String {
@@ -125,5 +137,26 @@ mod tests {
         assert_eq!(resolve_pubkey_hex(Some("abcd".into())), "abcd");
         assert_eq!(resolve_pubkey_hex(Some("  ".into())), DEV_PUBKEY);
         assert_eq!(resolve_pubkey_hex(None), DEV_PUBKEY);
+    }
+
+    /// A shipped (release) binary must never let an environment variable move
+    /// the trust root: voli writes persistent user env vars for packages, so
+    /// that would be a package-installable trust-root swap.
+    #[test]
+    fn env_override_is_debug_builds_only() {
+        let planted = "ab".repeat(32);
+        // SAFETY: no other test in this binary reads PUBKEY_ENV.
+        unsafe { std::env::set_var(PUBKEY_ENV, &planted) };
+        let active = active_pubkey_hex();
+        unsafe { std::env::remove_var(PUBKEY_ENV) };
+
+        if cfg!(debug_assertions) {
+            assert_eq!(active, planted);
+        } else {
+            assert_eq!(
+                active, DEV_PUBKEY,
+                "release builds must ignore the override"
+            );
+        }
     }
 }

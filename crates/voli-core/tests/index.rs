@@ -296,34 +296,46 @@ impl Drop for FixtureServer {
 }
 
 /// Fixed, obviously-fake ephemeral test secret — no key material lives in the
-/// repo. Verification works because `use_test_pubkey` points the client's
-/// `VOLI_INDEX_PUBKEY` override at the matching public key.
+/// repo. Tests pass the matching pubkey explicitly via `update_with_pubkey`
+/// rather than through `VOLI_INDEX_PUBKEY`, which release builds ignore.
 fn dev_secret() -> [u8; 32] {
     [42u8; 32]
 }
 
-/// Point index verification at the test key (process-wide, set once).
-/// Concurrent tests may race here, but they all write the identical value.
-fn use_test_pubkey() {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        let pk = index::sign::public_key_hex(&dev_secret());
-        // SAFETY: single value, set before any reader in this test binary cares.
-        unsafe { std::env::set_var("VOLI_INDEX_PUBKEY", pk) };
-    });
+fn test_pubkey() -> String {
+    index::sign::public_key_hex(&dev_secret())
 }
 
-/// Build a snapshot + its index.json + a valid test-key signature.
+/// The real client flow, verified against the ephemeral test key.
+fn update(root: &Path, base: &str) -> Result<UpdateOutcome, index::IndexError> {
+    index::update_with_pubkey(root, base, &test_pubkey())
+}
+
+/// Build a snapshot + its index.json + a valid test-key signature. `epoch` is
+/// stamped *inside* the snapshot (as the registry does) and mirrored into the
+/// index.json, exactly like a real publish.
 fn make_publishable(epoch: u64) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
-    use_test_pubkey();
+    make_publishable_from(epoch, &fixtures(), Some(epoch))
+}
+
+/// As above, but with an explicit manifest set (so two snapshots can differ)
+/// and an explicit *stamped* epoch (`None` = an unstamped, pre-0.9 snapshot).
+fn make_publishable_from(
+    json_epoch: u64,
+    manifests: &[Manifest],
+    stamped_epoch: Option<u64>,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
     let build_dir = tempfile::tempdir().unwrap();
     let db_path = build_dir.path().join("index.sqlite");
-    index::build(&fixtures(), &db_path).unwrap();
+    index::build(manifests, &db_path).unwrap();
+    if let Some(epoch) = stamped_epoch {
+        index::stamp_epoch(&db_path, epoch).unwrap();
+    }
     let db_bytes = std::fs::read(&db_path).unwrap();
 
     let sha = hex::encode(Sha256::digest(&db_bytes));
     let index_json = serde_json::json!({
-        "epoch": epoch,
+        "epoch": json_epoch,
         "sha256": sha,
         "size": db_bytes.len(),
     });
@@ -333,6 +345,13 @@ fn make_publishable(epoch: u64) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
     (db_bytes, index_json, snapshot_zst, sig)
 }
 
+fn local_meta_epoch(root: &Path) -> u64 {
+    let text = std::fs::read_to_string(root.join("db").join("index.meta.json")).unwrap();
+    serde_json::from_str::<serde_json::Value>(&text).unwrap()["epoch"]
+        .as_u64()
+        .unwrap()
+}
+
 #[test]
 fn update_fresh_fetch_then_noop() {
     let tmp = tempfile::tempdir().unwrap();
@@ -340,7 +359,7 @@ fn update_fresh_fetch_then_noop() {
     let srv = FixtureServer::start(index_json, snap, sig);
 
     // fresh fetch installs the index
-    let out = index::update(tmp.path(), &srv.base).unwrap();
+    let out = update(tmp.path(), &srv.base).unwrap();
     assert_eq!(
         out,
         UpdateOutcome::Updated {
@@ -358,8 +377,182 @@ fn update_fresh_fetch_then_noop() {
     );
 
     // same epoch → no-op
-    let out2 = index::update(tmp.path(), &srv.base).unwrap();
+    let out2 = update(tmp.path(), &srv.base).unwrap();
     assert_eq!(out2, UpdateOutcome::UpToDate { epoch: 1 });
+    assert_eq!(local_meta_epoch(tmp.path()), 1);
+}
+
+/// The headline trust-chain bug: `index.json` is unsigned, so an attacker can
+/// pair a *forged* epoch with a genuine, validly-signed, **older** snapshot.
+/// Every hash and signature check passes — the content really is authentic —
+/// yet installing it would roll the client back to a snapshot pinning older
+/// package versions, and persist the forged epoch so no future update ever
+/// looks newer.
+#[test]
+fn update_rejects_replayed_older_snapshot_under_a_forged_epoch() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // The genuine, current index (epoch 200) with an extra package.
+    let mut current = fixtures();
+    current.push(manifest(
+        "jq",
+        "1.7.1",
+        "Command-line JSON processor",
+        "jq.exe",
+    ));
+    let (current_bytes, ij, snap, sig) = make_publishable_from(200, &current, Some(200));
+    {
+        let srv = FixtureServer::start(ij, snap, sig);
+        assert!(matches!(
+            update(tmp.path(), &srv.base).unwrap(),
+            UpdateOutcome::Updated { epoch: 200, .. }
+        ));
+    }
+
+    // A genuine *older* snapshot (epoch 100) — real bytes, real signature —
+    // replayed with index.json claiming an absurd epoch.
+    let (_old_bytes, mut ij_old, snap_old, sig_old) =
+        make_publishable_from(u64::MAX, &fixtures(), Some(100));
+    {
+        let srv = FixtureServer::start(ij_old.clone(), snap_old.clone(), sig_old.clone());
+        let err = update(tmp.path(), &srv.base).unwrap_err();
+        assert!(
+            matches!(err, index::IndexError::BadEpoch(u64::MAX)),
+            "an absurd epoch must be refused outright, got {err:?}"
+        );
+    }
+
+    // The subtler version: a forged-but-plausible epoch, still wrapping the
+    // genuine older snapshot. Only the epoch signed *into* the snapshot can
+    // catch this one.
+    let mut val: serde_json::Value = serde_json::from_slice(&ij_old).unwrap();
+    val["epoch"] = serde_json::json!(9_999u64);
+    ij_old = serde_json::to_vec(&val).unwrap();
+    let srv = FixtureServer::start(ij_old, snap_old, sig_old);
+    assert_eq!(
+        update(tmp.path(), &srv.base).unwrap(),
+        UpdateOutcome::UpToDate { epoch: 200 },
+        "a validly-signed older snapshot must not be installed"
+    );
+
+    // The current index is still on disk, and the forged epoch never landed in
+    // the local meta — so the client is not frozen.
+    assert_eq!(
+        std::fs::read(index::index_db_path(tmp.path())).unwrap(),
+        current_bytes
+    );
+    assert_eq!(local_meta_epoch(tmp.path()), 200);
+
+    // Proof it still updates afterwards: a genuine epoch-300 index installs.
+    let (_b, ij3, snap3, sig3) = make_publishable_from(300, &current, Some(300));
+    let srv3 = FixtureServer::start(ij3, snap3, sig3);
+    assert!(matches!(
+        update(tmp.path(), &srv3.base).unwrap(),
+        UpdateOutcome::Updated { epoch: 300, .. }
+    ));
+}
+
+/// A client already wedged by the old bug (local meta poisoned with u64::MAX)
+/// must recover on its own — no hand-deleting `db\index.meta.json`.
+#[test]
+fn update_recovers_from_a_poisoned_local_epoch() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("db")).unwrap();
+    std::fs::write(
+        tmp.path().join("db").join("index.meta.json"),
+        serde_json::json!({
+            "epoch": u64::MAX,
+            "sha256": "0".repeat(64),
+            "size": 1,
+            "fetched_at": 0,
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let (_bytes, ij, snap, sig) = make_publishable(1_753_315_200);
+    let srv = FixtureServer::start(ij, snap, sig);
+    assert!(
+        matches!(
+            update(tmp.path(), &srv.base).unwrap(),
+            UpdateOutcome::Updated {
+                epoch: 1_753_315_200,
+                ..
+            }
+        ),
+        "a poisoned local epoch must not freeze updates forever"
+    );
+    assert_eq!(local_meta_epoch(tmp.path()), 1_753_315_200);
+}
+
+/// A snapshot with no signed epoch (built by a pre-0.9 registry) is refused:
+/// accepting it would mean trusting index.json again, which is the whole bug.
+#[test]
+fn update_rejects_snapshot_without_a_signed_epoch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_bytes, ij, snap, sig) = make_publishable_from(5, &fixtures(), None);
+    let srv = FixtureServer::start(ij, snap, sig);
+
+    let err = update(tmp.path(), &srv.base).unwrap_err();
+    assert!(
+        matches!(err, index::IndexError::UnsignedEpoch),
+        "expected UnsignedEpoch, got {err:?}"
+    );
+    assert!(!index::index_db_path(tmp.path()).exists());
+    // The staged temp file must not be left behind either.
+    assert!(
+        !index::index_db_path(tmp.path())
+            .with_extension("sqlite.tmp")
+            .exists()
+    );
+}
+
+/// `index.json` is read before anything is verified, so its size must be
+/// capped — otherwise the host can stream an unbounded body at us.
+#[test]
+fn update_rejects_an_oversized_index_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_bytes, ij, snap, sig) = make_publishable(1);
+    // Still perfectly valid JSON — just enormous.
+    let mut val: serde_json::Value = serde_json::from_slice(&ij).unwrap();
+    val["padding"] = serde_json::json!("A".repeat(128 * 1024));
+    let srv = FixtureServer::start(serde_json::to_vec(&val).unwrap(), snap, sig);
+
+    let err = update(tmp.path(), &srv.base).unwrap_err();
+    assert!(
+        matches!(err, index::IndexError::TooLarge { .. }),
+        "expected TooLarge, got {err:?}"
+    );
+}
+
+/// A zstd bomb: a few KB that inflate to far more than the declared size. The
+/// cap has to bite during inflation, so the mismatch is reported without ever
+/// materialising the full payload.
+#[test]
+fn update_rejects_a_decompression_bomb() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bomb = zstd::stream::encode_all(&vec![0u8; 64 * 1024 * 1024][..], 3).unwrap();
+    assert!(bomb.len() < 64 * 1024, "bomb should be tiny compressed");
+    let index_json = serde_json::to_vec(&serde_json::json!({
+        "epoch": 1,
+        "sha256": "a".repeat(64),
+        "size": 4096,
+    }))
+    .unwrap();
+    let srv = FixtureServer::start(index_json, bomb, vec![0u8; 64]);
+
+    let err = update(tmp.path(), &srv.base).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            index::IndexError::SizeMismatch {
+                expected: 4096,
+                actual: 4097
+            }
+        ),
+        "inflation must stop one byte past the declared size, got {err:?}"
+    );
+    assert!(!index::index_db_path(tmp.path()).exists());
 }
 
 #[test]
@@ -370,14 +563,14 @@ fn update_rejects_tampered_signature_keeping_old_index() {
     let (good_bytes, ij1, snap1, sig1) = make_publishable(1);
     {
         let srv = FixtureServer::start(ij1, snap1, sig1);
-        index::update(tmp.path(), &srv.base).unwrap();
+        update(tmp.path(), &srv.base).unwrap();
     }
 
     // Now serve epoch-2 with a corrupted signature.
     let (_b2, ij2, snap2, mut sig2) = make_publishable(2);
     sig2[0] ^= 0xff;
     let srv = FixtureServer::start(ij2, snap2, sig2);
-    let err = index::update(tmp.path(), &srv.base).unwrap_err();
+    let err = update(tmp.path(), &srv.base).unwrap_err();
     assert!(matches!(err, index::IndexError::BadSignature));
 
     // The old (epoch-1) index must be untouched.
@@ -395,7 +588,7 @@ fn update_rejects_sha_mismatch() {
     let bad_json = serde_json::to_vec(&val).unwrap();
 
     let srv = FixtureServer::start(bad_json, snap, sig);
-    let err = index::update(tmp.path(), &srv.base).unwrap_err();
+    let err = update(tmp.path(), &srv.base).unwrap_err();
     assert!(
         matches!(err, index::IndexError::Sha256Mismatch { .. }),
         "expected sha mismatch, got {err:?}"
@@ -408,7 +601,7 @@ fn update_rejects_sha_mismatch() {
 fn update_offline_reports_local_copy() {
     let tmp = tempfile::tempdir().unwrap();
     // No server: point at a dead port.
-    let out = index::update(tmp.path(), "http://127.0.0.1:9").unwrap();
+    let out = update(tmp.path(), "http://127.0.0.1:9").unwrap();
     assert!(matches!(
         out,
         UpdateOutcome::Offline {

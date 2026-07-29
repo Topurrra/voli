@@ -67,7 +67,7 @@ impl Config {
             index_url: table
                 .get("index_url")
                 .and_then(|v| v.as_str())
-                .map(str::to_string)
+                .map(|url| checked_index_url(url, path))
                 .unwrap_or_else(|| DEFAULT_INDEX_URL.to_string()),
         }
     }
@@ -80,6 +80,32 @@ impl Config {
             _ => None,
         }
     }
+}
+
+/// Accept an `index_url` only if we would actually fetch it over http(s).
+/// Anything else (`file:`, `ftp:`, a bare path, a UNC share) points the trust
+/// chain somewhere it was never meant to go, so we warn and fall back to the
+/// default rather than honour it. Plain `http` is allowed — the snapshot is
+/// signed either way — but warned about, since the default is https.
+fn checked_index_url(url: &str, path: &Path) -> String {
+    let scheme = url.trim().to_ascii_lowercase();
+    if scheme.starts_with("https://") {
+        return url.to_string();
+    }
+    if scheme.starts_with("http://") {
+        eprintln!(
+            "warning: index_url in {} uses plain http; the index is signed, but the fetch \
+             is not confidential",
+            path.display()
+        );
+        return url.to_string();
+    }
+    eprintln!(
+        "warning: ignoring index_url '{url}' in {} — only http(s) URLs are supported \
+         (using the default)",
+        path.display()
+    );
+    DEFAULT_INDEX_URL.to_string()
 }
 
 /// Parse `path` as a TOML table; empty on missing file or parse error.
@@ -197,6 +223,28 @@ mod tests {
         set_raw(&p, "index_url", "https://x").unwrap();
         let cfg = Config::load(&p); // warns to stderr, does not panic
         assert_eq!(cfg.index_url, "https://x");
+    }
+
+    #[test]
+    fn non_http_index_url_falls_back_to_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        for bad in [
+            "file:///C:/evil/index",
+            r"\\attacker\share\index",
+            "ftp://example.com/idx",
+            "example.com/idx",
+        ] {
+            set_raw(&p, "index_url", bad).unwrap();
+            assert_eq!(
+                Config::load(&p).index_url,
+                DEFAULT_INDEX_URL,
+                "{bad} must not be used as an index URL"
+            );
+        }
+        // Plain http warns but is still honoured (the snapshot is signed).
+        set_raw(&p, "index_url", "http://127.0.0.1:8080/idx").unwrap();
+        assert_eq!(Config::load(&p).index_url, "http://127.0.0.1:8080/idx");
     }
 
     #[test]
