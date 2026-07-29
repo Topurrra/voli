@@ -372,6 +372,7 @@
         <a href="#quickstart">Quickstart</a>
         <a href="#loop">The loop</a>
         <a href="#commands">Command reference</a>
+        <a href="#per-project">Per-project memory</a>
         <a href="#recording">Recording &amp; flags</a>
         <a href="#retrieval">Retrieval</a>
         <a href="#privacy">Privacy &amp; firewall</a>
@@ -604,7 +605,7 @@
           <table>
             <thead><tr><th>Command</th><th>What it does</th></tr></thead>
             <tbody>
-              <tr><td><code>init</code></td><td>Create the memory and print the agent setup prompt.</td></tr>
+              <tr><td><code>init</code></td><td>Create the memory and print the agent setup prompt. <code>--project</code> creates a store for this codebase instead.</td></tr>
               <tr><td><code>read</code></td><td>Load core facts + task-relevant memories + a decaying timeline. Run first.</td></tr>
               <tr><td><code>note "&lt;line&gt;"</code></td><td>Record one memory. Flags below.</td></tr>
               <tr><td><code>search "&lt;q&gt;"</code></td><td>Ranked best-match retrieval (BM25).</td></tr>
@@ -618,10 +619,45 @@
               <tr><td><code>recover</code></td><td>Restore access from the recovery blob (<code>--save</code> to create it).</td></tr>
               <tr><td><code>stats</code> / <code>doctor</code></td><td>Show statistics; diagnose caches that are out of step.</td></tr>
               <tr><td><code>export</code></td><td>Print every memory in time order (<code>--json</code> for machine output).</td></tr>
-              <tr><td><code>prompt</code></td><td>Print the agent setup prompt.</td></tr>
+              <tr><td><code>prompt</code></td><td>Print the agent setup prompt. <code>--per-project</code> prints the one for a project store.</td></tr>
+              <tr><td><code>--global</code></td><td>Not a command - a flag on any of the above. Uses the machine-wide store even inside a project that has its own.</td></tr>
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section id="per-project">
+        <h2>Per-project memory</h2>
+        <p>
+          A project can keep its own store for knowledge about <em>that codebase</em> - how it is
+          laid out, why a decision went the way it did, the test that is always flaky - separate
+          from what you know about the user.
+        </p>
+        <div class="term-bar">
+          <pre><span class="p">PS&gt;</span> <span class="c">voli memory init --project</span>
+Project memory created at C:\work\api\.voli\memory (device 7f2a10, custody: keychain).
+added .voli/ to .gitignore
+
+<span class="p">PS&gt;</span> <span class="c">voli memory prompt --per-project</span></pre>
+        </div>
+        <p>
+          Every <code>voli memory</code> command run anywhere inside the project then finds that
+          store automatically - the nearest <code>.voli\memory</code> in the current directory or an
+          ancestor wins, so nested repositories each keep their own. Detection requires the store to
+          exist, so a directory that never ran <code>init --project</code> keeps using the
+          machine-wide one and nothing is ever silently redirected.
+        </p>
+        <p>
+          Add <code>--global</code> to any command to reach the machine-wide store from inside a
+          project - that is where facts about the user belong, the ones still true in a different
+          repository. <code>$VOLI_MEMORY_DIR</code> still overrides everything.
+        </p>
+        <p class="note">
+          <strong>Not a secret vault.</strong> A project store is git-ignored, but it is encrypted
+          exactly like the machine-wide one - no more. Treat anything written there as readable by
+          anyone with the machine, and keep credentials in <code>--private</code> notes or out of
+          memory entirely.
+        </p>
       </section>
 
       <section id="recording">
@@ -736,7 +772,7 @@
           <table>
             <thead><tr><th>Variable</th><th>Purpose</th></tr></thead>
             <tbody>
-              <tr><td><code>VOLI_MEMORY_DIR</code></td><td>Where the memory lives (default <code>%LOCALAPPDATA%\voli\memory</code>).</td></tr>
+              <tr><td><code>VOLI_MEMORY_DIR</code></td><td>Where the memory lives. Overrides everything, including project detection. Otherwise: the nearest <code>.voli\memory</code> in the current directory or an ancestor, else <code>%LOCALAPPDATA%\voli\memory</code>.</td></tr>
               <tr><td><code>VOLI_MEMORY_PASSPHRASE</code></td><td>Use passphrase custody instead of the OS keychain.</td></tr>
               <tr><td><code>VOLI_MEMORY_SHOW_SECRETS</code></td><td>Reveal masked secrets for one command (escape hatch).</td></tr>
               <tr><td><code>VOLI_MEMORY_CONTRADICT=off</code></td><td>Disable contradiction warnings.</td></tr>

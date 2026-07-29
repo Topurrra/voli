@@ -1,4 +1,5 @@
-//! `voli memory <subcommand>`: the STELA agent-memory engine (crate `stela`).
+//! `voli memory <subcommand>`: the agent-memory engine (internal crate `stela`;
+//! that name is never surfaced to users).
 //!
 //! The engine is embeddable and keychain-free; this layer resolves the master
 //! key (passphrase custody, or the Windows keychain) and formats output.
@@ -17,6 +18,10 @@ use stela::{CustodyMode, Store, custody_mode, parse_block_id};
 #[derive(Subcommand)]
 pub enum MemoryCmd {
     /// Create this memory and print the agent setup prompt.
+    ///
+    /// With --project, creates a store for THIS codebase in the current
+    /// directory (.voli\memory) and adds .voli\ to .gitignore. Every memory
+    /// command run anywhere inside the project then finds it automatically.
     Init {
         /// Create a project-local store in the current directory and git-ignore it.
         #[arg(long)]
@@ -116,6 +121,9 @@ pub enum MemoryCmd {
         json: bool,
     },
     /// Print the agent setup prompt.
+    ///
+    /// With --per-project, prints the prompt for a project-local store: what
+    /// belongs in it, that it is git-ignored, and when to use --global instead.
     Prompt {
         /// Describe the project-local store instead of the machine-wide one.
         #[arg(long = "per-project")]

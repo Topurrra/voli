@@ -150,7 +150,7 @@ enum Command {
     /// Delete voli and all installed packages completely (zero trace).
     #[command(alias = "self-uninstall")]
     SelfDelete,
-    /// Permanent, verifiable, encrypted memory for AI agents (STELA).
+    /// Permanent, verifiable, encrypted memory for AI agents.
     Memory {
         /// Use the machine-wide store even inside a project that has its own.
         #[arg(long, global = true)]
