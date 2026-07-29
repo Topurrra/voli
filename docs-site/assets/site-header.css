@@ -51,7 +51,7 @@ header.site {
 }
 
 .brand-dot {
-  color: var(--vermilion);
+  color: var(--verm);
   font-weight: 700;
 }
 
@@ -280,6 +280,20 @@ header.site {
   text-overflow: ellipsis;
   font: 600 .82rem var(--mono);
   white-space: nowrap;
+}
+
+.quick-kind {
+  margin-left: .4rem;
+  padding: .1rem .32rem;
+  color: var(--verm-bright);
+  background: color-mix(in srgb, var(--verm) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--verm) 38%, transparent);
+  border-radius: 999px;
+  font-size: .58rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  vertical-align: middle;
 }
 
 .quick-meta {

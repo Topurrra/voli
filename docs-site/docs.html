@@ -7,7 +7,8 @@
   <title>Documentation · Voli</title>
   <meta name="description"
     content="Voli documentation - installing packages and agent skills, the encrypted voli memory for AI agents, and what's on the roadmap.">
-  <link rel="icon" href="assets/logo.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="assets/favicon-64.png">
   <style>
     @font-face {
       font-family: "Space Grotesk";
@@ -322,11 +323,36 @@
       .docs-side a.active { border-left: none; }
       .docs-side .side-group { flex-basis: 100%; margin: .5rem .3rem .15rem; }
     }
+
+    .skip {
+      position: absolute;
+      left: -9999px;
+      top: 0;
+      background: var(--panel);
+      color: var(--cream);
+      padding: .6rem 1rem;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      z-index: 100;
+    }
+
+    .skip:focus { left: 12px; top: 12px; }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+
+      * {
+        transition: none !important;
+        animation: none !important;
+      }
+    }
   </style>
   <link rel="stylesheet" href="assets/site-header.css">
 </head>
 
 <body>
+  <a class="skip" href="#docs-main">Skip to documentation</a>
+
   <header class="site" id="site-header"></header>
 
   <div class="docs">
@@ -359,7 +385,7 @@
       </nav>
     </aside>
 
-    <main class="docs-main">
+    <main class="docs-main" id="docs-main" tabindex="-1">
       <div class="doc-hero">
         <span class="eyebrow">Documentation</span>
         <h1>Everything Voli does, <span class="accent">one page.</span></h1>
@@ -474,9 +500,10 @@
           is ledgered, deleting a skill is zero-trace.
         </p>
         <div class="note">
-          <strong>Preview.</strong> Publishing the public skill catalog is deferred, so registry installs like
-          <code>voli install skill/tdd --for codex</code> light up once those assets ship. Local skill archives work
-          today.
+          <strong>The catalog is live.</strong> The public skill catalog is published, so registry installs like
+          <code>voli install skill/tdd --for codex</code> work today. Browse every skill on the
+          <a class="inline" href="search.html?kind=skill">packages page</a>. Local skill archives install the
+          same way.
         </div>
       </section>
 
@@ -496,8 +523,11 @@
 <span class="p">PS&gt;</span> voli delete skill/tdd --for codex</div>
         <p>
           Without <code>--for</code>, an interactive terminal offers a filtered multi-select and remembers your last
-          selection; non-interactive commands must name an explicit target. Local archives can be tested now, and
-          link mode remains deferred.
+          selection; non-interactive commands must name an explicit target. Over 60 agent targets are supported -
+          <code>codex</code>, <code>claude-code</code>, <code>cursor</code>, <code>windsurf</code>,
+          <code>github-copilot</code>, <code>gemini-cli</code>, <code>zed</code> and the rest - and the picker on the
+          <a class="inline" href="search.html?kind=skill">packages page</a> lists every valid id. A skill archive on
+          disk installs the same way; there is no link mode.
         </p>
         <div class="snip"><span class="p">PS&gt;</span> voli install .\skill.toml --archive .\skill.zip --for codex</div>
       </section>
@@ -509,8 +539,9 @@
           durable place to keep what it learns - facts, decisions, preferences, events - and to pull the
           right pieces back on demand. Every record is <strong>encrypted at rest</strong> with
           XChaCha20-Poly1305 and chained with a blake2b hash, so tampering is caught by
-          <code>voli memory verify</code>. Nothing leaves the machine: there is no network client in the
-          binary at all.
+          <code>voli memory verify</code>. Nothing leaves the machine: <code>voli memory</code> has no
+          network path at all - it never uploads, syncs, or phones home. (The wider CLI does reach the
+          network, to fetch the package index and to check for its own updates.)
         </p>
         <ul>
           <li><strong>One store, many sessions.</strong> Identity and history persist across every restart and model swap.</li>
@@ -582,6 +613,7 @@
               <tr><td><code>expand &lt;a-b&gt;</code></td><td>Open a compacted block into its two halves.</td></tr>
               <tr><td><code>compact</code></td><td>Fold blocks that are due into one-line summaries.</td></tr>
               <tr><td><code>retract &lt;id&gt;</code></td><td>Mark a memory wrong (never deletes; stays for audit).</td></tr>
+              <tr><td><code>forget &lt;block&gt;</code></td><td>Drop a bad compaction summary; the next <code>compact</code> rebuilds it.</td></tr>
               <tr><td><code>verify</code></td><td>Prove the log has not been altered.</td></tr>
               <tr><td><code>recover</code></td><td>Restore access from the recovery blob (<code>--save</code> to create it).</td></tr>
               <tr><td><code>stats</code> / <code>doctor</code></td><td>Show statistics; diagnose caches that are out of step.</td></tr>
@@ -603,7 +635,7 @@
               <tr><td><code>--supersedes &lt;id&gt;</code></td><td>The truth changed. The old line stays for audit; only the new one is current. Prefer this over recording a contradiction.</td></tr>
               <tr><td><code>--private</code></td><td>Keep it but never re-surface the text (secrets, PII). Shows as <code>&bull;&bull;&bull; (private, withheld)</code>.</td></tr>
               <tr><td><code>--valid-from</code> / <code>--valid-until</code></td><td>The window the fact holds (a role, an address). Outside it, the fact is history, not current. Dates: <code>YYYY</code>, <code>YYYY-MM-DD</code>, or unix millis.</td></tr>
-              <tr><td><code>--kind</code></td><td><code>dcsn</code> | <code>pref</code> | <code>evnt</code> | <code>fact</code>.</td></tr>
+              <tr><td><code>--kind</code></td><td><code>core</code> | <code>fact</code> | <code>evnt</code> | <code>dcsn</code> | <code>pref</code> | <code>rtrc</code>.</td></tr>
               <tr><td><code>--tags a,b</code> &middot; <code>--conf 0-100</code></td><td>Free-form tags and a confidence score.</td></tr>
             </tbody>
           </table>
@@ -649,7 +681,7 @@
   <span class="mut"># read shows Berlin; recall shows both</span></div>
         <p>
           When a new note clashes with a live fact on the same subject, <code>note</code> warns you and names
-          the conflict so you can <code>--supersede</code> it. Turn the check off with
+          the conflict so you can <code>--supersedes</code> it. Turn the check off with
           <code>VOLI_MEMORY_CONTRADICT=off</code>.
         </p>
         <div class="snip"><span class="p">PS&gt;</span> voli memory note "I prefer spaces"

@@ -2,6 +2,26 @@
   'use strict';
 
   var DATA_URL = 'https://raw.githubusercontent.com/Topurrra/voli-registry/main/packages.json';
+
+  // Mirrors SKILL_TARGET_IDS in crates/voli-core/src/agent_targets_generated.rs.
+  // catalog.test.js diffs the two, so a CLI resync fails the suite instead of
+  // silently shipping `--for <unknown>` to the site.
+  var AGENTS = ['adal', 'aider-desk', 'antigravity', 'antigravity-cli', 'astrbot', 'augment',
+    'autohand-code', 'bob', 'claude-code', 'cline', 'codearts-agent', 'codebuddy', 'codemaker',
+    'codestudio', 'codex', 'command-code', 'continue', 'cortex', 'crush', 'cursor', 'deepagents',
+    'dexto', 'droid', 'firebender', 'forgecode', 'gemini-cli', 'github-copilot', 'grok',
+    'hermes-agent', 'iflow-cli', 'inference-sh', 'jazz', 'junie', 'kilo', 'kimchi',
+    'kimi-code-cli', 'kiro-cli', 'kode', 'lingma', 'loaf', 'mcpjam', 'mistral-vibe', 'moxby',
+    'mux', 'neovate', 'ona', 'openhands', 'pi', 'pochi', 'qoder', 'qoder-cn', 'qwen-code',
+    'reasonix', 'roo', 'rovodev', 'tabnine-cli', 'terramind', 'tinycloud', 'trae', 'trae-cn',
+    'warp', 'windsurf', 'zcode', 'zed', 'zencoder', 'zenflow'];
+
+  // Surfaced first in the picker; the rest stay one scroll away.
+  var COMMON_AGENTS = ['codex', 'claude-code', 'cursor', 'windsurf', 'github-copilot',
+    'gemini-cli', 'zed', 'cline', 'roo', 'continue', 'warp', 'kiro-cli'];
+
+  var DEFAULT_AGENT = 'codex';
+
   var packages = null;
   var pending = null;
 
@@ -50,10 +70,15 @@
     return matches;
   }
 
+  var ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+  // Escapes for both text and double/single-quoted attribute contexts. Do not
+  // swap this back to textContent -> innerHTML: that leaves " and ' untouched,
+  // which is a breakout in every `attr="' + escape(x) + '"` sink below.
   function escapeHtml(value) {
-    var node = document.createElement('div');
-    node.textContent = value == null ? '' : String(value);
-    return node.innerHTML;
+    return (value == null ? '' : String(value)).replace(/[&<>"']/g, function (char) {
+      return ESCAPES[char];
+    });
   }
 
   function highlight(value, query) {
@@ -75,7 +100,7 @@
 
   function icon(pkg, className) {
     var initial = (pkg.n.match(/[a-z0-9]/i) || ['?'])[0];
-    var source = pkg.i || favicon(pkg.h);
+    var source = httpsUrl(pkg.i) || favicon(pkg.h);
     var image = source
       ? '<img src="' + escapeHtml(source) + '" alt="" loading="lazy" referrerpolicy="no-referrer">'
       : '';
@@ -83,13 +108,20 @@
       '<span class="icon-fallback">' + escapeHtml(initial) + '</span>' + image + '</span>';
   }
 
-  function favicon(homepage) {
+  // pkg.i and pkg.h are upstream-controlled. Only absolute https URLs reach an
+  // src/href; href normalisation also percent-encodes quotes and angle brackets.
+  function httpsUrl(value) {
     try {
-      var url = new URL(homepage);
-      return url.protocol === 'https:' ? url.origin + '/favicon.ico' : '';
+      var url = new URL(value);
+      return url.protocol === 'https:' ? url.href : '';
     } catch (e) {
       return '';
     }
+  }
+
+  function favicon(homepage) {
+    var url = httpsUrl(homepage);
+    return url ? new URL(url).origin + '/favicon.ico' : '';
   }
 
   function wireIcon(root) {
@@ -129,9 +161,28 @@
   function command(pkg, agent) {
     if (typeof pkg === 'string') return 'voli install ' + pkg;
     if (kind(pkg) === 'skill') {
-      return 'voli install skill/' + pkg.n + ' --for ' + (agent || 'codex');
+      return 'voli install skill/' + pkg.n + ' --for ' + (agent || DEFAULT_AGENT);
     }
     return 'voli install ' + pkg.n;
+  }
+
+  // Built once: 65 <option>s per result card adds up fast.
+  var agentMarkup = null;
+
+  function agentOptions() {
+    if (agentMarkup === null) {
+      var rest = AGENTS.filter(function (id) { return COMMON_AGENTS.indexOf(id) === -1; });
+      agentMarkup =
+        '<optgroup label="Common">' + optionList(COMMON_AGENTS) + '</optgroup>' +
+        '<optgroup label="All agents">' + optionList(rest) + '</optgroup>';
+    }
+    return agentMarkup;
+  }
+
+  function optionList(ids) {
+    return ids.map(function (id) {
+      return '<option value="' + escapeHtml(id) + '">' + escapeHtml(id) + '</option>';
+    }).join('');
   }
 
   window.VoliCatalog = {
@@ -145,6 +196,9 @@
     provenance: provenance,
     kind: kind,
     filterKind: filterKind,
-    command: command
+    command: command,
+    agents: AGENTS,
+    agentOptions: agentOptions,
+    defaultAgent: DEFAULT_AGENT
   };
 })();

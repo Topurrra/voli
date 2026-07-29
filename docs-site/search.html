@@ -22,6 +22,7 @@
     :root {
       --bg: #001C16;
       --bg-dark: #00120E;
+      --bg-darker: #000F0C;
       --panel: #023A2E;
       --border: rgba(233, 226, 210, .14);
       --border-strong: rgba(233, 226, 210, .24);
@@ -428,6 +429,64 @@
       color: var(--verm-bright);
     }
 
+    .skip {
+      position: absolute;
+      left: -9999px;
+      top: 0;
+      background: var(--panel);
+      color: var(--cream);
+      padding: .6rem 1rem;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      z-index: 100;
+    }
+
+    .skip:focus {
+      left: 12px;
+      top: 12px;
+    }
+
+    /* Screen-reader-only mirror of #result-status, announced on a slower beat
+       than the 80ms render so typing does not narrate a count per keystroke. */
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .more-row {
+      display: grid;
+      justify-items: center;
+      gap: .4rem;
+      padding: 1.2rem 0 .2rem;
+      color: var(--sage);
+      font-size: .82rem;
+    }
+
+    .more-btn,
+    .retry-btn {
+      padding: .55rem 1.15rem;
+      color: var(--cream);
+      background: color-mix(in srgb, var(--bg-dark) 70%, transparent);
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      cursor: pointer;
+      font: .8rem var(--mono);
+      transition: border-color .12s, background .12s;
+    }
+
+    .more-btn:hover,
+    .retry-btn:hover {
+      border-color: var(--verm);
+      background: color-mix(in srgb, var(--verm) 12%, transparent);
+    }
+
     /* ---------- footer ---------- */
     footer.site {
       background: var(--bg-darker);
@@ -515,6 +574,8 @@
 </head>
 
 <body>
+  <a class="skip" href="#results">Skip to results</a>
+
   <header class="site" id="site-header"></header>
 
   <main>
@@ -552,9 +613,10 @@
     </section>
 
     <div class="results-head">
-      <span id="result-status" aria-live="polite">Loading catalog...</span>
+      <span id="result-status">Loading catalog...</span>
+      <span class="sr-only" id="result-live" aria-live="polite"></span>
     </div>
-    <section class="results" id="results" aria-label="Package results"></section>
+    <section class="results" id="results" aria-label="Package results" tabindex="-1"></section>
   </main>
 
   <footer class="site" id="site-footer"></footer>
@@ -573,9 +635,17 @@
       var sourceButtons = sourceFilters.querySelectorAll('.source-filter');
       var kindButtons = document.getElementById('kind-filters').querySelectorAll('.kind-filter');
       var status = document.getElementById('result-status');
+      var live = document.getElementById('result-live');
       var results = document.getElementById('results');
       var packages = null;
+      var loadFailed = false;
       var timer = null;
+      var announceTimer = null;
+      // Cards are not free (innerHTML parse + querySelector + listeners + <img>).
+      // A one-letter query matches ~2,600 rows, so render a page at a time.
+      var PAGE = 50;
+      var shown = PAGE;
+      var lastQuery = null;
       var query = new URLSearchParams(window.location.search).get('q') || '';
       var selectedKind = new URLSearchParams(window.location.search).get('kind') === 'skill'
         ? 'skill'
@@ -587,12 +657,25 @@
         button.setAttribute('aria-pressed', String(button.getAttribute('data-kind') === selectedKind));
       });
 
+      // Sighted users get the count immediately; the polite live region lags so a
+      // screen reader announces the settled result, not one count per keystroke.
+      function say(text) {
+        status.textContent = text;
+        clearTimeout(announceTimer);
+        announceTimer = setTimeout(function () { live.textContent = text; }, 600);
+      }
+
       function render() {
         query = input.value.trim();
+        if (query !== lastQuery) {
+          shown = PAGE;
+          lastQuery = query;
+        }
         results.innerHTML = '';
 
         if (!packages) {
-          status.textContent = 'Loading catalog...';
+          if (loadFailed) showLoadError();
+          else say('Loading catalog...');
           return;
         }
 
@@ -601,14 +684,14 @@
 
         if (!query) {
           updateUrl('');
-          status.textContent = catalog.length + ' ' + kindLabel + ' ready to search';
+          say(catalog.length + ' ' + kindLabel + ' ready to search');
           results.innerHTML = catalog.length
             ? '<div class="empty"><strong>Start with a name, command, or keyword.</strong>' +
               (selectedKind === 'skill'
                 ? 'Try testing, documentation, design, or workflow.'
                 : 'Try chrome, rust, editor, database, or any executable name.') + '</div>'
-            : '<div class="empty"><strong>Skills are coming online.</strong>' +
-              'The catalog will appear here as soon as it is published.</div>';
+            : '<div class="empty"><strong>Nothing here yet.</strong>' +
+              'No ' + kindLabel + ' came back from the registry index.</div>';
           return;
         }
 
@@ -627,23 +710,47 @@
           });
         }
 
-        status.textContent = matches.length + ' result' + (matches.length === 1 ? '' : 's') +
-          ' for "' + query + '" in ' + kindLabel +
-          (source ? ' from ' + source + ' packages' : '');
         updateUrl(query);
 
         if (!matches.length) {
+          say('No results for "' + query + '" in ' + kindLabel);
           results.innerHTML =
             '<div class="empty"><strong>No packages matched.</strong>' +
             'Try a shorter name or a command the package might provide.</div>';
           return;
         }
 
+        var visible = Math.min(shown, matches.length);
+        say((visible < matches.length
+          ? 'Showing ' + visible + ' of ' + matches.length + ' results'
+          : matches.length + ' result' + (matches.length === 1 ? '' : 's')) +
+          ' for "' + query + '" in ' + kindLabel +
+          (source ? ' from ' + source + ' packages' : ''));
+
         var fragment = document.createDocumentFragment();
-        for (var i = 0; i < matches.length; i++) {
+        for (var i = 0; i < visible; i++) {
           fragment.appendChild(resultCard(matches[i].p));
         }
+        if (visible < matches.length) {
+          fragment.appendChild(moreRow(visible, matches.length));
+        }
         results.appendChild(fragment);
+      }
+
+      function moreRow(visible, total) {
+        var row = document.createElement('div');
+        var remaining = total - visible;
+        row.className = 'more-row';
+        row.innerHTML = '<button class="more-btn" type="button">Show ' +
+          Math.min(PAGE, remaining) + ' more</button>' +
+          '<span>Showing ' + visible + ' of ' + total + '</span>';
+        row.querySelector('.more-btn').addEventListener('click', function () {
+          shown += PAGE;
+          render();
+          var cards = results.querySelectorAll('.result-card');
+          if (cards[visible]) cards[visible].focus();
+        });
+        return row;
       }
 
       function resultCard(pkg) {
@@ -666,9 +773,8 @@
           (bins ? '<div class="package-bins" aria-label="Provided commands">' + bins + '</div>' : '') + '</div>' +
           '<div class="install-actions">' +
           (isSkill
-            ? '<select class="agent-select" aria-label="Install ' + VoliCatalog.escape(pkg.n) + ' for agent">' +
-              '<option value="codex">Codex</option><option value="claude-code">Claude Code</option>' +
-              '<option value="cursor">Cursor</option><option value="windsurf">Windsurf</option></select>'
+            ? '<select class="agent-select" aria-label="Install ' + VoliCatalog.escape(pkg.n) +
+              ' for agent">' + VoliCatalog.agentOptions() + '</select>'
             : '') +
           '<button class="install-copy" type="button" aria-label="Copy ' +
           VoliCatalog.escape(command) + '">' + VoliCatalog.escape(command) + '</button></div>';
@@ -738,9 +844,10 @@
         timer = setTimeout(render, 80);
       });
 
-      sort.addEventListener('change', render);
+      sort.addEventListener('change', function () { shown = PAGE; render(); });
       sourceButtons.forEach(function (button) {
         button.addEventListener('click', function () {
+          shown = PAGE;
           source = button.getAttribute('data-source');
           sourceButtons.forEach(function (item) {
             item.setAttribute('aria-pressed', String(item === button));
@@ -750,6 +857,7 @@
       });
       kindButtons.forEach(function (button) {
         button.addEventListener('click', function () {
+          shown = PAGE;
           selectedKind = button.getAttribute('data-kind');
           kindButtons.forEach(function (item) {
             item.setAttribute('aria-pressed', String(item === button));
@@ -783,34 +891,57 @@
           event.preventDefault();
           input.focus();
         } else if (event.key === 'Escape' &&
-          (event.target === input || results.contains(event.target))) {
+          (event.target === input ||
+            (results.contains(event.target) && event.target.classList.contains('result-card')))) {
+          // Escape inside a card's agent <select> must only dismiss that dropdown,
+          // so anything other than the input or a focused card is left alone.
           input.value = '';
           render();
           input.focus();
         }
       });
 
-      VoliCatalog.load().then(function (data) {
-        packages = data;
-        sortUpdated.hidden = !packages.some(function (pkg) {
-          return VoliCatalog.updated(pkg) > 0;
-        });
-        var availableSources = {};
-        packages.forEach(function (pkg) {
-          var value = VoliCatalog.provenance(pkg);
-          if (value) availableSources[value] = true;
-        });
-        sourceButtons.forEach(function (button) {
-          var value = button.getAttribute('data-source');
-          if (value) button.hidden = !availableSources[value];
-        });
-        sourceFilters.hidden = !Object.keys(availableSources).length;
-        render();
-        if (!query && window.matchMedia('(pointer: fine)').matches) input.focus();
-      }).catch(function () {
+      function showLoadError() {
         status.innerHTML =
           'Catalog unavailable. <a class="fallback-link" href="https://github.com/Topurrra/voli-registry/tree/main/manifests" rel="noopener">Browse manifests on GitHub</a>.';
-      });
+        live.textContent = 'Catalog unavailable.';
+        results.innerHTML =
+          '<div class="empty"><strong>Could not reach the registry.</strong>' +
+          'The catalog is fetched from GitHub; a network hiccup or an offline moment will do this.' +
+          '<div class="more-row"><button class="retry-btn" type="button" id="retry">Try again</button></div></div>';
+        document.getElementById('retry').addEventListener('click', loadCatalog);
+      }
+
+      // VoliCatalog.load() caches the resolved catalog and clears its in-flight
+      // promise on failure, so calling it again is a real retry.
+      function loadCatalog() {
+        loadFailed = false;
+        say('Loading catalog...');
+        results.innerHTML = '';
+        VoliCatalog.load().then(function (data) {
+          packages = data;
+          sortUpdated.hidden = !packages.some(function (pkg) {
+            return VoliCatalog.updated(pkg) > 0;
+          });
+          var availableSources = {};
+          packages.forEach(function (pkg) {
+            var value = VoliCatalog.provenance(pkg);
+            if (value) availableSources[value] = true;
+          });
+          sourceButtons.forEach(function (button) {
+            var value = button.getAttribute('data-source');
+            if (value) button.hidden = !availableSources[value];
+          });
+          sourceFilters.hidden = !Object.keys(availableSources).length;
+          render();
+          if (!query && window.matchMedia('(pointer: fine)').matches) input.focus();
+        }).catch(function () {
+          loadFailed = true;
+          showLoadError();
+        });
+      }
+
+      loadCatalog();
     })();
   </script>
 </body>

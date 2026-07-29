@@ -552,7 +552,8 @@
     .cmp td.is-voli { background: rgba(237, 81, 38, .07); color: var(--cream); }
     .cmp tbody tr:last-child th, .cmp tbody tr:last-child td { border-bottom: 0; }
     .cmp .y { color: var(--pos); }
-    .cmp .n { color: var(--sage); opacity: .65; }
+    /* no opacity: .65 here - it drops the competitor column to ~3.5:1 on --bg. */
+    .cmp .n { color: var(--sage); }
 
     @media (prefers-reduced-motion: reduce) {
       .tk-mesh span { animation: none; }

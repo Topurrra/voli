@@ -16,7 +16,7 @@
   host.innerHTML = [
     '<nav class="nav" aria-label="Primary">',
     '  <a class="brand" href="index.html#top">',
-    '    <img src="assets/logo.png" alt="" width="30" height="30">',
+    '    <img src="assets/favicon-64.png" alt="" width="60" height="60">',
     '    Voli<span class="brand-tag"><span class="brand-dot">·</span><code>The Bear That Delivers</code></span>',
     '  </a>',
     '  <form class="header-search" id="header-search" action="search.html" role="search">',
@@ -115,17 +115,22 @@
           var p = item.p;
           var row = document.createElement('button');
           var command = VoliCatalog.command(p);
+          var isSkill = VoliCatalog.kind(p) === 'skill';
           row.type = 'button';
           row.id = 'search-option-' + rendered.length;
           row.className = 'quick-result';
           row.setAttribute('role', 'option');
           row.setAttribute('aria-selected', 'false');
           row.setAttribute('aria-label', 'Copy ' + command);
+          // The popover has no agent picker, so a skill row says which agent the
+          // copied command targets; search.html is where you change it.
           row.innerHTML =
             VoliCatalog.icon(p, 'quick-icon') +
-            '<span><span class="quick-name">' + VoliCatalog.escape(p.n) + '</span>' +
+            '<span><span class="quick-name">' + VoliCatalog.escape(p.n) +
+            (isSkill ? '<span class="quick-kind">skill</span>' : '') + '</span>' +
             '<span class="quick-meta">' + VoliCatalog.escape(p.v + ' · ' + (p.d || 'No description')) + '</span></span>' +
-            '<span class="quick-copy">Copy</span>';
+            '<span class="quick-copy">Copy' +
+            (isSkill ? ' · ' + VoliCatalog.escape(VoliCatalog.defaultAgent) : '') + '</span>';
           VoliCatalog.wireIcon(row.querySelector('.quick-icon'));
           row.addEventListener('click', function () { copyText(command, row); });
           results.appendChild(row);
@@ -155,12 +160,14 @@
 
     function copyText(text, row) {
       function done() {
+        if (row.classList.contains('copied')) return;
         var label = row.querySelector('.quick-copy');
+        var original = label.textContent;
         row.classList.add('copied');
         label.textContent = 'Copied';
         setTimeout(function () {
           row.classList.remove('copied');
-          label.textContent = 'Copy';
+          label.textContent = original;
         }, 1400);
       }
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -222,6 +229,11 @@
 
     document.addEventListener('click', function (e) {
       if (!form.contains(e.target)) close();
+    });
+
+    // Tabbing out of the combobox must collapse it too, or aria-expanded lies.
+    form.addEventListener('focusout', function (e) {
+      if (!form.contains(e.relatedTarget)) close();
     });
 
     document.addEventListener('keydown', function (e) {
