@@ -173,11 +173,24 @@ impl Shortcut {
     pub fn link_name(&self) -> String {
         match self {
             Shortcut::Table { name, .. } => name.clone(),
-            Shortcut::Path(p) => std::path::Path::new(p)
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.clone()),
+            Shortcut::Path(p) => file_stem_any_sep(p),
         }
+    }
+}
+
+/// The final path segment of `value`, without its extension, treating BOTH `/`
+/// and `\` as separators on every platform.
+///
+/// `Path::file_stem` cannot be used here. It only treats `\` as a separator on
+/// Windows, so `bin\rg.exe` yields `rg` on Windows and `bin\rg` on Linux — and
+/// `voli-index-tool`, which validates and compiles the whole registry, builds on
+/// Linux. That divergence made 215 manifests pass locally and fail in CI.
+fn file_stem_any_sep(value: &str) -> String {
+    let base = value.rsplit(['/', '\\']).next().unwrap_or(value);
+    match base.rsplit_once('.') {
+        // A leading dot is part of the name (`.gitignore`), not an extension.
+        Some((stem, _)) if !stem.is_empty() => stem.to_string(),
+        _ => base.to_string(),
     }
 }
 
@@ -203,10 +216,7 @@ impl Bin {
     pub fn shim_name(&self) -> String {
         match self {
             Bin::Table { name, .. } => name.clone(),
-            Bin::Path(p) => std::path::Path::new(p)
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.clone()),
+            Bin::Path(p) => file_stem_any_sep(p),
         }
     }
 
@@ -873,6 +883,29 @@ sha256 = "{}"
             Manifest::from_toml_str(&s)
                 .unwrap_or_else(|e| panic!("shortcut name {name:?} must stay valid: {e}"));
         }
+    }
+
+    /// `Path::file_stem` treats `\` as a separator only on Windows, so
+    /// `bin\stg.exe` gave `stg` locally and `bin\stg` on Linux. Since
+    /// voli-index-tool validates the whole registry from Linux CI, 215 published
+    /// manifests passed on a maintainer's machine and failed the publish.
+    #[test]
+    fn shim_and_link_names_do_not_depend_on_the_host_separator() {
+        for (path, want) in [
+            (r"bin\stg.exe", "stg"),
+            ("bin/stg.exe", "stg"),
+            (r"IDE\bin\trae.exe", "trae"),
+            ("rg.exe", "rg"),
+            (r"bin\no-extension", "no-extension"),
+        ] {
+            let s = minimal(&format!(r#"bin = ["{}"]"#, path.escape_default()));
+            let m = Manifest::from_toml_str(&s)
+                .unwrap_or_else(|e| panic!("bin {path:?} must stay valid: {e}"));
+            assert_eq!(m.bin[0].shim_name(), want, "shim name for {path:?}");
+        }
+        // The bare-string Shortcut variant derives its display name the same way.
+        let m = Manifest::from_toml_str(&minimal(r#"shortcuts = ["bin\\rg.exe"]"#)).unwrap();
+        assert_eq!(m.shortcuts[0].link_name(), "rg");
     }
 
     /// ~20 published packages persist a nested path (`res\conf`,
