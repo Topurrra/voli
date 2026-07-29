@@ -648,6 +648,25 @@ fn contradiction_kill_switch_disables_detection() {
 
 // ---------------------------------------------------------------- tree / compact
 
+/// Drive every compression the given budget asks for. Returns the blocks built.
+fn compact_all(store: &Store, t: u64, budget: u64) -> Vec<(u64, u64)> {
+    let mut built = Vec::new();
+    loop {
+        let todo = store.pending(t, budget, Some(1));
+        let Some(&(lo, hi)) = todo.first() else { break };
+        assert!(
+            store
+                .tree_put(lo, hi, &format!("summary of {}-{}", lo, hi - 1))
+                .unwrap(),
+            "tree_put refused {lo}-{}",
+            hi - 1
+        );
+        built.push((lo, hi));
+        assert!(built.len() < 500, "compaction is not converging");
+    }
+    built
+}
+
 #[test]
 fn nap_builds_summaries_and_verify_stays_green() {
     let (_d, store) = fresh();
@@ -655,26 +674,197 @@ fn nap_builds_summaries_and_verify_stays_green() {
     for i in 0..T {
         note(&store, &format!("memory {i}"));
     }
-    // Drive every pending compression with placeholder summaries in dense order.
-    loop {
-        let todo = store.pending(T, Some(1));
-        let Some(&(lo, hi)) = todo.first() else { break };
-        assert!(
-            store
-                .tree_put(lo, hi, &format!("summary of {}-{}", lo, hi - 1))
-                .unwrap()
+    let built = compact_all(&store, T, 8);
+    assert!(!built.is_empty(), "a tight budget must demand summaries");
+    assert!(store.pending(T, 8, None).is_empty());
+    // Every block built reads back, and a tight-budget read uses them.
+    for &(lo, hi) in &built {
+        assert_eq!(
+            store.tree_get(lo, hi).unwrap().as_deref(),
+            Some(format!("summary of {}-{}", lo, hi - 1).as_str()),
+            "block {lo}-{} should read back",
+            hi - 1
         );
     }
-    assert_eq!(store.pending_count(T), 0);
-    // A compressed block reads back; a tight-budget read now uses summaries.
-    assert_eq!(
-        store.tree_get(0, 8).unwrap().as_deref(),
-        Some("summary of 0-7")
-    );
     let read = store.render_read(8, None, 8).unwrap();
     assert!(
         read.contains("summary of"),
         "read should surface a summary:\n{read}"
+    );
+    assert!(store.verify().unwrap().ok());
+}
+
+#[test]
+fn nothing_is_pending_while_the_whole_timeline_fits_the_budget() {
+    // The compaction nag used to fire from the second memory onward and never
+    // stop, asking for ~t summaries that `cover` would never render. Below the
+    // budget every memory is shown in full, so nothing is owed.
+    let (_d, store) = fresh();
+    const T: u64 = 40;
+    for i in 0..T {
+        note(&store, &format!("memory {i}"));
+    }
+    assert_eq!(
+        store.pending_count(T),
+        0,
+        "no summary can be shown while the timeline fits the read budget"
+    );
+    let read = store.render_read(stela::READ_LINES, None, 8).unwrap();
+    assert!(
+        !read.contains("await compression"),
+        "a read within budget must not ask for compression:\n{read}"
+    );
+}
+
+#[test]
+fn summary_stops_reading_back_when_a_memory_it_covers_is_retracted() {
+    // Blocks index the live, non-core timeline by position. Retracting an early
+    // memory shifts every later one, so a summary that is still believed would
+    // describe memories it no longer covers.
+    let (_d, store) = fresh();
+    const T: u64 = 20;
+    let ids: Vec<String> = (0..T)
+        .map(|i| note(&store, &format!("memory {i}")))
+        .collect();
+    let built = compact_all(&store, T, 8);
+    let &(lo, hi) = built.first().unwrap();
+    assert!(store.tree_get(lo, hi).unwrap().is_some());
+
+    store.retract(&ids[0], Some("wrong")).unwrap();
+
+    let t = T - 1; // the retracted memory left the live timeline
+    assert_eq!(
+        store.tree_get(lo, hi).unwrap(),
+        None,
+        "a summary whose memories shifted must not be served as fact"
+    );
+    assert!(
+        store.pending(t, 8, None).contains(&(lo, hi)),
+        "the shifted block must be offered for rebuild"
+    );
+    assert!(store.verify().unwrap().ok(), "the log itself is untouched");
+}
+
+#[test]
+fn summaries_survive_memories_appended_after_them() {
+    // Only the leaves a block covers may invalidate it. Appending must not.
+    let (_d, store) = fresh();
+    const T: u64 = 20;
+    for i in 0..T {
+        note(&store, &format!("memory {i}"));
+    }
+    let built = compact_all(&store, T, 8);
+    let &(lo, hi) = built.first().unwrap();
+    let before = store.tree_get(lo, hi).unwrap();
+    assert!(before.is_some());
+    for i in 0..5 {
+        note(&store, &format!("later memory {i}"));
+    }
+    assert_eq!(
+        store.tree_get(lo, hi).unwrap(),
+        before,
+        "appending must not invalidate an earlier summary"
+    );
+}
+
+#[test]
+fn a_summary_cannot_be_spliced_between_levels() {
+    // AAD used to be the slot index alone, and every level has a slot 0, so a
+    // narrow summary could be copied into a wider level's file and still open.
+    let (_d, store) = fresh();
+    const T: u64 = 20;
+    for i in 0..T {
+        note(&store, &format!("memory {i}"));
+    }
+    compact_all(&store, T, 8);
+    let two = store.dir().join("TREE").join("2");
+    let four = store.dir().join("TREE").join("4");
+    if !two.exists() || !four.exists() {
+        return; // this budget did not build both levels; nothing to splice
+    }
+    let rec = stela::store::TREE_E;
+    let mut buf = vec![0u8; rec];
+    let mut f = fs::File::open(&two).unwrap();
+    f.read_exact(&mut buf).unwrap();
+    let mut g = OpenOptions::new().write(true).open(&four).unwrap();
+    g.seek(SeekFrom::Start(0)).unwrap();
+    g.write_all(&buf).unwrap();
+    g.sync_all().unwrap();
+    assert_eq!(
+        store.tree_get(0, 4).unwrap(),
+        None,
+        "a level-2 summary must not authenticate as a level-4 summary"
+    );
+}
+
+#[test]
+fn forget_drops_only_its_own_block_and_its_ancestors() {
+    // Dropping one bad summary used to truncate every later block at every
+    // level, discarding unrelated work.
+    let (_d, store) = fresh();
+    const T: u64 = 20;
+    for i in 0..T {
+        note(&store, &format!("memory {i}"));
+    }
+    let built = compact_all(&store, T, 8);
+    let pairs: Vec<(u64, u64)> = built.iter().copied().filter(|&(l, h)| h - l == 2).collect();
+    if pairs.len() < 2 {
+        return; // need two sibling blocks at the same level to prove the point
+    }
+    let (first, later) = (pairs[0], *pairs.last().unwrap());
+    store.tree_drop(first.0, first.1).unwrap();
+    assert_eq!(
+        store.tree_get(first.0, first.1).unwrap(),
+        None,
+        "the named block is dropped"
+    );
+    assert!(
+        store.tree_get(later.0, later.1).unwrap().is_some(),
+        "a later sibling must survive: {later:?}"
+    );
+}
+
+#[test]
+fn rebuilding_a_stale_block_leaves_untouched_blocks_alone() {
+    // Dropping/rebuilding used to truncate a level back to the change, throwing
+    // away every later summary. Retract late, so blocks below the change keep
+    // exactly the same memories and must survive both the staleness check and
+    // the in-place rebuild of the blocks above them.
+    let (_d, store) = fresh();
+    const T: u64 = 20;
+    let ids: Vec<String> = (0..T)
+        .map(|i| note(&store, &format!("memory {i}")))
+        .collect();
+    let built = compact_all(&store, T, 8);
+    let cut = T - 2; // retract near the end; blocks under `cut` are unaffected
+    let early = built
+        .iter()
+        .copied()
+        .find(|&(_, hi)| hi <= cut)
+        .expect("need a block entirely below the retraction");
+    let early_text = store.tree_get(early.0, early.1).unwrap();
+    assert!(early_text.is_some());
+
+    store.retract(&ids[cut as usize], Some("wrong")).unwrap();
+    let t = T - 1;
+
+    assert_eq!(
+        store.tree_get(early.0, early.1).unwrap(),
+        early_text,
+        "a block below the change covers the same memories and must survive"
+    );
+    let todo = store.pending(t, 8, None);
+    for &(lo, hi) in &todo {
+        assert!(store.tree_put(lo, hi, "rebuilt").unwrap());
+    }
+    assert!(
+        store.pending(t, 8, None).is_empty(),
+        "rebuilding must settle every block the read needs"
+    );
+    assert_eq!(
+        store.tree_get(early.0, early.1).unwrap(),
+        early_text,
+        "rebuilding later blocks in place must not clobber an earlier one"
     );
     assert!(store.verify().unwrap().ok());
 }

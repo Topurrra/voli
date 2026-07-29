@@ -8,6 +8,7 @@
 //! between slots. Two devices append to two files, so a synced folder merges by
 //! adding files, never by overwriting a record.
 
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -15,13 +16,23 @@ use std::path::{Path, PathBuf};
 use regex::RegexBuilder;
 use zeroize::Zeroizing;
 
+use blake2::digest::consts::U16;
+use blake2::{Blake2b, Digest};
+
 use crate::contradiction::{Relation, classify, windows_overlap};
-use crate::crypto::{open, seal, sealed_len};
+use crate::crypto::{open, open_with, seal, seal_with, sealed_len};
 use crate::record::{Record, bm25, pack_log, pad, recompute_hash, unpack_log};
 use crate::{
-    Disclosed, Error, KINDS, LOG_P, PRIVATE_TAG, RAW_MAX, Result, TREE_P, cover, fence, firewall,
-    msg, now_iso, now_millis, os_random, sanitize,
+    Disclosed, Error, KINDS, LOG_P, PRIVATE_TAG, RAW_MAX, READ_LINES, Result, TREE_P, cover, fence,
+    firewall, msg, now_iso, now_millis, os_random, sanitize,
 };
+
+type Blake2b16 = Blake2b<U16>;
+
+/// Domain separator for summary AAD, so a summary can never be confused with a
+/// log record and a format change invalidates old summaries instead of
+/// misreading them.
+const TREE_AAD_TAG: &[u8] = b"stela-tree-v1";
 
 /// On-disk sealed width of a log record.
 pub const LOG_E: usize = sealed_len(LOG_P);
@@ -496,101 +507,184 @@ impl Store {
 
     // ---- tree (summaries) ------------------------------------------------
 
-    /// The summary of block `[lo, hi)`, or `None` if not built (or torn).
+    /// The AAD binding a summary to the block it describes: a domain tag, the
+    /// block's level and slot, and a digest of the exact memory ids it covers.
+    ///
+    /// This is what makes staleness impossible rather than merely unlikely. A
+    /// block's leaves are positions in the live, non-core timeline, and that
+    /// sequence shifts whenever a memory is superseded, retracted, or simply
+    /// ages out of its validity window — the last of which happens with no write
+    /// at all, just the clock passing a `--valid-until`. No write-path
+    /// bookkeeping could catch that case. Binding the leaves into the AAD means a
+    /// summary whose memories have changed cannot be opened, so it is treated as
+    /// absent and rebuilt instead of being reported as fact.
+    ///
+    /// Including level and slot also binds a summary to its own file: a level-2
+    /// summary spliced into the level-4 file no longer authenticates, which the
+    /// previous `AAD = k` scheme allowed (every level had a slot 0).
+    fn tree_aad(size: u64, k: u64, leaves: &[Record]) -> Vec<u8> {
+        let mut h = Blake2b16::new();
+        for r in leaves {
+            h.update(r.dev.as_bytes());
+            h.update(b":");
+            h.update(r.seq.to_le_bytes());
+            h.update(b";");
+        }
+        let mut aad = Vec::with_capacity(TREE_AAD_TAG.len() + 32);
+        aad.extend_from_slice(TREE_AAD_TAG);
+        aad.extend_from_slice(&size.to_le_bytes());
+        aad.extend_from_slice(&k.to_le_bytes());
+        aad.extend_from_slice(&h.finalize());
+        aad
+    }
+
+    /// The summary of block `[lo, hi)`, or `None` if it was never built, no longer
+    /// matches the memories it covers, or is damaged.
     pub fn tree_get(&self, lo: u64, hi: u64) -> Result<Option<String>> {
+        self.tree_get_with(lo, hi, &self.rest()?)
+    }
+
+    /// [`Self::tree_get`] against an already-loaded timeline, so a read that walks
+    /// many blocks loads the log once instead of once per block.
+    fn tree_get_with(&self, lo: u64, hi: u64, rest: &[Record]) -> Result<Option<String>> {
         let size = hi - lo;
+        if size == 0 || hi > rest.len() as u64 {
+            return Ok(None);
+        }
         let k = lo / size;
         let Some(sealed) = read_sealed_at(&self.tree_path(size), TREE_E, k)? else {
             return Ok(None);
         };
-        let plain = open(&self.key, k, &sealed)?;
+        let aad = Self::tree_aad(size, k, &rest[lo as usize..hi as usize]);
+        // A summary that does not authenticate is stale or damaged, never
+        // authoritative. Summaries are derived data — the log is the truth — so
+        // report it absent and let `compact` rebuild it rather than fail a read.
+        // `doctor` counts these so the condition stays visible.
+        let Ok(plain) = open_with(&self.key, &aad, &sealed) else {
+            return Ok(None);
+        };
         let s = std::str::from_utf8(&plain)
             .map_err(|_| Error::Msg(format!("summary of #{lo}-{} is corrupt", hi - 1)))?
             .trim_end();
         Ok((!s.is_empty()).then(|| s.to_string()))
     }
 
-    /// Write the summary of block `[lo, hi)`. Blocks are built in dense order.
-    /// Returns false if already settled/forgotten meanwhile.
+    /// Write the summary of block `[lo, hi)`. Returns false if the block is out of
+    /// range or would leave a hole in its level.
     pub fn tree_put(&self, lo: u64, hi: u64, text: &str) -> Result<bool> {
+        let rest = self.rest()?;
         let size = hi - lo;
-        let k = lo / size;
         let text = sanitize(text);
         if text.is_empty() {
             return msg("empty summary");
         }
+        if size == 0 || hi > rest.len() as u64 {
+            return Ok(false);
+        }
+        let k = lo / size;
         let _lock = self.lock()?;
         let path = self.tree_path(size);
         repair(&path, TREE_E)?;
-        if count(&path, TREE_E) != k {
-            return Ok(false);
-        }
+        // Slots are addressed, not appended: compaction is demand-driven, so a
+        // level is naturally sparse and a block in the middle is rebuilt on its
+        // own. A slot never written stays zero, which cannot authenticate and so
+        // reads as "not built" — the same answer as a short file.
         let plain = pad(&text, TREE_P)?;
-        let sealed = seal(&self.key, k, &plain)?;
-        let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
-        f.write_all(&sealed)?;
-        f.flush()?;
-        f.sync_all()?;
+        let aad = Self::tree_aad(size, k, &rest[lo as usize..hi as usize]);
+        let sealed = seal_with(&self.key, &aad, &plain)?;
+        write_sealed_at(&path, TREE_E, k, &sealed)?;
         Ok(true)
     }
 
-    /// Forget block `[lo, hi)` and every block built from it (truncate each level
-    /// back to that point). The log is never touched. Returns the blocks dropped.
+    /// Forget block `[lo, hi)` and the wider summaries built from it. Sibling
+    /// blocks are left alone: each summary is bound to its own memories, so
+    /// dropping one cannot make another wrong. The log is never touched.
     pub fn tree_drop(&self, lo: u64, hi: u64) -> Result<Vec<(u64, u64)>> {
         let mut gone = Vec::new();
-        let mut size = hi - lo;
         let _lock = self.lock()?;
         let t = Self::live(&self.timeline()?)
             .iter()
             .filter(|r| r.kind != "core")
             .count() as u64;
-        while size <= t {
+        let (mut lo, mut hi) = (lo, hi);
+        while hi - lo <= t.max(1) {
+            let size = hi - lo;
             let path = self.tree_path(size);
             let k = lo / size;
-            let n = count(&path, TREE_E);
-            if n > k {
-                for i in k..n {
-                    gone.push((i * size, (i + 1) * size));
-                }
-                let f = OpenOptions::new().write(true).open(&path)?;
-                f.set_len(k * TREE_E as u64)?;
-                f.sync_all()?;
+            if count(&path, TREE_E) > k {
+                // An all-zero slot cannot authenticate, so it reads as absent.
+                // Zeroing keeps every later block addressable, unlike truncation.
+                write_sealed_at(&path, TREE_E, k, &vec![0u8; TREE_E])?;
+                gone.push((lo, hi));
             }
-            size *= 2;
+            let psize = size * 2;
+            if psize > t {
+                break;
+            }
+            lo = (lo / psize) * psize;
+            hi = lo + psize;
         }
         Ok(gone)
     }
 
     // ---- naps (compression) ---------------------------------------------
 
-    /// Blocks that can be built and have not been, smallest first.
-    pub fn pending(&self, t: u64, limit: Option<usize>) -> Vec<(u64, u64)> {
+    /// The summaries a read at `budget` lines would render and does not have,
+    /// smallest first.
+    ///
+    /// Compaction is demand-driven, not eager. While the whole timeline fits the
+    /// budget, [`cover`] renders every memory in full and a summary would never be
+    /// shown, so nothing is pending — building one would spend a model round-trip
+    /// on output no reader will see. Past the budget, this lists exactly the
+    /// blocks the next read needs: a missing block wider than [`RAW_MAX`] is
+    /// summarized from its two halves, so those are listed first.
+    pub fn pending(&self, t: u64, budget: u64, limit: Option<usize>) -> Vec<(u64, u64)> {
+        let Ok(rest) = self.rest() else {
+            return Vec::new();
+        };
         let mut todo = Vec::new();
-        let mut size = 2u64;
-        while size <= t {
-            let have = count(&self.tree_path(size), TREE_E);
-            for k in have..(t / size) {
-                todo.push((k * size, (k + 1) * size));
-                if let Some(l) = limit
-                    && todo.len() >= l
-                {
-                    return todo;
-                }
+        let mut seen = HashSet::new();
+        for (lo, hi) in cover(t, budget) {
+            if hi - lo > 1 {
+                self.collect_needed(lo, hi, &rest, &mut todo, &mut seen);
             }
-            size *= 2;
+        }
+        // Narrowest first: a parent is built from its halves, so they must exist.
+        todo.sort_unstable_by_key(|&(lo, hi)| (hi - lo, lo));
+        if let Some(l) = limit {
+            todo.truncate(l);
         }
         todo
     }
 
-    /// How many blocks `pending` would list.
-    pub fn pending_count(&self, t: u64) -> u64 {
-        let mut n = 0u64;
-        let mut size = 2u64;
-        while size <= t {
-            n += (t / size).saturating_sub(count(&self.tree_path(size), TREE_E));
-            size *= 2;
+    /// Add `[lo, hi)` to `out` if it is missing, preceded by whichever of its
+    /// halves are missing too (a block wider than [`RAW_MAX`] is summarized from
+    /// its halves, not from the raw log).
+    fn collect_needed(
+        &self,
+        lo: u64,
+        hi: u64,
+        rest: &[Record],
+        out: &mut Vec<(u64, u64)>,
+        seen: &mut HashSet<(u64, u64)>,
+    ) {
+        if !seen.insert((lo, hi)) {
+            return;
         }
-        n
+        if !matches!(self.tree_get_with(lo, hi, rest), Ok(None)) {
+            return; // present and still matching its memories
+        }
+        if hi - lo > RAW_MAX {
+            let mid = (lo + hi) / 2;
+            self.collect_needed(lo, mid, rest, out, seen);
+            self.collect_needed(mid, hi, rest, out, seen);
+        }
+        out.push((lo, hi));
+    }
+
+    /// How many blocks `pending` would list at the default read budget.
+    pub fn pending_count(&self, t: u64) -> u64 {
+        self.pending(t, READ_LINES, None).len() as u64
     }
 
     fn rest(&self) -> Result<Vec<Record>> {
@@ -604,7 +698,7 @@ impl Store {
     pub fn next_compact(&self) -> Result<Option<Disclosed>> {
         let rest = self.rest()?;
         let t = rest.len() as u64;
-        let todo = self.pending(t, Some(1));
+        let todo = self.pending(t, READ_LINES, None);
         let Some(&(lo, hi)) = todo.first() else {
             return Ok(None);
         };
@@ -612,7 +706,7 @@ impl Store {
             &rest,
             lo,
             hi,
-            self.pending_count(t) - 1,
+            todo.len() as u64 - 1,
         )?))
     }
 
@@ -627,7 +721,7 @@ impl Store {
             let mut halves = Vec::new();
             for (a, b) in [(lo, mid), (mid, hi)] {
                 let s = self
-                    .tree_get(a, b)?
+                    .tree_get_with(a, b, rest)?
                     .unwrap_or_else(|| "(missing - run doctor)".into());
                 halves.push(format!("  #{}-{} {}", a, b - 1, s));
             }
@@ -669,7 +763,9 @@ impl Store {
         let mut out: Vec<String> = Vec::new();
 
         let core: Vec<&Record> = alive.iter().filter(|r| r.kind == "core").collect();
-        let rest: Vec<&Record> = alive.iter().filter(|r| r.kind != "core").collect();
+        // Owned: these are the leaves a summary is bound to, so they are hashed
+        // as well as printed.
+        let rest: Vec<Record> = alive.iter().filter(|r| r.kind != "core").cloned().collect();
         let superseded = recs.iter().filter(|r| r.stale).count();
 
         out.push(format!(
@@ -711,11 +807,11 @@ impl Store {
         } else {
             for (lo, hi) in cover(t, lines_left) {
                 if hi - lo == 1 {
-                    out.push(fmt(rest[lo as usize], true));
-                } else if let Some(s) = self.tree_get(lo, hi)? {
+                    out.push(fmt(&rest[lo as usize], true));
+                } else if let Some(s) = self.tree_get_with(lo, hi, &rest)? {
                     out.push(format!("+ #{}-{} {}", lo, hi - 1, s));
                 } else if hi - lo <= RAW_MAX {
-                    out.extend((lo..hi.min(t)).map(|i| fmt(rest[i as usize], true)));
+                    out.extend((lo..hi.min(t)).map(|i| fmt(&rest[i as usize], true)));
                 } else {
                     out.push(format!(
                         "+ #{}-{} ({} memories, not yet compressed - run `{TOOL} expand {}-{}`)",
@@ -729,7 +825,9 @@ impl Store {
             }
         }
         out.push(String::new());
-        let n_pend = self.pending_count(t);
+        // Pending is measured against the budget this read actually used, so the
+        // hint only ever asks for summaries this reader would have been shown.
+        let n_pend = self.pending(t, lines_left, None).len() as u64;
         if n_pend > 0 {
             out.push(format!(
                 "{n_pend} block(s) await compression. Run `{TOOL} compact` when convenient \
@@ -864,7 +962,7 @@ impl Store {
         let mut lines = vec![format!("#{}-{}, in halves", lo, hi - 1)];
         for (a, b) in [(lo, mid), (mid, hi)] {
             let s = self
-                .tree_get(a, b)?
+                .tree_get_with(a, b, &rest)?
                 .unwrap_or_else(|| "(not compressed yet)".into());
             lines.push(format!("+ #{}-{} {}", a, b - 1, s));
         }
@@ -960,8 +1058,10 @@ impl Store {
                 ));
             }
         }
-        let t = self.rest()?.len() as u64;
+        let rest = self.rest()?;
+        let t = rest.len() as u64;
         let mut size = 2u64;
+        let mut stale = 0u64;
         while size <= t {
             let have = count(&self.tree_path(size), TREE_E);
             if have > t / size {
@@ -971,6 +1071,30 @@ impl Store {
                 ));
             }
             size *= 2;
+        }
+        // A stored summary that no longer opens covers memories that have since
+        // changed, or predates the current format. Only the blocks a read would
+        // actually render are worth raising: below the read budget no summary is
+        // ever consulted, so a stale one there is invisible and harmless.
+        for (lo, hi) in cover(t, READ_LINES) {
+            if hi - lo < 2 {
+                continue;
+            }
+            let slot = read_sealed_at(&self.tree_path(hi - lo), TREE_E, lo / (hi - lo))?;
+            // An all-zero slot is a gap a demand-driven build skipped, not a
+            // summary that went stale.
+            let written = slot.is_some_and(|b| b.iter().any(|&x| x != 0));
+            if written && self.tree_get_with(lo, hi, &rest)?.is_none() {
+                stale += 1;
+            }
+        }
+        if stale > 0 {
+            issues.push(format!(
+                "{stale} stored summary/summaries no longer match the memories they cover \
+                 (those memories changed, or the summaries predate the current format) - \
+                 reads use the memories themselves, and `{TOOL} compact` rebuilds a summary \
+                 when a read actually needs one"
+            ));
         }
         Ok(issues)
     }
@@ -1186,6 +1310,29 @@ fn read_sealed_at(path: &Path, rec: usize, idx: u64) -> Result<Option<Vec<u8>>> 
         return Ok(None);
     }
     Ok(Some(buf))
+}
+
+/// Write exactly `rec` bytes at record `idx`, extending the file if `idx` is one
+/// past the end. Fixed-width records make this addressable, so a summary in the
+/// middle can be rebuilt without disturbing the ones after it.
+fn write_sealed_at(path: &Path, rec: usize, idx: u64, data: &[u8]) -> Result<()> {
+    // truncate(false): every other slot in this level must survive the write.
+    let mut f = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    let at = idx * rec as u64;
+    // Extend explicitly rather than relying on write-past-EOF zero fill, so any
+    // skipped slot is genuinely zero (and therefore reads as "not built").
+    if f.metadata()?.len() < at {
+        f.set_len(at)?;
+    }
+    f.seek(SeekFrom::Start(at))?;
+    f.write_all(data)?;
+    f.flush()?;
+    f.sync_all()?;
+    Ok(())
 }
 
 /// Atomic write: sibling temp + fsync + rename. A crash leaves the old file or

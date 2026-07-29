@@ -9,6 +9,11 @@
 //! `AAD = seq` (the record's slot index, little-endian) binds a ciphertext to its
 //! position: copying record 5's bytes into slot 3 makes the tag verification fail,
 //! so splicing and reordering are caught for free.
+//!
+//! [`seal_with`] / [`open_with`] take that AAD explicitly, so a caller can bind a
+//! record to more than its slot. The summary tree uses this to bind a summary to
+//! the exact memories it describes: if those memories change, the summary no
+//! longer authenticates and is rebuilt rather than believed.
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
@@ -25,21 +30,14 @@ pub const fn sealed_len(plain: usize) -> usize {
     NONCE_LEN + plain + TAG_LEN
 }
 
-/// Seal one fixed-width plaintext record for slot `seq`.
+/// Seal one fixed-width plaintext record under an explicit `aad`.
 /// Returns `NONCE(24) || ciphertext(plain + 16)`.
-pub fn seal(key: &[u8; 32], seq: u64, plain: &[u8]) -> Result<Vec<u8>> {
+pub fn seal_with(key: &[u8; 32], aad: &[u8], plain: &[u8]) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
     let mut nonce = [0u8; NONCE_LEN];
     os_random(&mut nonce)?;
-    let aad = seq.to_le_bytes();
     let ct = cipher
-        .encrypt(
-            XNonce::from_slice(&nonce),
-            Payload {
-                msg: plain,
-                aad: &aad,
-            },
-        )
+        .encrypt(XNonce::from_slice(&nonce), Payload { msg: plain, aad })
         .map_err(|e| Error::Crypto(e.to_string()))?;
     let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
     out.extend_from_slice(&nonce);
@@ -47,21 +45,31 @@ pub fn seal(key: &[u8; 32], seq: u64, plain: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Open a sealed record for slot `seq`. A wrong key, a tampered byte, a torn
-/// (truncated) tail, or a record spliced from another slot all fail the AEAD tag
-/// and return `Err` — never a partial or wrong plaintext.
-pub fn open(key: &[u8; 32], seq: u64, sealed: &[u8]) -> Result<Vec<u8>> {
+/// Open a record sealed under `aad`. A wrong key, a tampered byte, a torn
+/// (truncated) tail, or a mismatched AAD all fail the AEAD tag and return `Err` —
+/// never a partial or wrong plaintext.
+pub fn open_with(key: &[u8; 32], aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>> {
     if sealed.len() < NONCE_LEN + TAG_LEN {
         return Err(Error::Crypto("record too short to be sealed".into()));
     }
     let (nonce, ct) = sealed.split_at(NONCE_LEN);
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
-    let aad = seq.to_le_bytes();
     cipher
-        .decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad: &aad })
+        .decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad })
         .map_err(|_| {
             Error::Crypto("record failed authentication (tampered, torn, or wrong key)".into())
         })
+}
+
+/// Seal one fixed-width plaintext record for slot `seq`.
+pub fn seal(key: &[u8; 32], seq: u64, plain: &[u8]) -> Result<Vec<u8>> {
+    seal_with(key, &seq.to_le_bytes(), plain)
+}
+
+/// Open a sealed record for slot `seq`. A record spliced from another slot fails
+/// the tag, so splicing and reordering are caught for free.
+pub fn open(key: &[u8; 32], seq: u64, sealed: &[u8]) -> Result<Vec<u8>> {
+    open_with(key, &seq.to_le_bytes(), sealed)
 }
 
 #[cfg(test)]
@@ -83,6 +91,19 @@ mod tests {
         let sealed = seal(&key, 5, b"record five").unwrap();
         // AAD = seq: opening as a different slot fails (anti-splice).
         assert!(open(&key, 3, &sealed).is_err());
+    }
+
+    #[test]
+    fn wrong_aad_fails() {
+        let key = [7u8; 32];
+        // The summary tree binds a record to the memories it describes: change
+        // the description and the same bytes must stop opening.
+        let sealed = seal_with(&key, b"leaves:a,b,c", b"summary of a,b,c").unwrap();
+        assert_eq!(
+            open_with(&key, b"leaves:a,b,c", &sealed).unwrap(),
+            b"summary of a,b,c"
+        );
+        assert!(open_with(&key, b"leaves:a,c", &sealed).is_err());
     }
 
     #[test]
