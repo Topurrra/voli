@@ -15,7 +15,11 @@ Cargo.lock.bak
 # signing keys — NEVER commit. The committed dev key (git history) is burned
 # and must be rotated before launch. See docs/Voli.md §10 key management.
 /registry-dev/
-*.signing-key.hex
+# `*.signing-key.hex` needed a literal dot before "signing", so it never matched
+# dev-signing-key.hex — exactly what `voli-index-tool keygen` writes.
+*.hex
+*.pem
+*.key
 .qwen/
 .gstack/
 

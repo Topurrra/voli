@@ -1,25 +1,33 @@
 name: CI
 
+# Same filter on push and pull_request — an asymmetric one meant a direct push
+# could skip a check a PR would have run. Only genuinely inert paths are ignored:
+# README.md gates the release (see release.yml "Verify version consistency") and
+# docs-site/ is guarded by installer-sync + the website test below, so neither
+# can be ignored here.
 on:
   push:
-    paths-ignore: ["**/*.md", "assets/**", "docs-site/**", "license/**"]
+    paths-ignore: ["assets/**", "license/**"]
   pull_request:
-    paths-ignore: ["**/*.md", "assets/**", "docs-site/assets/**"]
+    paths-ignore: ["assets/**", "license/**"]
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
+          toolchain: stable
           components: clippy, rustfmt
       - name: Build
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
+      # --all-targets so tests/benches/examples are linted too, matching the
+      # gate documented in docs/howto.md.
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Format check
         run: cargo fmt --check
 
@@ -28,10 +36,20 @@ jobs:
   installer-sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check docs-site/install matches install.ps1
         run: |
           if ! diff -q install.ps1 docs-site/install; then
             echo "::error::docs-site/install drifted from install.ps1. Run: cp install.ps1 docs-site/install"
             exit 1
           fi
+
+  # The volibear.dev catalog renderer has a node:test suite that nothing ran.
+  # ponytail: uses the runner's preinstalled node instead of actions/setup-node —
+  # node --test needs >= 18 and ubuntu-latest ships far newer.
+  website:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Catalog tests
+        run: node --test docs-site/assets/catalog.test.js

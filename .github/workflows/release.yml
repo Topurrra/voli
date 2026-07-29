@@ -13,11 +13,55 @@ jobs:
   release-x64:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc
+          components: clippy, rustfmt
+
+      # `voli self-update` compares env!("CARGO_PKG_VERSION") of the installed
+      # binary against the release tag_name. If the tag and Cargo.toml disagree,
+      # every user gets an update that never stops re-offering itself (or a
+      # bogus "local version is newer than latest release"). Fail here instead.
+      - name: Verify version consistency
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $expected = $env:TAG -replace '^v', ''
+          $cargo = Get-Content Cargo.toml -Raw
+          $readme = Get-Content README.md -Raw
+
+          $checks = [ordered]@{
+            'Cargo.toml [workspace.package] version' = [regex]::Match($cargo, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+            'Cargo.toml voli-core path-dep version'  = [regex]::Match($cargo, '(?m)^voli-core\s*=.*?version\s*=\s*"([^"]+)"').Groups[1].Value
+            'Cargo.toml stela path-dep version'      = [regex]::Match($cargo, '(?m)^stela\s*=.*?version\s*=\s*"([^"]+)"').Groups[1].Value
+            'README.md status line'                  = [regex]::Match($readme, '\*\*Status:\s*v([^,\*]+),').Groups[1].Value
+          }
+
+          $bad = $false
+          foreach ($name in $checks.Keys) {
+            $found = $checks[$name]
+            if ($found -ne $expected) {
+              Write-Output "::error::$name is '$found' but tag v$expected requires '$expected'"
+              $bad = $true
+            }
+          }
+          if ($bad) {
+            Write-Output "Refusing to release: bump every version reference to $expected and retag."
+            exit 1
+          }
+          Write-Output "All version references agree: $expected"
+
+      # Same gates as ci.yml — a tag can be pushed at a commit CI never saw, so
+      # re-run them here rather than trusting that it was green somewhere.
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # Gate the release on a green test suite — never ship a broken build.
       - name: Test
@@ -29,8 +73,12 @@ jobs:
       - name: Package
         id: package
         shell: pwsh
+        # Passed through env, not ${{ }} interpolation: a crafted tag name would
+        # otherwise be pasted straight into this script body.
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
+          $version = $env:TAG -replace '^v', ''
           $bin = "target/x86_64-pc-windows-msvc/release"
           $staging = "staging"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
@@ -48,7 +96,7 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Create Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           generate_release_notes: true
           files: |
@@ -66,15 +114,18 @@ jobs:
   # release-arm64:
   #   runs-on: windows-latest
   #   steps:
-  #     - uses: actions/checkout@v7
-  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  #     - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
   #       with:
+  #         toolchain: stable
   #         targets: aarch64-pc-windows-msvc
   #     - name: Build
   #       run: cargo build --release --workspace --target aarch64-pc-windows-msvc
   #     - name: Package
   #       shell: pwsh
+  #       env:
+  #         TAG: ${{ github.ref_name }}
   #       run: |
-  #         $version = "${{ github.ref_name }}".TrimStart('v')
+  #         $version = $env:TAG -replace '^v', ''
   #         # ... same packaging as x64, producing voli-$version-arm64.zip
   #     # ... upload as additional assets on the same release
