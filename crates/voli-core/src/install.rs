@@ -21,7 +21,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
@@ -166,6 +166,12 @@ pub enum InstallError {
     NoArchSource,
     #[error("unsafe archive entry (absolute path or '..'): {0}")]
     ZipSlip(String),
+    #[error("archive contains more than {MAX_ARCHIVE_ENTRIES} entries")]
+    TooManyEntries,
+    #[error("archive expands beyond {} GiB", MAX_EXTRACTED_BYTES / (1024 * 1024 * 1024))]
+    ArchiveTooLarge,
+    #[error("archives may contain only regular files and directories: {0}")]
+    UnsupportedEntry(String),
     #[error("unsupported archive type: {0} (expected .zip, .tar.gz, or .7z)")]
     UnsupportedArchive(String),
     #[error(
@@ -180,9 +186,23 @@ pub enum InstallError {
     NotInstalled(String),
     #[error("shim stub not found at {0}; build voli-shim or set VOLI_SHIM_STUB")]
     StubMissing(PathBuf),
+    #[error(
+        "uninstall of '{name}' is incomplete — {} item(s) could not be removed (first: {}); the package stays registered so `voli delete` can be retried once the files are free",
+        remaining.len(),
+        remaining.first().map(|p| p.display().to_string()).unwrap_or_default()
+    )]
+    UninstallIncomplete {
+        name: String,
+        remaining: Vec<PathBuf>,
+    },
 }
 
 type Result<T> = std::result::Result<T, InstallError>;
+
+/// Extraction limits (zip bombs, §10). Generous enough for real desktop apps
+/// (a full JDK is ~20k files / 1 GiB) while still bounding a hostile archive.
+const MAX_ARCHIVE_ENTRIES: usize = 100_000;
+const MAX_EXTRACTED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 /// Install a package from a local manifest + local archive (spec §11 step 3).
 ///
@@ -518,11 +538,19 @@ fn install_fs_inner(
         fs::write(&target, &wf.content)?;
     }
 
-    // 10. Start Menu shortcuts (.lnk via COM IShellLink).
+    // 10. Start Menu shortcuts (.lnk via the WScript.Shell COM object).
+    //     `link_name()` is manifest-validated to a single plain file name, so
+    //     the join stays inside link_dir and the value never reaches a parser.
     for sc in &manifest.shortcuts {
         let link_dir = shortcut_dir()?;
         fs::create_dir_all(&link_dir)?;
         let link_path = link_dir.join(format!("{}.lnk", sc.link_name()));
+        // A shortcut name may nest (`Vendor\App` is a Start Menu subfolder, used
+        // by several published packages). The name is validated relative, so the
+        // parent always stays under link_dir.
+        if let Some(parent) = link_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let target = current.join(sc.target());
         create_shortcut(&link_path, &target, &current)?;
         actions.push(Action::ShortcutCreated { path: link_path });
@@ -629,23 +657,32 @@ pub fn uninstall_env(
 
     let mut kept_persist = false;
     let mut touched_env = false;
+    // Removals that did NOT take effect (a running exe, a read-only file, a
+    // locked directory). While any remain we must keep the ledger row: it is
+    // the only record of what is still on disk, and `voli delete` replays it.
+    let mut remaining: Vec<PathBuf> = Vec::new();
     for a in actions.iter().rev() {
         match a {
             Action::ShimWritten { shim, exe } => {
                 let _ = fs::remove_file(shim);
                 let _ = fs::remove_file(exe);
+                check_gone(shim, &mut remaining);
+                check_gone(exe, &mut remaining);
             }
             Action::JunctionCreated { path } => {
                 let _ = junction::delete(path);
                 let _ = fs::remove_dir(path);
+                check_gone(path, &mut remaining);
             }
             Action::DirCreated { path, role } => match role {
                 DirRole::Version => {
                     let _ = fs::remove_dir_all(path);
+                    check_gone(path, &mut remaining);
                 }
                 DirRole::Persist | DirRole::PersistRoot => {
                     if purge {
                         let _ = fs::remove_dir_all(path);
+                        check_gone(path, &mut remaining);
                     } else {
                         kept_persist = true;
                     }
@@ -653,12 +690,58 @@ pub fn uninstall_env(
                 DirRole::AppRoot => {
                     if purge {
                         let _ = fs::remove_dir_all(path);
+                        check_gone(path, &mut remaining);
                     } else {
-                        // Removes it only if empty; if persist survives, it stays.
+                        // Removes it only if empty; if persist survives, it
+                        // stays — expected, so never a failure.
                         let _ = fs::remove_dir(path);
                     }
                 }
             },
+            Action::ShortcutCreated { path } => {
+                let _ = fs::remove_file(path);
+                // Counted like every other file removal: a `.lnk` that survives
+                // (locked, or made read-only) is a live Start Menu entry whose
+                // target we are about to delete. Leaving it while dropping the
+                // ledger row would strand a shortcut that opens nothing.
+                check_gone(path, &mut remaining);
+                // A nested shortcut created a Start Menu subfolder; drop it if
+                // this was the last link in it. `remove_dir` only succeeds on an
+                // empty dir, so a folder someone else populated survives — and
+                // it never climbs past our own Start Menu dir. Best-effort: a
+                // surviving folder is not a failure, only a surviving link is.
+                if let (Some(parent), Ok(base)) = (path.parent(), shortcut_dir())
+                    && parent != base
+                    && parent.starts_with(&base)
+                {
+                    let _ = fs::remove_dir(parent);
+                }
+            }
+            // Environment and registry actions are replayed in the second pass
+            // below, once the filesystem is known to be clean.
+            Action::EnvSet { .. }
+            | Action::PathAdded { .. }
+            | Action::UninstallKeyCreated { .. } => {}
+        }
+    }
+
+    // Reporting success here while files survive would strand them: the ledger
+    // row is the only handle `voli delete` and `voli cleanup` have on them.
+    //
+    // Bail BEFORE restoring env vars or deleting the Add/Remove Programs key.
+    // Those are what make the package look installed to the rest of the system,
+    // and the ledger row still says it is installed, so undoing them here would
+    // leave the two disagreeing until someone retried. Now a failed delete
+    // changes nothing outside the files it did manage to remove.
+    if !remaining.is_empty() {
+        return Err(InstallError::UninstallIncomplete {
+            name: name.to_string(),
+            remaining,
+        });
+    }
+
+    for a in actions.iter().rev() {
+        match a {
             Action::EnvSet { key, prior, .. } => {
                 restore_env(env_subkey, key, prior.as_deref());
                 touched_env = true;
@@ -667,13 +750,11 @@ pub fn uninstall_env(
                 let _ = crate::env::remove_from_path(env_subkey, segment);
                 touched_env = true;
             }
-            Action::ShortcutCreated { path } => {
-                let _ = fs::remove_file(path);
-            }
             Action::UninstallKeyCreated { name } => {
                 let base = crate::uninstall_reg::uninstall_base();
                 let _ = crate::uninstall_reg::delete_key(&base, name);
             }
+            _ => {}
         }
     }
     if touched_env {
@@ -687,6 +768,14 @@ pub fn uninstall_env(
         version,
         kept_persist,
     })
+}
+
+/// Record `path` when a removal did not take effect. Every removal above stays
+/// best-effort; what matters is whether the path is actually gone afterwards.
+fn check_gone(path: &Path, remaining: &mut Vec<PathBuf>) {
+    if path.exists() {
+        remaining.push(path.to_path_buf());
+    }
 }
 
 /// Upgrade an installed package to `manifest_new` via the §3 junction-flip model.
@@ -975,7 +1064,7 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-// ---- Start Menu shortcuts (COM IShellLink) --------------------------------
+// ---- Start Menu shortcuts (WScript.Shell COM, driven from PowerShell) -----
 
 /// `%APPDATA%\Microsoft\Windows\Start Menu\Programs\voli\`
 /// Override with `VOLI_SHORTCUT_DIR` for tests.
@@ -994,19 +1083,24 @@ fn shortcut_dir() -> io::Result<PathBuf> {
 }
 
 /// Create a `.lnk` shortcut via the WScript.Shell COM object (real .lnk, not .url).
+///
+/// The script is a CONSTANT: the three paths are handed over out-of-band in the
+/// child's environment block and read back with `$env:` variable reads. Nothing
+/// package-controlled is ever spliced into PowerShell source, so a manifest
+/// cannot smuggle `$(...)`, a backtick, or a quote into an install — voli's
+/// "no scripts, ever" guarantee holds by construction rather than by escaping.
+const SHORTCUT_SCRIPT: &str = "$ws = New-Object -ComObject WScript.Shell\n\
+     $sc = $ws.CreateShortcut($env:VOLI_LNK_PATH)\n\
+     $sc.TargetPath = $env:VOLI_LNK_TARGET\n\
+     $sc.WorkingDirectory = $env:VOLI_LNK_WORKDIR\n\
+     $sc.Save()";
+
 fn create_shortcut(link_path: &Path, target: &Path, working_dir: &Path) -> io::Result<()> {
-    let script = format!(
-        "$ws = New-Object -ComObject WScript.Shell\n\
-         $sc = $ws.CreateShortcut(\"{}\")\n\
-         $sc.TargetPath = \"{}\"\n\
-         $sc.WorkingDirectory = \"{}\"\n\
-         $sc.Save()",
-        link_path.display().to_string().replace('"', "`\""),
-        target.display().to_string().replace('"', "`\""),
-        working_dir.display().to_string().replace('"', "`\""),
-    );
     let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", SHORTCUT_SCRIPT])
+        .env("VOLI_LNK_PATH", link_path)
+        .env("VOLI_LNK_TARGET", target)
+        .env("VOLI_LNK_WORKDIR", working_dir)
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1019,11 +1113,20 @@ fn create_shortcut(link_path: &Path, target: &Path, working_dir: &Path) -> io::R
 
 // ---- archive extraction (zip-slip safe) ----------------------------------
 
+/// A PATH entry we are willing to search for `7z.exe`.
+///
+/// Empty entries (a trailing `;` is common) and relative ones resolve against
+/// the process working directory, so `dir.join("7z.exe")` would find — and then
+/// EXECUTE — a `7z.exe` dropped in whatever directory voli happens to run from.
+fn searchable_path_dir(dir: &Path) -> bool {
+    dir.is_absolute()
+}
+
 /// Find 7z.exe: PATH, then common install locations.
 fn find_7z() -> Option<PathBuf> {
     // PATH lookup.
     if let Ok(path) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path) {
+        for dir in std::env::split_paths(&path).filter(|d| searchable_path_dir(d)) {
             let candidate = dir.join("7z.exe");
             if candidate.is_file() {
                 return Some(candidate);
@@ -1116,10 +1219,22 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
 fn extract_zip(archive: &Path, dest: &Path) -> Result<()> {
     let file = File::open(archive)?;
     let mut zip = zip::ZipArchive::new(file)?;
+    if zip.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(InstallError::TooManyEntries);
+    }
+    let mut extracted = 0u64;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
         let raw = entry.name().to_string();
-        let rel = safe_rel(&raw).ok_or(InstallError::ZipSlip(raw))?;
+        let rel = safe_rel(&raw).ok_or(InstallError::ZipSlip(raw.clone()))?;
+        // Reject anything that isn't a plain file or directory (symlinks).
+        let expected_mode = if entry.is_dir() { 0o040000 } else { 0o100000 };
+        if entry.unix_mode().is_some_and(|mode| {
+            let kind = mode & 0o170000;
+            kind != 0 && kind != expected_mode
+        }) {
+            return Err(InstallError::UnsupportedEntry(raw));
+        }
         let out = dest.join(&rel);
         if entry.is_dir() {
             fs::create_dir_all(&out)?;
@@ -1128,7 +1243,7 @@ fn extract_zip(archive: &Path, dest: &Path) -> Result<()> {
                 fs::create_dir_all(parent)?;
             }
             let mut f = File::create(&out)?;
-            io::copy(&mut entry, &mut f)?;
+            copy_bounded(&mut entry, &mut f, &mut extracted)?;
         }
     }
     Ok(())
@@ -1138,15 +1253,32 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<()> {
     let file = File::open(archive)?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut ar = tar::Archive::new(gz);
+    let mut count = 0usize;
+    let mut extracted = 0u64;
     for entry in ar.entries()? {
+        count += 1;
+        if count > MAX_ARCHIVE_ENTRIES {
+            return Err(InstallError::TooManyEntries);
+        }
         let mut entry = entry?;
         let raw = entry.path()?.to_string_lossy().into_owned();
-        let rel = safe_rel(&raw).ok_or(InstallError::ZipSlip(raw))?;
+        let rel = safe_rel(&raw).ok_or(InstallError::ZipSlip(raw.clone()))?;
         let out = dest.join(&rel);
-        if let Some(parent) = out.parent() {
-            fs::create_dir_all(parent)?;
+        // Write the payload ourselves rather than `Entry::unpack`, which
+        // reproduces symlinks and hard links — whose *targets* are unvalidated
+        // and can point outside `dest`. Only plain files and dirs survive.
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            fs::create_dir_all(&out)?;
+        } else if kind.is_file() {
+            if let Some(parent) = out.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut f = File::create(&out)?;
+            copy_bounded(&mut entry, &mut f, &mut extracted)?;
+        } else {
+            return Err(InstallError::UnsupportedEntry(raw));
         }
-        entry.unpack(&out)?;
     }
     Ok(())
 }
@@ -1159,11 +1291,15 @@ fn extract_7z(archive: &Path, dest: &Path) -> Result<()> {
         .map_err(|e| InstallError::SevenZ(e.to_string()))?;
 
     // Validate every entry name before extracting anything (zip-slip, §10).
+    if reader.archive().files.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(InstallError::TooManyEntries);
+    }
     for entry in &reader.archive().files {
         let raw = entry.name();
         safe_rel(raw).ok_or_else(|| InstallError::ZipSlip(raw.to_string()))?;
     }
 
+    let mut extracted = 0u64;
     reader
         .for_each_entries(|entry, data| {
             let rel = safe_rel(entry.name()).expect("all entries validated above");
@@ -1175,7 +1311,7 @@ fn extract_7z(archive: &Path, dest: &Path) -> Result<()> {
                     fs::create_dir_all(parent)?;
                 }
                 let mut f = File::create(&out)?;
-                io::copy(data, &mut f)?;
+                copy_bounded(data, &mut f, &mut extracted).map_err(io::Error::other)?;
             }
             Ok(true)
         })
@@ -1245,26 +1381,37 @@ impl<R: Seek> Seek for OffsetReader<R> {
     }
 }
 
-/// Validate an archive entry name and return it as a safe relative path.
-/// Rejects absolute paths and any `..` component (zip-slip protection, §10).
+/// Validate an archive entry name and return it as a safe relative path
+/// (zip-slip protection, §10).
+///
+/// One rule for every extractor in the workspace: [`crate::skill::safe_relative`]
+/// already rejects absolute paths, `..`, drive prefixes anywhere in the path
+/// (a mid-path `C:` makes `PathBuf::push` discard the destination entirely),
+/// reserved device names, trailing dot/space, and absurd depth or length.
 fn safe_rel(raw: &str) -> Option<PathBuf> {
-    let normalized = raw.replace('\\', "/");
-    if normalized.starts_with('/') {
-        return None;
+    crate::skill::safe_relative(raw)
+}
+
+/// Copy one archive entry, failing once the running extracted total would
+/// exceed `MAX_EXTRACTED_BYTES` (zip bombs, §10).
+fn copy_bounded(reader: &mut dyn Read, writer: &mut File, extracted: &mut u64) -> Result<()> {
+    copy_with_limit(reader, writer, extracted, MAX_EXTRACTED_BYTES)
+}
+
+fn copy_with_limit(
+    reader: &mut dyn Read,
+    writer: &mut File,
+    extracted: &mut u64,
+    limit: u64,
+) -> Result<()> {
+    let remaining = limit.saturating_sub(*extracted);
+    // Read one byte past the budget: if it arrives, the archive is over.
+    let copied = io::copy(&mut reader.take(remaining + 1), writer)?;
+    if copied > remaining {
+        return Err(InstallError::ArchiveTooLarge);
     }
-    let mut out = PathBuf::new();
-    for c in Path::new(&normalized).components() {
-        match c {
-            Component::Normal(s) => out.push(s),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
-    if out.as_os_str().is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    *extracted += copied;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1285,6 +1432,79 @@ mod tests {
         assert_eq!(safe_rel("/etc/passwd"), None);
         assert_eq!(safe_rel("C:\\windows\\x"), None);
         assert_eq!(safe_rel(""), None);
+    }
+
+    /// A drive prefix is only a `Component::Prefix` when it LEADS the path;
+    /// mid-path it parses as a normal component, and `PathBuf::push` of it
+    /// throws the destination away — `dest.join(safe_rel("sub/C:/evil.exe"))`
+    /// used to be plain `C:evil.exe`, i.e. drive-relative to the CWD.
+    #[test]
+    fn safe_rel_rejects_drive_prefix_mid_path() {
+        assert_eq!(safe_rel("sub/C:/evil.exe"), None);
+        assert_eq!(safe_rel("sub\\C:\\evil.exe"), None);
+        assert_eq!(safe_rel("a/b/D:x"), None);
+    }
+
+    #[test]
+    fn safe_rel_rejects_reserved_names_and_trailing_dot_or_space() {
+        assert_eq!(safe_rel("CON"), None);
+        assert_eq!(safe_rel("aux.txt"), None);
+        assert_eq!(safe_rel("a/COM1"), None);
+        assert_eq!(safe_rel("lpt9.log"), None);
+        assert_eq!(safe_rel("trail. /x"), None);
+        assert_eq!(safe_rel("x/name."), None);
+    }
+
+    #[test]
+    fn bounded_copy_rejects_one_byte_over_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut out = File::create(dir.path().join("out")).unwrap();
+        let mut extracted = 0;
+        assert!(matches!(
+            copy_with_limit(&mut &b"12345"[..], &mut out, &mut extracted, 4),
+            Err(InstallError::ArchiveTooLarge)
+        ));
+    }
+
+    /// A trailing `;` in PATH yields an empty entry; `Path::join` on it makes a
+    /// bare relative name that resolves — and then executes — against the CWD.
+    #[test]
+    fn path_search_skips_empty_and_relative_entries() {
+        assert!(!searchable_path_dir(Path::new("")));
+        assert!(!searchable_path_dir(Path::new("tools")));
+        assert!(!searchable_path_dir(Path::new(".")));
+        assert!(searchable_path_dir(Path::new(r"C:\Program Files\7-Zip")));
+    }
+
+    /// `Entry::unpack` recreates symlinks and hard links, whose targets are not
+    /// covered by the entry-name check, so they escape `dest`.
+    #[test]
+    fn tar_extraction_rejects_link_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("evil.tar.gz");
+        {
+            let gz = flate2::write::GzEncoder::new(
+                File::create(&archive).unwrap(),
+                flate2::Compression::none(),
+            );
+            let mut builder = tar::Builder::new(gz);
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            header.set_mode(0o777);
+            header.set_cksum();
+            builder
+                .append_link(&mut header, "link.txt", "C:/Windows/System32/evil.dll")
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        let dest = dir.path().join("out");
+        fs::create_dir_all(&dest).unwrap();
+        assert!(matches!(
+            extract_tar_gz(&archive, &dest),
+            Err(InstallError::UnsupportedEntry(_))
+        ));
+        assert!(!dest.join("link.txt").exists());
     }
 
     #[test]
@@ -1308,5 +1528,36 @@ mod tests {
         reader.read_exact(&mut signature).unwrap();
         assert_eq!(signature, SEVEN_Z_SIGNATURE);
         assert_eq!(reader.seek(SeekFrom::Start(0)).unwrap(), 0);
+    }
+
+    /// The shortcut path used to be spliced into a PowerShell DOUBLE-quoted
+    /// string with only `"` escaped, so `$(...)` was evaluated and a lone
+    /// backtick broke the escaping outright.
+    ///
+    /// The manifest layer now refuses `$` and a backtick, so such a name cannot
+    /// reach an install — but that is the second line of defence, not the first.
+    /// This drives `create_shortcut` directly with a hostile path to prove the
+    /// runtime layer stands on its own: if any interpolation ever came back,
+    /// PowerShell would eat `$x` and the backtick and the link would land under
+    /// a different name (or the call would fail).
+    #[cfg(windows)]
+    #[test]
+    fn create_shortcut_never_lets_powershell_interpret_the_path() {
+        let td = tempfile::tempdir().unwrap();
+        let target = td.path().join("app.exe");
+        std::fs::write(&target, b"MZ").unwrap();
+        let link = td.path().join("App$x`y$(New-Item evil.txt).lnk");
+
+        create_shortcut(&link, &target, td.path()).expect("shortcut creation should succeed");
+
+        assert!(
+            link.is_file(),
+            "the link must be created under its literal name; {} is missing",
+            link.display()
+        );
+        assert!(
+            !td.path().join("evil.txt").exists(),
+            "the subexpression must never have been evaluated"
+        );
     }
 }

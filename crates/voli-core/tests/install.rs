@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
@@ -304,6 +305,33 @@ fn zip_slip_rejected_mutates_nothing() {
     assert!(state.list().unwrap().is_empty());
 }
 
+/// A drive prefix is only a `Component::Prefix` when it LEADS the path. Mid-path
+/// it parsed as a normal component, and `PathBuf::push` of a drive-prefixed
+/// component RESETS the buffer — so `dest.join(safe_rel("sub/C:/evil.exe"))` was
+/// literally `C:evil.exe`, written drive-relative to the process working dir.
+#[test]
+fn drive_prefixed_entry_rejected_mutates_nothing() {
+    let td = setup();
+    let root = td.path();
+    let zip = build_zip(&[
+        ("sub/C:/evil.exe", b"pwned"),
+        ("ripgrep-1.0.0/rg.exe", b"x"),
+    ]);
+    let archive = root.join("rg.zip");
+    fs::write(&archive, &zip).unwrap();
+    let manifest = write_manifest(root, &sha256_hex(&zip));
+
+    let err = install_local(&manifest, &archive, root).unwrap_err();
+    assert!(matches!(err, InstallError::ZipSlip(_)), "got {err:?}");
+
+    // The escape target: drive-relative to the CWD, i.e. <cwd-drive>\...\evil.exe.
+    let escaped = std::env::current_dir().unwrap().join("evil.exe");
+    assert!(!escaped.exists(), "entry escaped to {}", escaped.display());
+    assert!(!root.join("apps/ripgrep").exists());
+    let state = State::open(&root.join("db/state.sqlite")).unwrap();
+    assert!(state.list().unwrap().is_empty());
+}
+
 #[test]
 fn failure_mid_install_rolls_back_byte_identical() {
     let td = setup();
@@ -357,6 +385,57 @@ fn uninstall_leaves_zero_trace_but_keeps_persist() {
     let state = State::open(&root.join("db/state.sqlite")).unwrap();
     assert!(state.list().unwrap().is_empty());
     assert!(state.actions_for("ripgrep").unwrap().is_empty());
+}
+
+/// A locked/undeletable file must NOT be reported as a successful uninstall.
+/// Dropping the ledger row while files survive strands them: `voli delete` then
+/// says NotInstalled and `cleanup` iterates the ledger, so nothing shipped can
+/// ever reach them again.
+#[test]
+fn uninstall_that_cannot_remove_files_keeps_the_ledger_row() {
+    let td = setup();
+    let root = td.path();
+    let zip = ripgrep_zip();
+    let archive = root.join("rg.zip");
+    fs::write(&archive, &zip).unwrap();
+    let manifest = write_manifest(root, &sha256_hex(&zip));
+
+    install_local(&manifest, &archive, root).unwrap();
+
+    // Stand in for "the app is running": hold the payload open with no sharing
+    // at all, so every delete of it fails with a sharing violation.
+    let locked = root.join("apps/ripgrep/1.0.0/rg.exe");
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&locked)
+        .unwrap();
+
+    let err = uninstall("ripgrep", root, false).unwrap_err();
+    match &err {
+        InstallError::UninstallIncomplete { name, remaining } => {
+            assert_eq!(name, "ripgrep");
+            assert!(remaining.iter().any(|p| p.ends_with("1.0.0")));
+        }
+        other => panic!("expected UninstallIncomplete, got {other:?}"),
+    }
+
+    // Files are still there, and so is the ledger row that knows about them.
+    assert!(locked.exists());
+    let state = State::open(&root.join("db/state.sqlite")).unwrap();
+    assert_eq!(
+        state.installed_version("ripgrep").unwrap().as_deref(),
+        Some("1.0.0")
+    );
+    assert!(!state.actions_for("ripgrep").unwrap().is_empty());
+    drop(state);
+
+    // Once the file is free, the same command finishes the job.
+    drop(handle);
+    uninstall("ripgrep", root, true).unwrap();
+    assert!(!root.join("apps/ripgrep").exists());
+    let state = State::open(&root.join("db/state.sqlite")).unwrap();
+    assert!(state.list().unwrap().is_empty());
 }
 
 #[test]
@@ -521,6 +600,68 @@ sha256 = "{sha256}"
     let p = dir.join("rgshort.toml");
     fs::write(&p, toml).unwrap();
     p
+}
+
+/// A shortcut name may nest: `Vendor\App` is a Start Menu subfolder, which
+/// several published packages use (`Proton\Proton Pass`,
+/// `Adventure Game Studio\AGS Editor`). Only the top-level Start Menu dir used
+/// to be created, so those packages failed at install; and the subfolder must be
+/// pruned on uninstall or it breaks zero-trace.
+///
+/// (The PowerShell-injection guard now lives in `install.rs` as a unit test on
+/// `create_shortcut` itself — the manifest layer rejects `$` and a backtick, so
+/// such a name can no longer reach an install.)
+#[test]
+fn nested_shortcut_creates_and_prunes_its_subfolder() {
+    let td = setup();
+    let root = td.path();
+    let shortcut_dir = scratch_global_env();
+
+    let zip = ripgrep_zip();
+    let archive = root.join("rg.zip");
+    fs::write(&archive, &zip).unwrap();
+    // Forward slash keeps the TOML free of escapes; the validator and the join
+    // treat `/` and `\` identically, and real manifests use the latter.
+    let name = "Vendor Co/My App (x64)";
+    let toml = format!(
+        r#"
+name = "rglnk"
+version = "1.0.0"
+kind = "app"
+extract_dir = "ripgrep-1.0.0"
+bin = ["rg.exe"]
+shortcuts = [{{ target = "rg.exe", name = "{name}" }}]
+
+[source.x64]
+url = "https://example.com/rg.zip"
+sha256 = "{}"
+"#,
+        sha256_hex(&zip)
+    );
+    let manifest = root.join("rglnk.toml");
+    fs::write(&manifest, toml).unwrap();
+
+    install_local(&manifest, &archive, root).expect("install should succeed");
+
+    let lnk = shortcut_dir.join(format!("{name}.lnk"));
+    let subfolder = lnk.parent().unwrap().to_path_buf();
+    assert!(
+        lnk.is_file(),
+        "nested shortcut should be created verbatim; {} is missing",
+        lnk.display()
+    );
+    assert!(subfolder.is_dir(), "the Start Menu subfolder should exist");
+
+    uninstall("rglnk", root, true).unwrap();
+    assert!(!lnk.exists());
+    assert!(
+        !subfolder.exists(),
+        "the subfolder we created must be pruned — zero trace"
+    );
+    assert!(
+        shortcut_dir.is_dir(),
+        "pruning must never climb past our own Start Menu dir"
+    );
 }
 
 #[test]

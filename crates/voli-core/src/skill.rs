@@ -3,12 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256, Sha512};
 
-use crate::manifest::{Kind, Manifest};
+use crate::manifest::{Kind, Manifest, safe_windows_component};
 use crate::paths::{Paths, SkillScope, SkillTarget};
 use crate::state::{InstalledSkill, SkillAction, State};
 
@@ -668,46 +668,37 @@ fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn safe_relative(raw: &str) -> Option<PathBuf> {
+/// Validate an archive entry name and return it as a safe relative path.
+///
+/// Shared with the install engine's extractors (`install.rs`) — the containment
+/// rule for archive entries is one rule, in one place.
+pub(crate) fn safe_relative(raw: &str) -> Option<PathBuf> {
     let normalized = raw.replace('\\', "/");
     if normalized.starts_with('/') || normalized.len() > MAX_ARCHIVE_PATH_BYTES {
         return None;
     }
+    // Split the string ourselves rather than using `Path::components`. That
+    // parser is platform-dependent and is precisely what hid the original
+    // escape: on Windows a mid-path `C:` came back as a `Normal` component, and
+    // pushing it RESET the accumulated path. Walking the raw string means the
+    // rules here hold identically on every host, including the Linux CI that
+    // builds voli-index-tool.
     let mut output = PathBuf::new();
     let mut depth = 0usize;
-    for component in Path::new(&normalized).components() {
-        match component {
-            Component::Normal(value) if safe_windows_component(value.to_str()?) => {
-                depth += 1;
-                if depth > MAX_ARCHIVE_DEPTH {
-                    return None;
-                }
-                output.push(value)
-            }
-            Component::CurDir => {}
-            Component::Normal(_)
-            | Component::ParentDir
-            | Component::RootDir
-            | Component::Prefix(_) => return None,
+    for part in normalized.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
         }
+        if !safe_windows_component(part) {
+            return None;
+        }
+        depth += 1;
+        if depth > MAX_ARCHIVE_DEPTH {
+            return None;
+        }
+        output.push(part);
     }
     (!output.as_os_str().is_empty()).then_some(output)
-}
-
-fn safe_windows_component(value: &str) -> bool {
-    if value.contains(':') || value.ends_with(['.', ' ']) {
-        return false;
-    }
-    let stem = value
-        .split('.')
-        .next()
-        .unwrap_or(value)
-        .to_ascii_uppercase();
-    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        && !matches!(
-            stem.as_bytes(),
-            [b'C', b'O', b'M', b'1'..=b'9'] | [b'L', b'P', b'T', b'1'..=b'9']
-        )
 }
 
 fn copy_bounded(
