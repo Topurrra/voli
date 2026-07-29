@@ -633,12 +633,20 @@
           laid out, why a decision went the way it did, the test that is always flaky - separate
           from what you know about the user.
         </p>
-        <div class="term-bar">
-          <pre><span class="p">PS&gt;</span> <span class="c">voli memory init --project</span>
-Project memory created at C:\work\api\.voli\memory (device 7f2a10, custody: keychain).
-added .voli/ to .gitignore
+        <div class="term">
+          <div class="term-bar">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="tt">voli memory</span>
+          </div>
+          <pre><span class="p">PS&gt;</span> voli memory init --project
+  <span class="ok">&#10003;</span> project memory created <span class="mut">(C:\work\api\.voli\memory)</span>
+  <span class="ok">&#10003;</span> <span class="mut">added .voli/ to .gitignore</span>
 
-<span class="p">PS&gt;</span> <span class="c">voli memory prompt --per-project</span></pre>
+<span class="p">PS&gt;</span> voli memory note "the API tests need a live Redis on 6379"
+  <span class="ok">&#10003;</span> saved #7f2a10:0 <span class="mut">(project store)</span>
+
+<span class="p">PS&gt;</span> voli memory --global note "the user prefers plain commit messages"
+  <span class="ok">&#10003;</span> saved #d456af:12 <span class="mut">(machine-wide store)</span></pre>
         </div>
         <p>
           Every <code>voli memory</code> command run anywhere inside the project then finds that
@@ -652,12 +660,12 @@ added .voli/ to .gitignore
           project - that is where facts about the user belong, the ones still true in a different
           repository. <code>$VOLI_MEMORY_DIR</code> still overrides everything.
         </p>
-        <p class="note">
+        <div class="note">
           <strong>Not a secret vault.</strong> A project store is git-ignored, but it is encrypted
           exactly like the machine-wide one - no more. Treat anything written there as readable by
           anyone with the machine, and keep credentials in <code>--private</code> notes or out of
           memory entirely.
-        </p>
+        </div>
       </section>
 
       <section id="recording">
