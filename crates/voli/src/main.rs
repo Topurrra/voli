@@ -1,8 +1,10 @@
 //! voli command-line application.
 
+mod cmd_fetch;
 mod cmd_index;
 mod cmd_install;
 mod cmd_memory;
+mod cmd_web;
 mod skill_cli;
 
 use std::io::{IsTerminal, Read, Write};
@@ -150,6 +152,35 @@ enum Command {
     /// Delete voli and all installed packages completely (zero trace).
     #[command(alias = "self-uninstall")]
     SelfDelete,
+    /// Open a search shortcut in your browser (voli itself fetches nothing).
+    ///
+    /// `voli web` with no arguments lists the available shortcuts.
+    ///
+    /// Everything after the shortcut is the query, including anything that looks
+    /// like a flag, so you can search for `--release` or `-O2` without quoting
+    /// tricks. Put flags BEFORE the shortcut: `voli web --url g rust async`.
+    Web {
+        /// The shortcut: g, ddg, gh, crates, so, yt ... (see `voli web`).
+        bang: Option<String>,
+        /// What to search for. Everything after the shortcut, quoting optional.
+        /// Flags go before the shortcut, since a flag here is treated as text.
+        #[arg(trailing_var_arg = true)]
+        query: Vec<String>,
+        /// Print the resolved URL instead of opening a browser.
+        #[arg(long)]
+        url: bool,
+    },
+    /// Fetch a page as readable text, with provenance (final url, sha256, size).
+    Fetch {
+        #[arg(required = true)]
+        url: String,
+        /// Hard cap on response bytes (default 5 MiB).
+        #[arg(long)]
+        max_bytes: Option<u64>,
+        /// Output shape: text (default), md, or json. `--json` means `--format json`.
+        #[arg(long, value_enum, value_name = "FORMAT")]
+        format: Option<cmd_fetch::Format>,
+    },
     /// Permanent, verifiable, encrypted memory for AI agents.
     Memory {
         /// Use the machine-wide store even inside a project that has its own.
@@ -241,6 +272,12 @@ fn main() {
         Command::Info { package } => cmd_index::run_info(&root(), package, cli.json),
         Command::SelfUpdate => cmd_self_update(),
         Command::SelfDelete => cmd_self_delete(cli.yes),
+        Command::Web { bang, query, url } => cmd_web::run(bang.as_deref(), query, *url, cli.json),
+        Command::Fetch {
+            url,
+            max_bytes,
+            format,
+        } => cmd_fetch::run(url, *max_bytes, *format, cli.json),
         Command::Memory { action, global } => cmd_memory::run(action, *global),
     };
     std::process::exit(code);
@@ -1054,7 +1091,7 @@ fn pulse_bar(message: String) -> ProgressBar {
     pb
 }
 
-fn print_problem(summary: &str, detail: &str, fix: &str) {
+pub(crate) fn print_problem(summary: &str, detail: &str, fix: &str) {
     eprintln!("error: {summary}");
     if !detail.is_empty() {
         eprintln!("  details: {detail}");

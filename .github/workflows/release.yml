@@ -95,9 +95,27 @@ jobs:
           }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      # The release body is the CHANGELOG section for this tag, so the notes say
+      # what changed instead of listing raw commit subjects. A missing section
+      # is not worth failing a release over: the auto-generated commit list
+      # below still lands, so fall back to it and say so.
+      - name: Extract release notes
+        shell: pwsh
+        run: |
+          $v  = [regex]::Escape("${{ steps.package.outputs.version }}")
+          $md = Get-Content CHANGELOG.md -Raw
+          $m  = [regex]::Match($md, '(?ms)^##\s+v' + $v + '\s*$(.*?)(?=^##\s+v|\z)')
+          if ($m.Success -and $m.Groups[1].Value.Trim()) {
+            $m.Groups[1].Value.Trim() | Set-Content notes.md -Encoding utf8
+          } else {
+            Write-Host "::warning::No CHANGELOG entry for v${{ steps.package.outputs.version }}"
+            "" | Set-Content notes.md -Encoding utf8
+          }
+
       - name: Create Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
+          body_path: notes.md
           generate_release_notes: true
           files: |
             voli-${{ steps.package.outputs.version }}-x64.zip
@@ -106,10 +124,14 @@ jobs:
             voli-x64.zip.sha256
             install.ps1
 
-  # arm64 is out of scope for v0.1. To enable: add the target and a matching
-  # package/upload step. Cross-compiling only needs the target added to the
-  # toolchain — the msvc linker on windows-latest handles aarch64. See docs/
-  # Voli.md §4 for the per-arch `extract_dir` schema gap to fix first.
+  # Voli itself still ships x64 only, though it now installs arm64 packages
+  # correctly: host detection and per-arch `extract_dir` landed in v0.10.0, so
+  # the schema gap this note used to point at is closed. Shipping an arm64 voli
+  # is just adding the target and a matching package/upload step —
+  # cross-compiling only needs the target added to the toolchain, since the msvc
+  # linker on windows-latest handles aarch64. Until then arm64 hosts run the x64
+  # binary under emulation, which works because host detection is a runtime call
+  # rather than a compile-time constant.
   #
   # release-arm64:
   #   runs-on: windows-latest

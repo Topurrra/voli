@@ -1,0 +1,16 @@
+name = "adventuregamestudio"
+version = "3.6.2.20"
+description = "An IDE and the engine meant for creating and running videogames of adventure (aka “quest”) genre."
+homepage = "https://www.adventuregamestudio.co.uk/"
+license = "Artistic-2.0"
+kind = "app"
+shortcuts = [{ target = "ags-help.chm", name = "Adventure Game Studio\\AGS Help" }, { target = "AGSEditor.exe", name = "Adventure Game Studio\\AGS Editor" }]
+
+[source.x64]
+url = "https://github.com/adventuregamestudio/ags/releases/download/v3.6.2.20/AGS-3.6.2.20-P10.exe"
+sha256 = "88bdbd7ba441f61e81bd60502edf7458586cf2d2edbbf211149d30906c0f9fbb"
+kind = "installer-archive"
+
+[autoupdate]
+checkver = "{\"github\":\"https://api.github.com/repos/adventuregamestudio/ags/releases/latest\",\"jsonpath\":\"$.assets[?(@.name =~ /AGS.+exe/i)].browser_download_url\",\"regex\":\"download/v([\\\\d.]+)/(?<name>.+)\"}"
+url_template = "https://github.com/adventuregamestudio/ags/releases/download/v$version/$matchName"

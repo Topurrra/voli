@@ -124,10 +124,20 @@ pub enum MemoryCmd {
     ///
     /// With --per-project, prints the prompt for a project-local store: what
     /// belongs in it, that it is git-ignored, and when to use --global instead.
+    ///
+    /// Writes it to a Markdown file so you can open it and copy from an editor
+    /// rather than a terminal scrollback. `--print` sends it to stdout instead,
+    /// which is what you want when piping it somewhere.
     Prompt {
         /// Describe the project-local store instead of the machine-wide one.
         #[arg(long = "per-project")]
         per_project: bool,
+        /// Print to stdout instead of writing a file.
+        #[arg(long)]
+        print: bool,
+        /// Where to write it (default: voli-memory-prompt.md here).
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
     },
 }
 
@@ -139,14 +149,22 @@ pub fn run(action: &MemoryCmd, force_global: bool) -> i32 {
     GLOBAL_ONLY.store(force_global, Ordering::Relaxed);
     match action {
         MemoryCmd::Init { project } => cmd_init(*project),
-        MemoryCmd::Prompt { per_project } => {
+        MemoryCmd::Prompt {
+            per_project,
+            print,
+            out,
+        } => {
             let (dir, scope) = if *per_project {
                 (project_dir_for_prompt(), stela::Scope::Project)
             } else {
                 (stela::default_memory_dir(), stela::Scope::Global)
             };
-            println!("{}", stela::prompt_for(&dir, scope));
-            0
+            let text = stela::prompt_for(&dir, scope);
+            if *print {
+                println!("{text}");
+                return 0;
+            }
+            write_prompt_file(&text, out.as_deref(), *per_project)
         }
         MemoryCmd::Read { task, budget, k } => {
             with_store(|s| out(s.render_read(*budget, task.as_deref(), *k)))
@@ -238,6 +256,56 @@ fn memory_dir() -> PathBuf {
         return dir;
     }
     stela::default_memory_dir()
+}
+
+/// Write the agent prompt to a Markdown file and say where it went.
+///
+/// A file rather than stdout by default because the prompt's whole purpose is to
+/// be pasted into an agent's system prompt or a `CLAUDE.md` / `AGENTS.md`, and
+/// copying ~90 lines out of a terminal scrollback is miserable. `--print` keeps
+/// the old behaviour for pipes.
+fn write_prompt_file(text: &str, out: Option<&Path>, per_project: bool) -> i32 {
+    let default_name = if per_project {
+        "voli-memory-prompt.project.md"
+    } else {
+        "voli-memory-prompt.md"
+    };
+    let path = match out {
+        Some(p) => p.to_path_buf(),
+        None => match std::env::current_dir() {
+            Ok(d) => d.join(default_name),
+            Err(e) => return fail(&e.to_string()),
+        },
+    };
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        return fail(&format!("could not create {}: {e}", parent.display()));
+    }
+    // Existing file is overwritten: this is a generated artefact and the point of
+    // re-running is to regenerate it. Say which happened so an edited file being
+    // replaced is never a surprise.
+    let existed = path.exists();
+    // The prompt is fenced Markdown; a trailing newline keeps editors and `cat`
+    // happy and makes the file diff-friendly.
+    let body = if text.ends_with('\n') {
+        text.to_string()
+    } else {
+        format!("{text}\n")
+    };
+    if let Err(e) = std::fs::write(&path, body) {
+        return fail(&format!("could not write {}: {e}", path.display()));
+    }
+    println!(
+        "{} {} {}",
+        crate::success_mark(),
+        if existed { "updated" } else { "wrote" },
+        path.display()
+    );
+    println!("  paste it into your agent's system prompt, CLAUDE.md, or AGENTS.md");
+    println!("  `{TOOL} prompt --print` sends it to stdout instead");
+    0
 }
 
 /// The path `prompt --per-project` should describe: the project store governing
@@ -402,6 +470,12 @@ fn cmd_init(project: bool) -> i32 {
         stela::Scope::Global
     };
     println!("{}", stela::prompt_for(&dir, scope));
+    println!();
+    println!(
+        "  (`{TOOL} prompt{}` writes the above to a Markdown file if you would",
+        if project { " --per-project" } else { "" }
+    );
+    println!("   rather copy it out of an editor than the terminal)");
     0
 }
 

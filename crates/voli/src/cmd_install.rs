@@ -690,6 +690,7 @@ impl Reporter {
                     }
                     println!("{status}");
                 }
+                self.print_above(format!("  arch: {}", r.arch_note()));
                 for shim in &r.shims {
                     self.print_above(format!("  shim: {}", shim.display()));
                 }

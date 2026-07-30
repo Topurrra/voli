@@ -30,12 +30,12 @@ pub use fetch::{FetchError, download};
 #[cfg(windows)]
 pub use install::{
     Action, DirRole, EnvConsent, InstallError, InstallReport, UninstallReport, UpgradeReport,
-    cleanup_versions, dir_size, install_local, install_manifest, skip_env, uninstall,
+    cleanup_versions, dir_size, host_arch, install_local, install_manifest, skip_env, uninstall,
     uninstall_env, upgrade_install,
 };
 pub use manifest::{
-    Bin, ExtraSource, Kind, Manifest, ManifestError, PackageRef, PackageRefError, Shortcut, Source,
-    SourceKind, WriteFile,
+    Arch, ArchFallback, Bin, ExtraSource, Kind, Manifest, ManifestError, PackageRef,
+    PackageRefError, SelectedSource, Shortcut, Source, SourceKind, WriteFile,
 };
 pub use paths::{Paths, SKILL_TARGET_IDS, SkillScope, SkillTarget, SkillTargetError};
 #[cfg(windows)]

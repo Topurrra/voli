@@ -713,6 +713,71 @@ fn binary_uninstall_leaves_zero_trace() {
     assert_eq!(before, after, "uninstall must leave zero trace");
 }
 
+/// The per-arch `extract_dir` override, end to end through the real install
+/// path, plus the zero-trace uninstall on top of it.
+///
+/// The top-level `extract_dir` is deliberately WRONG (that wrapper is not in the
+/// archive) and `[source.x64]` carries the right one. Before per-arch
+/// `extract_dir` existed, this install died with `ExtractDirMissing` after the
+/// archive was already extracted.
+///
+/// Host-independent by construction: the manifest is x64-only, so an arm64 dev
+/// box selects the same source (reporting a `Missing` fallback) and resolves the
+/// same override. Selecting arm64 itself is covered by the pure policy tests in
+/// `manifest.rs`, which take the host arch as an argument.
+#[test]
+fn per_arch_extract_dir_installs_and_uninstalls_cleanly() {
+    let td = setup();
+    let root = td.path();
+    let zip = build_zip(&[
+        ("arch-1.0.0/", b""),
+        ("arch-1.0.0/rg.exe", b"fake rg binary"),
+    ]);
+    let archive = root.join("arch.zip");
+    fs::write(&archive, &zip).unwrap();
+    let manifest_path = root.join("archpkg.toml");
+    fs::write(
+        &manifest_path,
+        format!(
+            r#"
+name = "archpkg"
+version = "1.0.0"
+kind = "app"
+extract_dir = "arch-1.0.0-x86_64-pc-windows-msvc"
+bin = ["rg.exe"]
+
+[source.x64]
+url = "https://example.com/arch.zip"
+sha256 = "{}"
+extract_dir = "arch-1.0.0"
+"#,
+            sha256_hex(&zip)
+        ),
+    )
+    .unwrap();
+
+    voli_core::Paths::at(root).ensure().unwrap();
+    drop(State::open(&root.join("db/state.sqlite")).unwrap());
+    let mut before = snapshot(root);
+
+    let report = install_local(&manifest_path, &archive, root).expect("per-arch install");
+    assert_eq!(report.arch, voli_core::Arch::X64);
+    assert!(
+        report.arch_note().starts_with("x64"),
+        "the arch decision must be reported: {}",
+        report.arch_note()
+    );
+    assert!(root.join("apps/archpkg/1.0.0/rg.exe").is_file());
+    assert!(root.join("shims/rg.exe").is_file());
+
+    uninstall("archpkg", root, false).unwrap();
+    let mut after = snapshot(root);
+    for tree in [&mut before, &mut after] {
+        tree.retain(|path, _| !path.starts_with("db"));
+    }
+    assert_eq!(before, after, "uninstall must leave zero trace");
+}
+
 #[test]
 fn binary_upgrade_flips_the_junction() {
     let td = setup();

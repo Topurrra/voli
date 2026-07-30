@@ -3,15 +3,15 @@ resolver = "2"
 members = ["crates/voli", "crates/voli-core", "crates/voli-shim", "crates/voli-index-tool", "crates/stela"]
 
 [workspace.package]
-version = "0.9.2"
+version = "0.10.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Topurrra/voli"
 authors = ["Nika Topuria"]
 
 [workspace.dependencies]
-voli-core = { path = "crates/voli-core", version = "0.9.2" }
-stela = { path = "crates/stela", version = "0.9.2" }
+voli-core = { path = "crates/voli-core", version = "0.10.0" }
+stela = { path = "crates/stela", version = "0.10.0" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,6 +51,13 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
     "Win32_System_Com",
+    # Native host arch, which cfg!(target_arch) cannot report from an emulated
+    # x64 process on an ARM64 box. IsWow64Process2 is resolved at runtime via
+    # GetProcAddress (LibraryLoader) rather than imported, so the binary still
+    # loads on Windows older than 10 1709; Threading is GetCurrentProcess and
+    # SystemInformation is IMAGE_FILE_MACHINE_*.
     "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
     "Win32_Foundation",
 ] }

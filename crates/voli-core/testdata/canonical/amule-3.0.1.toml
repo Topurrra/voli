@@ -1,0 +1,21 @@
+name = "amule"
+version = "3.0.1"
+description = "A peer-to-peer file-sharing client for the eD2k and Kademlia networks, compatible with eMule."
+homepage = "https://github.com/amule-org/amule"
+license = "GPL-2.0-or-later"
+kind = "app"
+extract_dir = "amule-portable-x64"
+bin = ["bin\\amulecmd.exe", "bin\\amuled.exe", "bin\\amuleweb.exe"]
+shortcuts = [{ target = "bin\\amule.exe", name = "aMule" }, { target = "bin\\amulegui.exe", name = "aMule (Remote GUI)" }]
+
+[source.x64]
+url = "https://github.com/amule-org/amule/releases/download/3.0.1/aMule-3.0.1-Windows-x64.zip"
+sha256 = "4864f0b2ad0fadf82b433800120144133f9a71d0a0c147ac9f3743b5c9538389"
+
+[source.arm64]
+url = "https://github.com/amule-org/amule/releases/download/3.0.1/aMule-3.0.1-Windows-arm64.zip"
+sha256 = "a40bea03aedd09d16d9f7b135272b86fcbc36c49b6718611100066573a303a6c"
+
+[autoupdate]
+checkver = { github = "amule-org/amule" }
+url_template = { x64 = "https://github.com/amule-org/amule/releases/download/$version/aMule-$version-Windows-x64.zip", arm64 = "https://github.com/amule-org/amule/releases/download/$version/aMule-$version-Windows-arm64.zip" }

@@ -1,0 +1,18 @@
+name = "vscode"
+version = "1.131.0"
+description = "Visual Studio Code, Microsoft's code editor (portable archive build)."
+homepage = "https://code.visualstudio.com/"
+license = "Freeware"
+kind = "app"
+gui = true
+bin = [{ name = "code", path = "Code.exe" }]
+shortcuts = [{ target = "Code.exe", name = "Visual Studio Code" }]
+persist = ["data"]
+
+[source.x64]
+url = "https://vscode.download.prss.microsoft.com/dbazure/download/stable/e4c7e7b1d6d060162f4aa7f8225271b67ce1df75/VSCode-win32-x64-1.131.0.zip"
+sha256 = "afcb7f2963cb69b8a251ee275b60da0b74bca70277c103deb029ca73c3a5381e"
+
+[autoupdate]
+checkver = { url = "https://update.code.visualstudio.com/api/update/win32-x64-archive/stable/latest", regex = "\"productVersion\":\"([\\d.]+)\"" }
+url_template = { x64 = "https://update.code.visualstudio.com/$version/win32-x64-archive/stable#/dl.zip" }

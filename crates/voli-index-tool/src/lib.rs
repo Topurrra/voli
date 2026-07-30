@@ -168,6 +168,31 @@ pub fn validate(dir: &Path) -> Result<Vec<String>> {
     Ok(analyze(dir)?.1)
 }
 
+/// Every manifest under `dir` that is not in canonical form, as
+/// `<relative path>: not in canonical form (…)` lines.
+///
+/// Deliberately NOT part of [`validate`]: the registry publish runs validate, and
+/// hundreds of legacy files are still in the old expanded shape — a hard failure
+/// here would block publishing until every one of them is normalized. This is a
+/// drift *report*, so the next reformat shows up as a diff rather than as a merge
+/// conflict. Unparseable files are validate's problem and are skipped.
+pub fn check_format(dir: &Path) -> Result<Vec<String>> {
+    let mut drift = Vec::new();
+    for abs in collect_toml_files(dir)? {
+        let Ok(text) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let Ok(m) = Manifest::from_toml_str(&text) else {
+            continue;
+        };
+        if !m.is_canonical_toml(&text) {
+            let rel = abs.strip_prefix(dir).unwrap_or(&abs);
+            drift.push(format!("{}: not in canonical form", rel.display()));
+        }
+    }
+    Ok(drift)
+}
+
 /// Full build: validate, compile to sqlite, compress, sign, and write the
 /// `index.json` pointer. Writes `index.sqlite`, `index.sqlite.zst`,
 /// `index.sig`, and `index.json` into `out`.
@@ -761,7 +786,11 @@ fn bump_one(
         )?;
         None
     };
-    let new_toml = toml::to_string_pretty(&bumped).context("serializing bumped manifest")?;
+    // The ONE canonical form (voli-core). `toml::to_string_pretty` used to be
+    // called here and emitted a shape no other tool produced — empty collections,
+    // expanded [autoupdate.checkver] tables — which collided with the registry
+    // importer's output on every bumped file.
+    let new_toml = bumped.to_canonical_toml();
     Manifest::from_toml_str(&new_toml)
         .map_err(|e| anyhow::anyhow!("emitted manifest invalid: {e}"))?;
 
@@ -976,6 +1005,55 @@ sha256 = "{hash}"
         let (manifests, errors) = analyze(td.path()).unwrap();
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
         assert_eq!(manifests.len(), 3, "two ripgrep versions + one fd");
+    }
+
+    /// The drift detector. It must stay OFF the validate path: the registry
+    /// publish runs validate, and hundreds of legacy files are still in the old
+    /// expanded shape, so a hard failure would block publishing outright.
+    #[test]
+    fn check_format_reports_drift_without_failing_validate() {
+        let td = registry_with_examples();
+        let root = td.path();
+        assert!(
+            check_format(root).unwrap().is_empty(),
+            "the fixtures are already canonical"
+        );
+
+        // The exact shape `bump` used to emit: empty collections and an expanded
+        // [autoupdate.checkver] table. Semantically identical, textually not.
+        let dir = root.join("f").join("fd");
+        let old_style = format!(
+            r#"name = "fd"
+version = "10.1.0"
+description = "test package fd"
+homepage = "https://example.com/fd"
+icon = "https://example.com/fd.svg"
+kind = "app"
+bin = ["fd.exe"]
+persist = []
+shortcuts = []
+write_file = []
+
+[source.x64]
+url = "https://example.com/fd-10.1.0.zip"
+sha256 = "{hash}"
+extra = []
+
+[env]
+
+[depends]
+"#,
+            hash = "a".repeat(64)
+        );
+        fs::write(dir.join("10.1.0.toml"), &old_style).unwrap();
+
+        let drift = check_format(root).unwrap();
+        assert_eq!(drift.len(), 1, "{drift:?}");
+        assert!(drift[0].contains("fd"), "{drift:?}");
+        assert!(
+            validate(root).unwrap().is_empty(),
+            "format drift must not be a validation error"
+        );
     }
 
     #[test]
@@ -1343,6 +1421,12 @@ checkver = {{ url = "https://example.com/version", regex = "([\\d.]+)" }}
 
         let emitted = fs::read_to_string(manifest_dir.join("1.1.0.toml")).unwrap();
         let manifest = Manifest::from_toml_str(&emitted).unwrap();
+        // bump emits the one canonical form — not toml::to_string_pretty, whose
+        // empty collections and expanded [autoupdate.checkver] conflicted with
+        // every manifest the registry importer produced.
+        assert_eq!(emitted, manifest.to_canonical_toml());
+        assert!(!emitted.contains("extra = []"), "{emitted}");
+        assert!(!emitted.contains("[autoupdate.checkver]"), "{emitted}");
         let x64 = manifest.source.x64.unwrap();
         let arm64 = manifest.source.arm64.unwrap();
         assert_eq!(x64.url, format!("{base}/tool-1.1.0-x64.zip"));

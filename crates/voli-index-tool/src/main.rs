@@ -1,11 +1,14 @@
 //! `voli-index-tool` — validate and compile the Voli package registry (§11 step 7).
 
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
+use voli_core::manifest::Sources;
+use voli_core::{Bin, Kind, Manifest, Source, SourceKind};
 
 #[derive(Parser)]
 #[command(
@@ -140,11 +143,10 @@ fn run() -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::New { url, name, out } => {
-            let toml = wizard(&url, &name)?;
+            let m = wizard(&url, &name)?;
+            let toml = m.to_canonical_toml();
             match out {
                 Some(dir) => {
-                    // Parse version from the generated TOML to build the path.
-                    let m = voli_core::Manifest::from_toml_str(&toml)?;
                     let letter = &m.name[..1];
                     let dest = dir.join(letter).join(&m.name);
                     std::fs::create_dir_all(&dest)?;
@@ -176,8 +178,13 @@ fn run() -> anyhow::Result<ExitCode> {
     }
 }
 
-/// Manifest wizard: download → sha256 → sniff → inspect → emit TOML.
-fn wizard(url: &str, name: &str) -> anyhow::Result<String> {
+/// Manifest wizard: download → sha256 → sniff → inspect → assemble.
+///
+/// Returns the parsed-and-validated `Manifest`; the caller writes
+/// [`Manifest::to_canonical_toml`]. Emitting TOML by hand here is what made a
+/// wizard-authored manifest land non-canonical, so that the first `bump` or
+/// `scoop-sync` to touch it reformatted the whole file.
+fn wizard(url: &str, name: &str) -> anyhow::Result<Manifest> {
     // 1. Download to temp.
     eprintln!("downloading {url} ...");
     let resp = ureq::get(url)
@@ -214,28 +221,56 @@ fn wizard(url: &str, name: &str) -> anyhow::Result<String> {
     // 7. Find *.exe at root of search_root → bin candidates.
     let bins = find_bins(&search_root);
 
-    // 8. Emit TOML.
-    let mut toml = String::new();
-    toml.push_str(&format!("name = \"{name}\"\n"));
-    toml.push_str(&format!("version = \"{version}\"\n"));
-    toml.push_str("kind = \"app\"\n");
-    if let Some(d) = &extract_dir {
-        toml.push_str(&format!("extract_dir = \"{d}\"\n"));
-    }
-    if !bins.is_empty() {
-        let bin_list: Vec<String> = bins.iter().map(|b| format!("\"{b}\"")).collect();
-        toml.push_str(&format!("bin = [{}]\n", bin_list.join(", ")));
-    }
-    toml.push('\n');
-    toml.push_str("[source.x64]\n");
-    toml.push_str(&format!("url = \"{url}\"\n"));
-    toml.push_str(&format!("sha256 = \"{sha256}\"\n"));
+    // 8. Assemble the real struct — the shape the client actually parses.
+    let m = wizard_manifest(name, &version, url, &sha256, extract_dir, bins);
 
-    // 9. Validate with the real parser before returning.
-    voli_core::Manifest::from_toml_str(&toml)
-        .map_err(|e| anyhow::anyhow!("generated manifest failed validation: {e}"))?;
+    // 9. Validate the canonical text with the real parser: what ships is what
+    //    gets checked, and re-parsing proves the serializer round-trips.
+    Manifest::from_toml_str(&m.to_canonical_toml())
+        .map_err(|e| anyhow::anyhow!("generated manifest failed validation: {e}"))
+}
 
-    Ok(toml)
+/// The manifest shape the wizard produces: one x64 archive source, plus the
+/// wrapper dir and root `*.exe` list it detected. Split out from the download so
+/// the generated shape is testable without a network.
+fn wizard_manifest(
+    name: &str,
+    version: &str,
+    url: &str,
+    sha256: &str,
+    extract_dir: Option<String>,
+    bins: Vec<String>,
+) -> Manifest {
+    Manifest {
+        name: name.to_string(),
+        version: version.to_string(),
+        description: None,
+        homepage: None,
+        icon: None,
+        license: None,
+        kind: Kind::App,
+        source: Sources {
+            x64: Some(Source {
+                url: url.to_string(),
+                sha256: Some(sha256.to_string()),
+                sha512: None,
+                extra: Vec::new(),
+                kind: SourceKind::Archive,
+                extract_dir: None,
+            }),
+            ..Sources::default()
+        },
+        extract_dir,
+        file_name: None,
+        bin: bins.into_iter().map(Bin::Path).collect(),
+        env: BTreeMap::new(),
+        depends: BTreeMap::new(),
+        autoupdate: None,
+        persist: Vec::new(),
+        gui: None,
+        shortcuts: Vec::new(),
+        write_file: Vec::new(),
+    }
 }
 
 fn archive_ext(url: &str) -> &'static str {
@@ -367,6 +402,30 @@ mod tests {
     #[test]
     fn guess_version_fallback() {
         assert_eq!(guess_version("https://example.com/mytool.zip"), "1.0.0");
+    }
+
+    /// A wizard-authored manifest must already be canonical. If it is not, the
+    /// first `bump` or `scoop-sync` to touch the file reformats every line of it
+    /// — the exact churn the canonical form exists to prevent.
+    #[test]
+    fn wizard_output_is_canonical() {
+        let url = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip";
+        let m = wizard_manifest(
+            "ripgrep",
+            &guess_version(url),
+            url,
+            &hex::encode(Sha256::digest(b"payload")),
+            Some("ripgrep-14.1.1-x86_64-pc-windows-msvc".to_string()),
+            vec!["rg.exe".to_string()],
+        );
+        let text = m.to_canonical_toml();
+        let parsed = Manifest::from_toml_str(&text).expect("wizard output must validate");
+        assert!(parsed.is_canonical_toml(&text), "not canonical:\n{text}");
+        // The struct survives the round trip, so `new` writing the canonical text
+        // and the client parsing it agree on every optional field.
+        assert_eq!(parsed, m);
+        assert_eq!(parsed.version, "14.1.1");
+        assert_eq!(parsed.bin[0].path(), "rg.exe");
     }
 
     #[test]

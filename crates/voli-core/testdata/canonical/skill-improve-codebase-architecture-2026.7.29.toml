@@ -1,0 +1,10 @@
+name = "improve-codebase-architecture"
+version = "2026.7.29"
+description = "Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick."
+homepage = "https://github.com/mattpocock/skills/tree/2ab958093e83e0ec752e6c1c5932da465bf23e0c/skills/engineering/improve-codebase-architecture"
+license = "MIT"
+kind = "skill"
+
+[source.any]
+url = "https://github.com/Topurrra/voli-registry/releases/download/skills/mattpocock-skills-2026.7.29-improve-codebase-architecture.zip"
+sha256 = "d5be15f3ed5aeb911ff74d62dccbfcc8e9c54252b0373891f514c4cac6332b68"

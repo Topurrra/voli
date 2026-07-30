@@ -18,7 +18,7 @@ The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else - read it first
 if you like: [`install.ps1`](install.ps1).
 
-> **Status: v0.9.2, still pre-1.0.** The core workflow is released and working,
+> **Status: v0.10.0, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)
@@ -46,6 +46,8 @@ Global options:
 | `voli delete <pkg> ...` | Delete packages by replaying their ledger. Persist data is kept by default. |
 | `voli delete skill/<name> --for <agent>` | Delete one or more target-scoped skill mappings. |
 | `voli memory <cmd>` | Encrypted, local memory for AI agents - see [Agent memory](#agent-memory). |
+| `voli web <bang> <query>` | Open a search shortcut in your browser. Voli builds the URL and fetches nothing. |
+| `voli fetch <url>` | Fetch a page as text, Markdown, or JSON, with provenance - see [Web search and fetch](#web-search-and-fetch). |
 | `voli update` | Refresh the local signed package index. |
 | `voli upgrade [pkg ...]` | Upgrade named packages. Use `--all` to upgrade everything except pinned packages. |
 | `voli list` | List installed packages and versions. |
@@ -92,6 +94,12 @@ voli delete ripgrep
 voli delete ripgrep --purge
 voli delete skill/tdd --for codex
 voli delete skill/tdd --for codex --for cursor --global
+
+voli web g "rust async traits"
+voli web --url gh tantivy
+voli fetch https://doc.rust-lang.org/std/pin/index.html
+voli fetch example.com --format md
+voli fetch example.com --json
 
 voli cleanup --dry-run
 voli cleanup --cache-days 7
@@ -149,9 +157,12 @@ voli memory verify                               # prove nothing was altered
 ```
 
 Recall is firewalled - secrets (keys, cards, SSNs) are masked before an agent
-sees them and `--private` notes are withheld. `voli memory prompt` prints the
-setup prompt that wires an agent to the whole workflow. Bitemporal validity,
-supersession, contradiction warnings, and passphrase recovery are built in.
+sees them and `--private` notes are withheld. `voli memory prompt` writes the
+setup prompt that wires an agent to the whole workflow into
+`voli-memory-prompt.md`, so you can copy it out of an editor rather than the
+terminal; add `--print` to send it to stdout instead, or `--out <path>` to choose
+the file. Bitemporal validity, supersession, contradiction warnings, and
+passphrase recovery are built in.
 
 ### Per-project memory
 
@@ -160,7 +171,7 @@ from what you know about the user:
 
 ```powershell
 voli memory init --project      # creates .voli\memory here, git-ignores .voli\
-voli memory prompt --per-project # the agent prompt for that store
+voli memory prompt --per-project # writes voli-memory-prompt.project.md
 ```
 
 Every `voli memory` command run anywhere inside the project then finds it
@@ -169,6 +180,78 @@ ancestor wins, so nested repositories each keep their own. Detection requires
 the store to exist, so a directory that never ran `init --project` keeps using
 the machine-wide store. Add `--global` to any command to reach that store from
 inside a project, and `$VOLI_MEMORY_DIR` still overrides everything.
+
+## Web search and fetch
+
+`voli web` turns a shortcut into a URL and hands it to your browser. Voli makes
+no request of its own: there is no API key, no quota, no cost, and nothing to
+bot-block, because the search is performed by the browser you are already
+signed in to.
+
+```powershell
+voli web                              # list the shortcuts
+voli web g "rust async traits"         # Google
+voli web cr tantivy                    # crates.io
+voli web --url so "lifetime error"     # print the URL instead of opening it
+```
+
+Shortcuts cover the search engines (`g`, `ddg`, `bing`, `brave`, `kagi`, `sp`),
+reference (`w`, `tr`, `maps`, `img`), code and packages (`gh`, `ghc`, `cr`,
+`rs`, `std`, `npm`, `pypi`, `go`), developer reference (`so`, `mdn`, `ciu`,
+`aw`, `man`, `cve`), and community (`hn`, `r`, `yt`). The query is
+percent-encoded down to the unreserved characters and the URL is passed to
+`ShellExecuteW` as a single argument - never through a shell - so a query full
+of `&`, `|`, `` ` `` or `%` has nothing to escape into.
+
+`voli fetch` retrieves a page and turns it into clean text an agent can read,
+with the provenance to prove what was read:
+
+```powershell
+voli fetch https://doc.rust-lang.org/std/pin/index.html
+voli fetch example.com --format md
+voli fetch example.com --json --max-bytes 262144
+```
+
+It prints the final URL after redirects (so a redirect to a login page is
+visible, not silent), the fetch timestamp, the sha256 of exactly the bytes
+received, and the byte length. HTTPS is the default and only http/https is
+accepted - `file:`, `data:` and `javascript:` URLs are refused. Response size,
+redirect count, and total time are all capped, and the size cap is enforced
+while reading rather than audited afterwards.
+
+`--format` picks the shape: `text` (the default, flattened prose), `md`, or
+`json`. `--json` is an alias for `--format json`, so asking for both at once -
+`--json --format md` - is refused rather than silently resolved.
+
+`--format md` keeps the structure instead of flattening it: headings, ordered
+and unordered lists (nested ones included), fenced code blocks, blockquotes,
+inline code, bold and italic, strikethrough, task lists with their checked
+state, horizontal rules, hard line breaks, images, and link targets resolved
+against the page's final URL. A table becomes a real pipe
+table when every row agrees on the column count, and one cell per line when it
+does not - a table that lies about its shape is worse than plain lines. An
+image becomes `![alt](src)` with its source resolved like any other link, so a
+figure an agent can go and look at survives instead of vanishing. Struck-out
+text keeps its `~~` and a checklist keeps its `[x]`/`[ ]`, because text that
+has been retracted reads as current fact without them, and a checklist whose
+state is gone makes every item look equally undone.
+Structure survives a token budget far better than flattened prose, and a link
+an agent can follow is worth more than the word that was linked.
+
+Page content is hostile, so the Markdown is defensive: a code block's fence is
+always longer than any run of backticks inside it, link labels have their
+brackets escaped and link targets have their parens percent-encoded, a `<` that
+could start raw HTML is escaped, and a `javascript:` or `data:` href keeps its
+text and loses its target. Images get the same treatment, because their alt
+text and their source are attacker-controlled in exactly the same way.
+
+Text is extracted locally - no reader service is contacted - by stripping
+scripts, styles, and page chrome; a content type that is not text is reported
+rather than turned into invented prose. Every format goes through the same two
+gates: the result is wrapped in a `VOLI_WEB_DATA` fence that tells the agent
+everything inside is data and never instructions, and it passes through the
+same secret masking `voli memory` uses on recall. Fetched pages are the number
+one prompt-injection vector, and this is the seam that says so out loud.
 
 ## How it works
 

@@ -129,7 +129,7 @@ pub enum RemoteError {
     },
     #[error("package '{package}' depends on '{dep}', which is not in the index")]
     UnknownDep { package: String, dep: String },
-    #[error("package '{0}' has no x64 source in the index")]
+    #[error("package '{0}' has no [source.x64] or [source.arm64] block in the index")]
     NoArch(String),
     #[error("skill package '{0}' has no universal source in the index")]
     NoUniversalSource(String),
@@ -274,6 +274,9 @@ pub fn prefetch_remote(
         hash: String,
     }
 
+    // One arch decision for the whole run: what we download must be what
+    // `install_manifest` later selects, or the hash gate would reject it.
+    let host = install::host_arch();
     let state = State::open(&Paths::at(root).state_db())
         .map_err(|error| RemoteError::Install(InstallError::Sqlite(error)))?;
     let mut seen_packages = HashSet::new();
@@ -295,10 +298,9 @@ pub fn prefetch_remote(
                 continue;
             }
             let source = manifest
-                .source
-                .x64
-                .as_ref()
-                .ok_or_else(|| RemoteError::NoArch(manifest.name.clone()))?;
+                .select_source(host)
+                .ok_or_else(|| RemoteError::NoArch(manifest.name.clone()))?
+                .source;
             let hash = source.hash().to_string();
             if seen_hashes.insert(hash.clone()) {
                 plans[position].push(Job {
@@ -438,6 +440,9 @@ pub fn install_remote_env(
     // (NotFound + suggestions) or an unknown dep before anything is downloaded.
     let plan = resolve_chain(root, name, version)?;
 
+    // Same arch for every package in the chain, and the same one
+    // `install_manifest` will pick — the hash gate depends on it.
+    let host = install::host_arch();
     let state = State::open(&Paths::at(root).state_db())
         .map_err(|e| RemoteError::Install(InstallError::Sqlite(e)))?;
     let cache = Paths::at(root).cache();
@@ -459,10 +464,9 @@ pub fn install_remote_env(
         }
 
         let source = manifest
-            .source
-            .x64
-            .as_ref()
-            .ok_or_else(|| RemoteError::NoArch(manifest.name.clone()))?;
+            .select_source(host)
+            .ok_or_else(|| RemoteError::NoArch(manifest.name.clone()))?
+            .source;
 
         on_step(Step::Downloading {
             name: &manifest.name,
@@ -542,10 +546,9 @@ pub fn upgrade(
     }
 
     let source = latest
-        .source
-        .x64
-        .as_ref()
-        .ok_or_else(|| RemoteError::NoArch(name.to_string()))?;
+        .select_source(install::host_arch())
+        .ok_or_else(|| RemoteError::NoArch(name.to_string()))?
+        .source;
 
     on_step(Step::Downloading {
         name: &latest.name,

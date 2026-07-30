@@ -1,0 +1,16 @@
+# DEPRECATED, FROZEN. Renamed to python-embed (manifests/p/python-embed/).
+# This file exists only so the handful of installs published under the old name
+# still resolve for `voli upgrade`. [autoupdate] is deliberately removed so CI
+# can never add a new version here. Delete this directory once those installs
+# have moved.
+name = "python"
+version = "3.14.6"
+description = "DEPRECATED, renamed to python-embed. python.org's embeddable distribution: interpreter and standard library only, with no pip, no venv and no site-packages. Frozen at 3.14.6 — install python-embed instead."
+homepage = "https://www.python.org/"
+license = "PSF-2.0"
+kind = "app"
+bin = ["python.exe", { name = "python3", path = "python.exe" }]
+
+[source.x64]
+url = "https://www.python.org/ftp/python/3.14.6/python-3.14.6-embed-amd64.zip"
+sha256 = "df901e84a896ff1ee720ad03377e0c8d8c2244fda79808aeeaff6316df1cb75c"

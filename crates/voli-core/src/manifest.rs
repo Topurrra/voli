@@ -88,6 +88,15 @@ impl SourceKind {
     fn is_archive(&self) -> bool {
         *self == Self::Archive
     }
+
+    /// The wire name, identical to the serde rename.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Archive => "archive",
+            Self::InstallerArchive => "installer-archive",
+            Self::Binary => "binary",
+        }
+    }
 }
 
 /// A per-architecture download source.
@@ -105,6 +114,16 @@ pub struct Source {
     /// How the payload is handled (default: archive).
     #[serde(default, skip_serializing_if = "SourceKind::is_archive")]
     pub kind: SourceKind,
+    /// The wrapper dir to strip from THIS arch's archive, overriding the
+    /// top-level [`Manifest::extract_dir`]. Absent = use the top-level one, so
+    /// every existing manifest keeps its exact meaning.
+    ///
+    /// It exists because vendors name the wrapper per architecture
+    /// (`zig-x86_64-windows-0.16.0` vs `zig-aarch64-windows-0.16.0`) while
+    /// `extract_dir` was a single top-level field. Resolved by
+    /// [`Manifest::extract_dir_for`].
+    #[serde(default)]
+    pub extract_dir: Option<String>,
 }
 
 impl Source {
@@ -139,6 +158,78 @@ pub struct Sources {
     pub any: Option<Source>,
     pub x64: Option<Source>,
     pub arm64: Option<Source>,
+}
+
+impl Sources {
+    /// The block for one architecture. `any` is skill-only and never selected
+    /// by architecture.
+    pub fn for_arch(&self, arch: Arch) -> Option<&Source> {
+        match arch {
+            Arch::X64 => self.x64.as_ref(),
+            Arch::Arm64 => self.arm64.as_ref(),
+        }
+    }
+}
+
+/// A host CPU architecture — which `[source.<arch>]` block an install prefers.
+///
+/// Always a **runtime** value, never `cfg!(target_arch)`: the released `voli.exe`
+/// is x86_64-only, so on an ARM64 Windows box it runs under the x64 emulator and
+/// the compile-time arch reports x86_64 — precisely the case arch selection
+/// exists to handle. See `crate::install::host_arch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    X64,
+    Arm64,
+}
+
+impl Arch {
+    /// The wire name, identical to the `[source.<arch>]` table name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::X64 => "x64",
+            Self::Arm64 => "arm64",
+        }
+    }
+
+    /// The other architecture — the only fallback candidate there is.
+    pub fn other(self) -> Self {
+        match self {
+            Self::X64 => Self::Arm64,
+            Self::Arm64 => Self::X64,
+        }
+    }
+}
+
+/// Why an install used a source that is not the host's own architecture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchFallback {
+    /// The manifest has no `[source.<host arch>]` block at all.
+    Missing,
+    /// The host's block exists, but the top-level `extract_dir` next to it was
+    /// authored against the other arch's archive and this block carries no
+    /// override — stripping it could fail after a full download.
+    ExtractDir,
+}
+
+impl ArchFallback {
+    /// Why the host's own architecture was not used, for the install output.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Missing => "no source for this machine's architecture",
+            Self::ExtractDir => "the native source has no extract_dir of its own",
+        }
+    }
+}
+
+/// The `[source.<arch>]` block an install picked, and why.
+#[derive(Debug, Clone, Copy)]
+pub struct SelectedSource<'a> {
+    pub source: &'a Source,
+    /// The arch of the block actually chosen — not necessarily the host's.
+    pub arch: Arch,
+    /// `None` when `arch` IS the host's architecture.
+    pub fallback: Option<ArchFallback>,
 }
 
 /// A shim to create. Either a bare relative path (`"rg.exe"`) or the table form
@@ -361,11 +452,238 @@ impl Manifest {
         }
     }
 
+    /// The wrapper dir to strip after extracting `source`: that source's own
+    /// `extract_dir` when it has one, else the top-level one, else none.
+    pub fn extract_dir_for<'a>(&'a self, source: &'a Source) -> Option<&'a str> {
+        source
+            .extract_dir
+            .as_deref()
+            .or(self.extract_dir.as_deref())
+    }
+
+    /// Pick the `[source.<arch>]` block to install on `host`.
+    ///
+    /// The policy is deliberately conservative, so switching arm64 selection on
+    /// requires **zero** manifest edits:
+    ///
+    /// * x64 host → `[source.x64]`.
+    /// * arm64 host → `[source.arm64]` only when picking it is provably safe:
+    ///   that block carries its own `extract_dir`, or there is no top-level
+    ///   `extract_dir` to mis-strip. Otherwise `[source.x64]`, which works under
+    ///   emulation.
+    /// * either way, if the host's block is absent, the other arch is used and
+    ///   the caller is told which and why via [`SelectedSource::fallback`].
+    ///
+    /// The asymmetry is the point. A top-level `extract_dir` in this registry was
+    /// measured against the **x64** archive (the Scoop importer emitted the x64
+    /// value; 83 of the 537 dual-arch manifests carry an arch token literally in
+    /// the string, e.g. `zig-x86_64-windows-0.16.0`), so it is trustworthy for
+    /// x64 and a guess for arm64. And a wrong `extract_dir` fails with
+    /// `ExtractDirMissing` only AFTER the user has downloaded the whole archive —
+    /// so a correct-but-emulated install beats a broken native one. Packages go
+    /// native as manifests gain a per-arch `extract_dir`; nothing has to be fixed
+    /// up front.
+    ///
+    /// Returns `None` only when neither arch is present — impossible for a
+    /// validated non-skill manifest, and skills use `[source.any]` instead.
+    pub fn select_source(&self, host: Arch) -> Option<SelectedSource<'_>> {
+        let other = host.other();
+        match (self.source.for_arch(host), self.source.for_arch(other)) {
+            (None, None) => None,
+            // No block for this machine: use what there is, and say so.
+            (None, Some(source)) => Some(SelectedSource {
+                source,
+                arch: other,
+                fallback: Some(ArchFallback::Missing),
+            }),
+            // Native block exists, but the only `extract_dir` around belongs to
+            // the archive sitting next to it. Prefer the emulated build.
+            //
+            // Guarded on the other arch existing: in a single-arch manifest the
+            // top-level `extract_dir` describes THAT arch's archive by
+            // construction, so there is nothing to be conservative about.
+            (Some(native), Some(emulated))
+                if host == Arch::Arm64
+                    && self.extract_dir.is_some()
+                    && native.extract_dir.is_none() =>
+            {
+                Some(SelectedSource {
+                    source: emulated,
+                    arch: other,
+                    fallback: Some(ArchFallback::ExtractDir),
+                })
+            }
+            (Some(source), _) => Some(SelectedSource {
+                source,
+                arch: host,
+                fallback: None,
+            }),
+        }
+    }
+
     /// Parse and validate a manifest from a TOML string.
     pub fn from_toml_str(s: &str) -> Result<Manifest, ManifestError> {
         let m: Manifest = toml::from_str(s)?;
         m.validate()?;
         Ok(m)
+    }
+
+    /// The ONE canonical TOML form. Every emitter must go through this so the
+    /// two manifest pipelines (`voli-index-tool bump` and the registry's
+    /// `scoop-import`) cannot disagree on formatting — they used to, and it
+    /// produced a merge conflict on 20 files in a single week.
+    ///
+    /// The form is the compact one the ~2,800 published manifests already use:
+    /// empty collections omitted entirely, inline tables for `[autoupdate]`,
+    /// arrays on one line however long, basic (double-quoted) strings.
+    ///
+    /// Two properties this must keep:
+    /// - **Every top-level scalar is emitted before the first `[table]` header.**
+    ///   TOML absorbs a stray scalar into the preceding table, which has been a
+    ///   real parse bug here — hence one scalar block, no exceptions.
+    /// - Re-parsing the output yields an equal `Manifest`, so it is safe to
+    ///   normalize a file in place.
+    ///
+    /// Lines are `\n`; the registry stores LF and lets git translate.
+    pub fn to_canonical_toml(&self) -> String {
+        let mut o = String::new();
+
+        // --- top-level scalars, all of them, before any [table] header ---
+        o.push_str(&format!("name = {}\n", esc(&self.name)));
+        o.push_str(&format!("version = {}\n", esc(&self.version)));
+        for (field, value) in [
+            ("description", &self.description),
+            ("homepage", &self.homepage),
+            ("icon", &self.icon),
+            ("license", &self.license),
+        ] {
+            if let Some(value) = value {
+                o.push_str(&format!("{field} = {}\n", esc(value)));
+            }
+        }
+        o.push_str(&format!("kind = {}\n", esc(self.kind.as_str())));
+        for (field, value) in [
+            ("extract_dir", &self.extract_dir),
+            ("file_name", &self.file_name),
+        ] {
+            if let Some(value) = value {
+                o.push_str(&format!("{field} = {}\n", esc(value)));
+            }
+        }
+        if let Some(gui) = self.gui {
+            o.push_str(&format!("gui = {gui}\n"));
+        }
+        if !self.bin.is_empty() {
+            o.push_str(&format!("bin = {}\n", inline_array(&self.bin, bin_value)));
+        }
+        if !self.shortcuts.is_empty() {
+            o.push_str(&format!(
+                "shortcuts = {}\n",
+                inline_array(&self.shortcuts, shortcut_value)
+            ));
+        }
+        if !self.persist.is_empty() {
+            o.push_str(&format!(
+                "persist = {}\n",
+                inline_array(&self.persist, |p| esc(p))
+            ));
+        }
+        if !self.write_file.is_empty() {
+            o.push_str(&format!(
+                "write_file = {}\n",
+                inline_array(&self.write_file, |w| inline_table(&[
+                    ("path", esc(&w.path)),
+                    ("content", esc(&w.content)),
+                ]))
+            ));
+        }
+        // An `autoupdate` that is not a table cannot be a [section], so it has to
+        // be emitted here with the other scalars. No published manifest does
+        // this; handling it is what makes the round-trip total rather than
+        // "total for the shapes we happen to have seen".
+        if let Some(value) = self.autoupdate.as_ref().filter(|v| !v.is_table()) {
+            o.push_str(&format!("autoupdate = {}\n", inline_value(value)));
+        }
+
+        // --- tables ---
+        for (arch, source) in [
+            ("any", &self.source.any),
+            ("x64", &self.source.x64),
+            ("arm64", &self.source.arm64),
+        ] {
+            let Some(source) = source else { continue };
+            o.push_str(&format!("\n[source.{arch}]\n"));
+            o.push_str(&format!("url = {}\n", esc(&source.url)));
+            // Both hashes at once is rejected by validation, but emit whatever is
+            // there: a serializer that silently drops a field is worse.
+            if let Some(h) = &source.sha256 {
+                o.push_str(&format!("sha256 = {}\n", esc(h)));
+            }
+            if let Some(h) = &source.sha512 {
+                o.push_str(&format!("sha512 = {}\n", esc(h)));
+            }
+            if !source.kind.is_archive() {
+                o.push_str(&format!("kind = {}\n", esc(source.kind.as_str())));
+            }
+            if let Some(dir) = &source.extract_dir {
+                o.push_str(&format!("extract_dir = {}\n", esc(dir)));
+            }
+            if !source.extra.is_empty() {
+                o.push_str(&format!(
+                    "extra = {}\n",
+                    inline_array(&source.extra, |e| inline_table(&[
+                        ("url", esc(&e.url)),
+                        ("sha256", esc(&e.sha256)),
+                        ("extract_to", esc(&e.extract_to)),
+                    ]))
+                ));
+            }
+        }
+        for (header, map) in [("env", &self.env), ("depends", &self.depends)] {
+            if map.is_empty() {
+                continue;
+            }
+            o.push_str(&format!("\n[{header}]\n"));
+            for (k, v) in map {
+                o.push_str(&format!("{} = {}\n", bare_or_quoted_key(k), esc(v)));
+            }
+        }
+        if let Some(table) = self.autoupdate.as_ref().and_then(toml::Value::as_table) {
+            o.push_str("\n[autoupdate]\n");
+            for (k, v) in ordered_pairs(table) {
+                o.push_str(&format!(
+                    "{} = {}\n",
+                    bare_or_quoted_key(k),
+                    inline_value(v)
+                ));
+            }
+        }
+
+        o
+    }
+
+    /// True when `text` is already in canonical form, ignoring two things that
+    /// are not formatting:
+    ///
+    /// - **Line endings.** The registry stores LF; a Windows checkout has CRLF in
+    ///   the working tree. That is git's choice, not a defect.
+    /// - **Whole-line `#` comments.** A `Manifest` has nowhere to keep a comment,
+    ///   so [`Self::to_canonical_toml`] cannot emit one — and the comments in the
+    ///   registry are load-bearing (`p/python` says "[autoupdate] is deliberately
+    ///   removed so CI can never add a version here"). Reporting those files as
+    ///   drift would be telling a maintainer to delete the warning.
+    ///
+    /// A trailing comment on a value line is NOT stripped — that would need
+    /// string-aware parsing — so such a file is reported as drift. Conservative
+    /// in the safe direction, and no published manifest has one.
+    pub fn is_canonical_toml(&self, text: &str) -> bool {
+        let stripped: String = text
+            .replace("\r\n", "\n")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        stripped == self.to_canonical_toml()
     }
 
     fn validate(&self) -> Result<(), ManifestError> {
@@ -418,6 +736,9 @@ impl Manifest {
             if source.kind == SourceKind::Binary {
                 any_binary = true;
                 check_component(self.binary_file_name(source), "source file name")?;
+                if source.extract_dir.is_some() {
+                    return Err(ManifestError::BinaryField("extract_dir"));
+                }
             }
         }
         if any_binary {
@@ -430,7 +751,14 @@ impl Manifest {
             return Err(ManifestError::FileNameWithoutBinary);
         }
 
-        if let Some(dir) = &self.extract_dir {
+        // Both the top-level field and the per-arch override reach the
+        // filesystem the same way (joined onto the staging dir), so they get the
+        // SAME validator — one rule, no chance of the two drifting apart.
+        let per_arch = [&self.source.any, &self.source.x64, &self.source.arm64]
+            .into_iter()
+            .flatten()
+            .map(|s| &s.extract_dir);
+        for dir in std::iter::once(&self.extract_dir).chain(per_arch).flatten() {
             check_relative(dir, "extract_dir")?;
         }
 
@@ -499,6 +827,9 @@ impl Manifest {
             .expect("validated: skill has a universal source");
         if source.kind != SourceKind::Archive {
             return Err(ManifestError::SkillField("source.kind"));
+        }
+        if source.extract_dir.is_some() {
+            return Err(ManifestError::SkillField("source.extract_dir"));
         }
         if !source.extra.is_empty() {
             return Err(ManifestError::SkillField("source.extra"));
@@ -691,6 +1022,150 @@ pub(crate) fn safe_windows_component(value: &str) -> bool {
         )
 }
 
+// --- canonical TOML emission ---------------------------------------------
+
+/// A TOML basic string. Basic (not literal) everywhere, because that is what the
+/// ~2,800 published manifests use — `bin = ["bin\\rg.exe"]`, never `'bin\rg.exe'`.
+fn esc(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 2);
+    o.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            // TOML forbids raw control characters and DEL inside a basic string.
+            c if c.is_control() => o.push_str(&format!("\\u{:04X}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// A bare key when TOML allows one, otherwise a quoted key.
+fn bare_or_quoted_key(k: &str) -> String {
+    if !k.is_empty()
+        && k.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        k.to_string()
+    } else {
+        esc(k)
+    }
+}
+
+/// One line, however long. `coreutils` has a 4.6 KB `bin` array on one line and
+/// wrapping it would rewrite every array in the registry.
+fn inline_array<T>(items: &[T], render: impl Fn(&T) -> String) -> String {
+    format!(
+        "[{}]",
+        items.iter().map(render).collect::<Vec<_>>().join(", ")
+    )
+}
+
+fn inline_table(pairs: &[(&str, String)]) -> String {
+    if pairs.is_empty() {
+        return "{}".to_string();
+    }
+    let body: Vec<String> = pairs
+        .iter()
+        .map(|(k, v)| format!("{} = {v}", bare_or_quoted_key(k)))
+        .collect();
+    format!("{{ {} }}", body.join(", "))
+}
+
+fn bin_value(b: &Bin) -> String {
+    match b {
+        Bin::Path(p) => esc(p),
+        Bin::Table { name, path, args } => {
+            let mut pairs = vec![("name", esc(name)), ("path", esc(path))];
+            if let Some(a) = args {
+                pairs.push(("args", esc(a)));
+            }
+            inline_table(&pairs)
+        }
+    }
+}
+
+fn shortcut_value(s: &Shortcut) -> String {
+    match s {
+        Shortcut::Path(p) => esc(p),
+        Shortcut::Table { target, name } => {
+            inline_table(&[("target", esc(target)), ("name", esc(name))])
+        }
+    }
+}
+
+/// Canonical key order inside the opaque `[autoupdate]` value. One flat list at
+/// every depth: the whole vocabulary is `checkver`/`url_template` and their few
+/// members, and no name repeats at two depths. Anything unlisted follows in the
+/// map's own (sorted) order.
+///
+/// A fixed list, not the map order, is the point: `checkver = { url = …, regex =
+/// … }` is how 323 published manifests read, and alphabetical would rewrite all
+/// of them (plus the 435 with `{ x64, arm64 }`).
+const AUTOUPDATE_KEY_ORDER: &[&str] = &[
+    "checkver",
+    "url_template",
+    "github",
+    "vendor",
+    "url",
+    "regex",
+    "x64",
+    "arm64",
+];
+
+fn ordered_pairs(table: &toml::Table) -> Vec<(&str, &toml::Value)> {
+    let mut pairs: Vec<(&str, &toml::Value)> = table.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    // Stable, so unlisted keys keep the map's order relative to each other.
+    pairs.sort_by_key(|(k, _)| {
+        AUTOUPDATE_KEY_ORDER
+            .iter()
+            .position(|known| known == k)
+            .unwrap_or(usize::MAX)
+    });
+    pairs
+}
+
+/// Render an opaque `toml::Value` inline — tables included, never as a section.
+fn inline_value(v: &toml::Value) -> String {
+    match v {
+        toml::Value::String(s) => esc(s),
+        toml::Value::Integer(i) => i.to_string(),
+        toml::Value::Float(f) => float_value(*f),
+        toml::Value::Boolean(b) => b.to_string(),
+        toml::Value::Datetime(d) => d.to_string(),
+        toml::Value::Array(a) => inline_array(a, inline_value),
+        toml::Value::Table(t) => {
+            let pairs: Vec<(&str, String)> = ordered_pairs(t)
+                .into_iter()
+                .map(|(k, v)| (k, inline_value(v)))
+                .collect();
+            inline_table(&pairs)
+        }
+    }
+}
+
+/// A TOML float always carries a fractional part or an exponent, so `1.0` must
+/// not come back out as `1` (that re-parses as an integer).
+fn float_value(f: f64) -> String {
+    if f.is_nan() {
+        return if f.is_sign_negative() { "-nan" } else { "nan" }.to_string();
+    }
+    if f.is_infinite() {
+        return if f.is_sign_negative() { "-inf" } else { "inf" }.to_string();
+    }
+    let s = f.to_string();
+    if s.contains(['.', 'e', 'E']) {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
 /// Env values may contain literal text and the single template var `{dir}`.
 /// Any other `{...}` placeholder is rejected.
 fn check_env_template(key: &str, val: &str) -> Result<(), ManifestError> {
@@ -767,6 +1242,256 @@ checkver = { github = "BurntSushi/ripgrep" }
     fn testdata_ripgrep_parses() {
         let s = include_str!("../testdata/ripgrep.toml");
         Manifest::from_toml_str(s).expect("testdata manifest should parse");
+    }
+
+    /// Real manifests copied verbatim out of the published registry, one per
+    /// shape the canonical form has to reproduce. These are the test that kills
+    /// the conflict class: if `to_canonical_toml` ever drifts from what is on
+    /// disk, every bumped file in that shape becomes a merge conflict.
+    const REAL: &[&str] = &[
+        // dual-arch, extract_dir, github checkver, url_template { x64, arm64 }
+        include_str!("../testdata/canonical/ripgrep-15.2.0.toml"),
+        // sha512 instead of sha256, dual-arch
+        include_str!("../testdata/canonical/caddy-2.11.4.toml"),
+        // single-arch, gui, shortcuts, checkver { url, regex } with escapes
+        include_str!("../testdata/canonical/everything-1.4.1.1032.toml"),
+        // persist, gui, bin table form, a `#/dl.zip` rename fragment
+        include_str!("../testdata/canonical/vscode-1.131.0.toml"),
+        // kind = "installer-archive", nested shortcut name, opaque checkver string
+        include_str!("../testdata/canonical/adventuregamestudio-3.6.2.20.toml"),
+        // icon, [env], checkver { vendor }, no url_template
+        include_str!("../testdata/canonical/googlechrome-151.0.7922.72.toml"),
+        // [depends]
+        include_str!("../testdata/canonical/ani-cli-4.15.toml"),
+        // [env], url_template as a bare string, backslash bin path
+        include_str!("../testdata/canonical/allure-2.44.0.toml"),
+        // several backslash bins and several table shortcuts on one line
+        include_str!("../testdata/canonical/amule-3.0.1.toml"),
+        // bin/shortcut names needing no quoting gymnastics ("notepad++")
+        include_str!("../testdata/canonical/notepadplusplus-8.9.7.toml"),
+        // kind = "skill": [source.any], no app fields, no [autoupdate]
+        include_str!("../testdata/canonical/skill-improve-codebase-architecture-2026.7.29.toml"),
+    ];
+
+    /// THE property: parse a published manifest, re-serialize, and get the same
+    /// bytes back. Line endings are normalized first — the registry stores LF and
+    /// a Windows checkout has CRLF in the working tree; that is git's choice, and
+    /// every other byte is ours.
+    #[test]
+    fn canonical_toml_is_byte_identical_to_published_manifests() {
+        for (i, text) in REAL.iter().enumerate() {
+            let want = text.replace("\r\n", "\n");
+            let m = Manifest::from_toml_str(&want)
+                .unwrap_or_else(|e| panic!("fixture #{i} must parse: {e}"));
+            let label = format!("{} {}", m.name, m.version);
+            let got = m.to_canonical_toml();
+            assert_eq!(
+                got, want,
+                "{label}: canonical output differs from the published file\n\
+                 --- got ---\n{got}\n--- want ---\n{want}\n"
+            );
+            assert!(m.is_canonical_toml(text), "{label}: is_canonical_toml");
+        }
+    }
+
+    /// Two published manifests carry whole-line comments, and those comments are
+    /// load-bearing — `p/python` says `[autoupdate]` was removed on purpose so CI
+    /// can never add a version. A `Manifest` has nowhere to keep a comment, so the
+    /// canonical text cannot reproduce one; the format check must tolerate them
+    /// rather than tell a maintainer to delete the warning.
+    ///
+    /// `j/jq` is also the registry's only `kind = "binary"` package, so this pins
+    /// `file_name` + a per-arch `kind = "binary"` against a real file.
+    #[test]
+    fn comments_are_not_format_drift() {
+        for (label, text) in [
+            ("jq", include_str!("../testdata/canonical/jq-1.8.2.toml")),
+            (
+                "python",
+                include_str!("../testdata/canonical/python-3.14.6.toml"),
+            ),
+        ] {
+            let text = text.replace("\r\n", "\n");
+            let m = Manifest::from_toml_str(&text).unwrap();
+            assert!(text.contains('#'), "{label}: fixture must have a comment");
+            assert!(
+                m.is_canonical_toml(&text),
+                "{label}: a comment is not drift\n{}",
+                m.to_canonical_toml()
+            );
+            // Everything except the comment lines is byte-identical.
+            let without_comments: String = text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with('#'))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            assert_eq!(without_comments, m.to_canonical_toml(), "{label}");
+        }
+
+        let jq =
+            Manifest::from_toml_str(include_str!("../testdata/canonical/jq-1.8.2.toml")).unwrap();
+        assert_eq!(jq.file_name.as_deref(), Some("jq.exe"));
+        let x64 = jq.source.x64.as_ref().unwrap();
+        assert_eq!(x64.kind, SourceKind::Binary);
+        assert_eq!(jq.binary_file_name(x64), "jq.exe");
+    }
+
+    /// The other half: serialize → re-parse → equal `Manifest`. Byte-identity
+    /// alone would be satisfied by a serializer that drops a field the fixtures
+    /// happen not to use.
+    #[test]
+    fn canonical_toml_round_trips_every_field() {
+        let mut cases: Vec<Manifest> = REAL
+            .iter()
+            .map(|t| Manifest::from_toml_str(&t.replace("\r\n", "\n")).unwrap())
+            .collect();
+        cases.push(Manifest::from_toml_str(FULL).unwrap());
+        // Every field at once, including the ones no published manifest uses yet:
+        // write_file, source.extra, and a binary source with file_name.
+        cases.push(
+            Manifest::from_toml_str(&binary(
+                r#"file_name = "jq.exe"
+bin = ["jq.exe", { name = "jaq", path = "jq.exe", args = "--args" }]
+shortcuts = ["jq.exe", { target = "jq.exe", name = "Vendor\\JQ" }]
+persist = ["config", "res/conf"]
+write_file = [{ path = "portable.ini", content = "[settings]\nportable = true\t\"q\"" }]
+gui = false
+
+[env]
+JQ_HOME = "{dir}"
+"weird key" = "{dir}\\bin"
+
+[depends]
+vcredist = "*""#,
+                "https://example.com/d/jq-windows-amd64.exe",
+            ))
+            .expect("the everything-at-once binary manifest must be valid"),
+        );
+        cases.push(
+            Manifest::from_toml_str(&format!(
+                r#"
+name = "app"
+version = "1.0.0"
+kind = "app"
+
+[source.x64]
+url = "https://example.com/a.zip"
+sha256 = "{}"
+extra = [{{ url = "https://example.com/b.zip", sha256 = "{}", extract_to = "plugins" }}]
+
+[autoupdate]
+url_template = {{ x64 = "https://example.com/$version.zip" }}
+checkver = {{ regex = "v([\\d.]+)", url = "https://example.com/" }}
+"#,
+                "a".repeat(64),
+                "b".repeat(64)
+            ))
+            .expect("extra sources and a reordered autoupdate must be valid"),
+        );
+
+        for m in &cases {
+            let text = m.to_canonical_toml();
+            let back = Manifest::from_toml_str(&text)
+                .unwrap_or_else(|e| panic!("re-parse of {}: {e}\n{text}", m.name));
+            assert_eq!(*m, back, "{} did not round-trip\n{text}", m.name);
+            // Idempotent: normalizing an already-canonical file is a no-op.
+            assert_eq!(text, back.to_canonical_toml(), "{} is not stable", m.name);
+        }
+    }
+
+    /// `checkver = { url = …, regex = … }` is how 323 published manifests read
+    /// and `{ x64, arm64 }` how 435 do. Emitting map order (alphabetical) would
+    /// rewrite all of them, so the key order is fixed by the serializer and does
+    /// not depend on the input's.
+    #[test]
+    fn autoupdate_key_order_is_fixed_not_alphabetical() {
+        let m = Manifest::from_toml_str(&format!(
+            r#"
+name = "app"
+version = "1.0.0"
+kind = "app"
+
+[source.x64]
+url = "https://example.com/a.zip"
+sha256 = "{}"
+
+[autoupdate]
+url_template = {{ arm64 = "https://example.com/arm64", x64 = "https://example.com/x64" }}
+checkver = {{ regex = "v([\\d.]+)", url = "https://example.com/" }}
+"#,
+            "c".repeat(64)
+        ))
+        .unwrap();
+        let text = m.to_canonical_toml();
+        assert!(
+            text.ends_with(
+                "[autoupdate]\n\
+                 checkver = { url = \"https://example.com/\", regex = \"v([\\\\d.]+)\" }\n\
+                 url_template = { x64 = \"https://example.com/x64\", arm64 = \"https://example.com/arm64\" }\n"
+            ),
+            "unexpected autoupdate rendering:\n{text}"
+        );
+    }
+
+    /// The rule the compact form exists to protect: TOML absorbs a scalar that
+    /// follows a `[table]` header into that table. `gui`, `file_name` and
+    /// `write_file` are the newest top-level fields and the easiest to misplace.
+    #[test]
+    fn every_top_level_scalar_precedes_the_first_table_header() {
+        let m = Manifest::from_toml_str(&binary(
+            r#"file_name = "jq.exe"
+gui = true
+write_file = [{ path = "portable.ini", content = "x" }]"#,
+            "https://example.com/d/jq.exe",
+        ))
+        .unwrap();
+        let text = m.to_canonical_toml();
+        let first_header = text.find("\n[").expect("there is always a [source] table");
+        for field in ["file_name", "gui", "write_file"] {
+            let at = text
+                .find(&format!("\n{field} = "))
+                .or_else(|| text.starts_with(&format!("{field} = ")).then_some(0))
+                .unwrap_or_else(|| panic!("{field} missing from:\n{text}"));
+            assert!(
+                at < first_header,
+                "{field} emitted after a table header:\n{text}"
+            );
+        }
+        assert!(text.contains("kind = \"binary\"\n"), "{text}");
+    }
+
+    /// Empty is absent. Bump used to emit `persist = []`, `[env]`, `[depends]`
+    /// and `extra = []`; the importer omitted them, and the two forms parse to
+    /// the same manifest — that difference alone was 20 conflicted files.
+    #[test]
+    fn empty_collections_and_tables_are_omitted() {
+        let text = Manifest::from_toml_str(&minimal(""))
+            .unwrap()
+            .to_canonical_toml();
+        for absent in [
+            "persist = []",
+            "shortcuts = []",
+            "write_file = []",
+            "bin = []",
+            "extra = []",
+            "[env]",
+            "[depends]",
+            "[autoupdate]",
+            "kind = \"archive\"",
+        ] {
+            assert!(
+                !text.contains(absent),
+                "{absent:?} should be omitted:\n{text}"
+            );
+        }
+        assert_eq!(
+            text,
+            format!(
+                "name = \"app\"\nversion = \"1.0.0\"\nkind = \"app\"\n\n\
+                 [source.x64]\nurl = \"https://example.com/a.zip\"\nsha256 = \"{}\"\n",
+                "c".repeat(64)
+            )
+        );
     }
 
     fn minimal(extra: &str) -> String {
@@ -1525,5 +2250,190 @@ kind = "installer-archive"
             Manifest::from_toml_str(&minimal("").replace("name = \"app\"", "name = \"app/foo\"")),
             Err(ManifestError::Name(name)) if name == "app/foo"
         ));
+    }
+
+    // --- per-arch extract_dir + architecture selection --------------------
+
+    /// A dual-arch manifest. `top` goes next to the other top-level scalars;
+    /// `x64_extra` / `arm64_extra` go inside the matching `[source.<arch>]`.
+    fn dual(top: &str, x64_extra: &str, arm64_extra: &str) -> String {
+        format!(
+            r#"
+name = "app"
+version = "1.0.0"
+kind = "app"
+{top}
+
+[source.x64]
+url = "https://example.com/a-x64.zip"
+sha256 = "{a}"
+{x64_extra}
+
+[source.arm64]
+url = "https://example.com/a-arm64.zip"
+sha256 = "{b}"
+{arm64_extra}
+"#,
+            a = "a".repeat(64),
+            b = "b".repeat(64),
+        )
+    }
+
+    #[test]
+    fn per_arch_extract_dir_overrides_the_top_level_one() {
+        let m = Manifest::from_toml_str(&dual(
+            r#"extract_dir = "app-x86_64-windows""#,
+            "",
+            r#"extract_dir = "app-aarch64-windows""#,
+        ))
+        .expect("a per-arch extract_dir is valid");
+
+        let x64 = m.source.x64.as_ref().unwrap();
+        let arm64 = m.source.arm64.as_ref().unwrap();
+        // Absent on x64 -> the top-level value; present on arm64 -> the override.
+        assert_eq!(m.extract_dir_for(x64), Some("app-x86_64-windows"));
+        assert_eq!(m.extract_dir_for(arm64), Some("app-aarch64-windows"));
+
+        // No top-level field at all: the override still applies, and the arch
+        // without one strips nothing.
+        let m = Manifest::from_toml_str(&dual("", "", r#"extract_dir = "wrapper""#)).unwrap();
+        assert_eq!(m.extract_dir_for(m.source.x64.as_ref().unwrap()), None);
+        assert_eq!(
+            m.extract_dir_for(m.source.arm64.as_ref().unwrap()),
+            Some("wrapper")
+        );
+    }
+
+    /// The override lands on the filesystem exactly like the top-level field, so
+    /// it gets the same validator — absolute paths, `..`, drive prefixes and
+    /// reserved device names are all rejected.
+    #[test]
+    fn per_arch_extract_dir_is_validated_like_the_top_level_field() {
+        for bad in [
+            "C:\\windows",
+            "/abs",
+            "\\abs",
+            "..\\escape",
+            "wrapper\\..\\..\\escape",
+            "nul",
+        ] {
+            let toml = dual("", "", &format!("extract_dir = {}", esc(bad)));
+            assert!(
+                matches!(
+                    Manifest::from_toml_str(&toml),
+                    Err(ManifestError::RelativePath {
+                        field: "extract_dir",
+                        ..
+                    })
+                ),
+                "per-arch extract_dir {bad:?} must be rejected"
+            );
+        }
+        // Still meaningless on a binary source, per-arch as well as top-level.
+        let toml = binary(r#"file_name = "jq.exe""#, "https://example.com/jq.exe").replace(
+            "kind = \"binary\"",
+            "kind = \"binary\"\nextract_dir = \"w\"",
+        );
+        assert!(matches!(
+            Manifest::from_toml_str(&toml),
+            Err(ManifestError::BinaryField("extract_dir"))
+        ));
+    }
+
+    #[test]
+    fn per_arch_extract_dir_round_trips_canonically() {
+        let m = Manifest::from_toml_str(&dual(
+            r#"extract_dir = "app-x86_64-windows""#,
+            "",
+            r#"extract_dir = "app-aarch64-windows""#,
+        ))
+        .unwrap();
+        let text = m.to_canonical_toml();
+        assert!(
+            text.contains("[source.arm64]\nurl = \"https://example.com/a-arm64.zip\"\nsha256 = \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\nextract_dir = \"app-aarch64-windows\"\n"),
+            "per-arch extract_dir must be emitted inside its own source block:\n{text}"
+        );
+        assert_eq!(Manifest::from_toml_str(&text).unwrap(), m);
+        assert!(m.is_canonical_toml(&text));
+    }
+
+    /// The regression guard for the 145 dual-arch manifests that carry a
+    /// top-level `extract_dir` (83 of them with an arch token literally in the
+    /// string): an arm64 host must NOT pick the arm64 source unless picking it is
+    /// provably safe, because a wrong `extract_dir` fails only after a full
+    /// download.
+    #[test]
+    fn arch_selection_prefers_the_host_but_only_when_it_is_safe() {
+        // x64 host: always the x64 source, top-level extract_dir or not.
+        for toml in [
+            dual("", "", ""),
+            dual(r#"extract_dir = "app-x86_64-windows""#, "", ""),
+        ] {
+            let m = Manifest::from_toml_str(&toml).unwrap();
+            let picked = m.select_source(Arch::X64).unwrap();
+            assert_eq!(picked.arch, Arch::X64);
+            assert_eq!(picked.fallback, None);
+            assert_eq!(picked.source, m.source.x64.as_ref().unwrap());
+        }
+
+        // arm64 host, safe: no top-level extract_dir to mis-strip.
+        let m = Manifest::from_toml_str(&dual("", "", "")).unwrap();
+        let picked = m.select_source(Arch::Arm64).unwrap();
+        assert_eq!(picked.arch, Arch::Arm64);
+        assert_eq!(picked.fallback, None);
+
+        // arm64 host, safe: the arm64 source brings its own extract_dir.
+        let m = Manifest::from_toml_str(&dual(
+            r#"extract_dir = "app-x86_64-windows""#,
+            "",
+            r#"extract_dir = "app-aarch64-windows""#,
+        ))
+        .unwrap();
+        let picked = m.select_source(Arch::Arm64).unwrap();
+        assert_eq!(picked.arch, Arch::Arm64);
+        assert_eq!(picked.fallback, None);
+
+        // arm64 host, UNSAFE: top-level extract_dir, no per-arch override. Fall
+        // back to the emulated x64 build rather than fail after downloading.
+        let m = Manifest::from_toml_str(&dual(r#"extract_dir = "app-x86_64-windows""#, "", ""))
+            .unwrap();
+        let picked = m.select_source(Arch::Arm64).unwrap();
+        assert_eq!(picked.arch, Arch::X64);
+        assert_eq!(picked.fallback, Some(ArchFallback::ExtractDir));
+        assert_eq!(picked.source, m.source.x64.as_ref().unwrap());
+    }
+
+    #[test]
+    fn a_missing_host_arch_falls_back_and_says_so() {
+        // arm64-only manifest on an x64 host: use arm64 and report the fallback.
+        let arm64_only = minimal("").replace("[source.x64]", "[source.arm64]");
+        let m = Manifest::from_toml_str(&arm64_only).unwrap();
+        let picked = m.select_source(Arch::X64).unwrap();
+        assert_eq!(picked.arch, Arch::Arm64);
+        assert_eq!(picked.fallback, Some(ArchFallback::Missing));
+
+        // x64-only manifest on an arm64 host: the ordinary emulated install.
+        let m = Manifest::from_toml_str(&minimal("")).unwrap();
+        let picked = m.select_source(Arch::Arm64).unwrap();
+        assert_eq!(picked.arch, Arch::X64);
+        assert_eq!(picked.fallback, Some(ArchFallback::Missing));
+
+        // A single-arch manifest's top-level extract_dir describes THAT arch by
+        // construction, so it is not treated as a mis-strip risk.
+        let m = Manifest::from_toml_str(
+            &minimal(r#"extract_dir = "app-aarch64-windows""#)
+                .replace("[source.x64]", "[source.arm64]"),
+        )
+        .unwrap();
+        let picked = m.select_source(Arch::Arm64).unwrap();
+        assert_eq!(picked.arch, Arch::Arm64);
+        assert_eq!(picked.fallback, None);
+
+        // Skills carry [source.any] only — neither arch is selectable.
+        let skill = minimal("")
+            .replace(r#"kind = "app""#, r#"kind = "skill""#)
+            .replace("[source.x64]", "[source.any]");
+        let m = Manifest::from_toml_str(&skill).unwrap();
+        assert!(m.select_source(Arch::X64).is_none());
     }
 }

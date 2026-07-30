@@ -26,9 +26,70 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
-use crate::manifest::{Manifest, ManifestError, Source, SourceKind};
+use crate::manifest::{Arch, ArchFallback, Manifest, ManifestError, SelectedSource, SourceKind};
 use crate::paths::Paths;
 use crate::state::State;
+
+/// The machine's NATIVE architecture, asked at runtime.
+///
+/// `cfg!(target_arch)` is the wrong question here. The released `voli.exe` is
+/// x86_64-only, so on an ARM64 Windows box it runs under the x64 emulator and the
+/// compile-time arch reports x86_64 — which is exactly the case this exists to
+/// detect. `IsWow64Process2` hands back the HOST machine regardless of what the
+/// calling process is emulated as; `pProcessMachine` (which we ignore) is the
+/// emulated one.
+/// Resolved at RUNTIME rather than imported, deliberately. A static import puts
+/// the name in the PE import table, and the Windows loader resolves every entry
+/// there before `main` runs — so on a system without the symbol the process does
+/// not start at all, with a loader error box and no chance for voli to explain
+/// itself or fall back. `IsWow64Process2` arrived in Windows 10 1709, and voli
+/// has no other reason to require it. Looking it up by hand costs one
+/// `GetProcAddress` and keeps the binary loadable everywhere; on a system that
+/// lacks it, arm64 detection is simply unavailable and we answer x64, which is
+/// correct for every Windows that old.
+pub fn host_arch() -> Arch {
+    use windows_sys::Win32::Foundation::{BOOL, HANDLE};
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    use windows_sys::Win32::System::SystemInformation::IMAGE_FILE_MACHINE_ARM64;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    type IsWow64Process2Fn = unsafe extern "system" fn(HANDLE, *mut u16, *mut u16) -> BOOL;
+
+    // kernel32 is always already mapped into every process, so GetModuleHandle
+    // is enough — no LoadLibrary, nothing to free.
+    let kernel32 = unsafe { GetModuleHandleA(c"kernel32.dll".as_ptr().cast()) };
+    if kernel32.is_null() {
+        return Arch::X64;
+    }
+    let Some(symbol) = (unsafe { GetProcAddress(kernel32, c"IsWow64Process2".as_ptr().cast()) })
+    else {
+        // Pre-1709 Windows. No way to ask, and no ARM64 Windows exists that old.
+        return Arch::X64;
+    };
+    // SAFETY: the symbol is kernel32's IsWow64Process2, whose signature is fixed
+    // by the Win32 ABI and matches IsWow64Process2Fn.
+    let is_wow64_process2: IsWow64Process2Fn = unsafe { std::mem::transmute(symbol) };
+
+    let mut process_machine = 0u16;
+    let mut native_machine = 0u16;
+    // SAFETY: both out-params are initialized u16s we own for the call's
+    // duration; GetCurrentProcess returns a pseudo-handle that needs no closing.
+    let ok = unsafe {
+        is_wow64_process2(
+            GetCurrentProcess(),
+            &mut process_machine,
+            &mut native_machine,
+        )
+    };
+    // On failure, answer x64: it is the safe reply on either host (an x64 build
+    // runs natively on x64 and emulated on arm64), where a wrong arm64 answer
+    // would not run at all.
+    if ok != 0 && native_machine == IMAGE_FILE_MACHINE_ARM64 {
+        Arch::Arm64
+    } else {
+        Arch::X64
+    }
+}
 
 /// Role of a created directory, so uninstall knows whether it survives (persist)
 /// or is removed (version dir), and rollback knows what to delete.
@@ -122,6 +183,21 @@ pub struct InstallReport {
     pub env_requested: Vec<(String, String)>,
     /// Env vars actually applied (empty when skipped/declined). Resolved values.
     pub env_applied: Vec<(String, String)>,
+    /// The `[source.<arch>]` block this install actually used.
+    pub arch: Arch,
+    /// Set when `arch` is NOT the host's architecture — why we fell back.
+    pub arch_fallback: Option<ArchFallback>,
+}
+
+impl InstallReport {
+    /// One line for the install output: the arch used and, on a fallback, why.
+    /// Never silent in either direction — an emulated install has to be visible.
+    pub fn arch_note(&self) -> String {
+        match self.arch_fallback {
+            None => self.arch.as_str().to_string(),
+            Some(reason) => format!("{} (fallback: {})", self.arch.as_str(), reason.reason()),
+        }
+    }
 }
 
 /// What an upgrade produced (spec §3 junction-flip model).
@@ -162,7 +238,7 @@ pub enum InstallError {
     SevenZ(String),
     #[error("archive hash mismatch: manifest expected {expected}, archive is {actual}")]
     HashMismatch { expected: String, actual: String },
-    #[error("no source for the current architecture (x64) in the manifest")]
+    #[error("the manifest has no [source.x64] or [source.arm64] block")]
     NoArchSource,
     #[error("unsafe archive entry (absolute path or '..'): {0}")]
     ZipSlip(String),
@@ -254,11 +330,10 @@ pub fn install_manifest(
     }
 
     // Hash check first — hard fail before touching anything.
-    let source = manifest
-        .source
-        .x64
-        .as_ref()
+    let selected = manifest
+        .select_source(host_arch())
         .ok_or(InstallError::NoArchSource)?;
+    let source = selected.source;
     let actual = hash_file(archive_path, source.is_sha512())?;
     if !actual.eq_ignore_ascii_case(source.hash()) {
         return Err(InstallError::HashMismatch {
@@ -268,7 +343,8 @@ pub fn install_manifest(
     }
 
     // Perform every filesystem mutation, rolling those back internally on error.
-    let (mut actions, mut report) = do_install_fs(&paths, manifest, source, archive_path, extras)?;
+    let (mut actions, mut report) =
+        do_install_fs(&paths, manifest, selected, archive_path, extras)?;
 
     // Env consent flow (spec §8): resolve `{dir}` -> apps\<name>\current, prompt
     // (via `consent`), and — if applied — append EnvSet/PathAdded to the SAME
@@ -373,12 +449,19 @@ fn apply_env(
 fn do_install_fs(
     paths: &Paths,
     manifest: &Manifest,
-    source: &Source,
+    selected: SelectedSource<'_>,
     archive_path: &Path,
     extras: &[(PathBuf, String)],
 ) -> Result<(Vec<Action>, InstallReport)> {
     let mut actions: Vec<Action> = Vec::new();
-    match install_fs_inner(paths, manifest, source, archive_path, extras, &mut actions) {
+    match install_fs_inner(
+        paths,
+        manifest,
+        selected,
+        archive_path,
+        extras,
+        &mut actions,
+    ) {
         Ok(report) => Ok((actions, report)),
         Err(e) => {
             // Only filesystem actions exist at this point (env is applied later,
@@ -392,13 +475,14 @@ fn do_install_fs(
 fn install_fs_inner(
     paths: &Paths,
     manifest: &Manifest,
-    source: &Source,
+    selected: SelectedSource<'_>,
     archive_path: &Path,
     extras: &[(PathBuf, String)],
     actions: &mut Vec<Action>,
 ) -> Result<InstallReport> {
     let name = &manifest.name;
     let version = &manifest.version;
+    let source = selected.source;
 
     // 1. Fill a staging dir under cache\ (same volume as apps\, so the later
     //    move is a real atomic rename). TempDir cleans itself up on drop,
@@ -424,14 +508,16 @@ fn install_fs_inner(
         }
     }
 
-    // 2. Apply extract_dir stripping.
-    let move_src = match &manifest.extract_dir {
+    // 2. Apply extract_dir stripping — the SELECTED source's own value when it
+    //    has one, else the top-level field.
+    let extract_dir = manifest.extract_dir_for(source);
+    let move_src = match extract_dir {
         Some(d) => extract_root.join(d),
         None => extract_root.clone(),
     };
     if !move_src.is_dir() {
         return Err(InstallError::ExtractDirMissing(
-            manifest.extract_dir.clone().unwrap_or_default(),
+            extract_dir.unwrap_or_default().to_string(),
         ));
     }
 
@@ -567,6 +653,8 @@ fn install_fs_inner(
         // Filled in (resolved + consent-gated) by install_manifest.
         env_requested: Vec::new(),
         env_applied: Vec::new(),
+        arch: selected.arch,
+        arch_fallback: selected.fallback,
     })
 }
 
@@ -827,11 +915,10 @@ pub fn upgrade_install(
     };
 
     // Hash gate first (same as install) — no mutation before it passes.
-    let source = manifest_new
-        .source
-        .x64
-        .as_ref()
+    let selected = manifest_new
+        .select_source(host_arch())
         .ok_or(InstallError::NoArchSource)?;
+    let source = selected.source;
     let actual = hash_file(archive_path, source.is_sha512())?;
     if !actual.eq_ignore_ascii_case(source.hash()) {
         return Err(InstallError::HashMismatch {
@@ -856,7 +943,7 @@ pub fn upgrade_install(
     let new_report = match install_fs_inner(
         &paths,
         manifest_new,
-        source,
+        selected,
         archive_path,
         extras,
         &mut new_actions,

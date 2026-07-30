@@ -1681,6 +1681,22 @@
             <span class="desc">Resolve a shim to the real target it points at.</span>
           </div>
 
+          <div class="cmd-group">Agents &amp; the web</div>
+          <div class="cmd-row">
+            <code><span class="tok">voli memory</span> <span class="arg">&lt;cmd&gt;</span></code>
+            <span class="desc">Encrypted, hash-chained local memory for an AI agent. Zero network; recall is
+              firewalled so secrets are masked before the agent sees them.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli web</span> <span class="arg">&lt;bang&gt; &lt;query&gt;</span></code>
+            <span class="desc">Open a search shortcut in your browser. Voli builds the URL and fetches nothing -
+              no key, no quota. <code>--url</code> prints it instead.</span>
+          </div>
+          <div class="cmd-row">
+            <code><span class="tok">voli fetch</span> <span class="arg">&lt;url&gt;</span></code>
+            <span class="desc">A page as readable text, extracted locally, with the final URL and a SHA-256 of
+              exactly the bytes read - so an agent can prove what it saw.</span>
+          </div>
           <div class="cmd-group">Maintain</div>
           <div class="cmd-row">
             <code><span class="tok">voli pin</span> / <span class="tok">unpin</span> <span
