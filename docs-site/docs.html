@@ -362,6 +362,7 @@
         <a href="#pkg-install">Install &amp; search</a>
         <a href="#pkg-upgrade">Upgrade</a>
         <a href="#pkg-delete">Delete</a>
+        <a href="#pkg-renames">Renamed packages</a>
         <a href="#pkg-pins">Pins &amp; environment</a>
         <a href="#pkg-config">Config</a>
         <span class="side-group">Skills</span>
@@ -461,6 +462,32 @@
         <div class="note">
           The older <code>uninstall</code> and <code>self-uninstall</code> spellings still work as hidden
           compatibility aliases.
+        </div>
+      </section>
+
+      <section id="pkg-renames">
+        <h2>Renamed packages</h2>
+        <p>
+          A package that gets renamed keeps answering to its <strong>old name</strong>, so a rename never
+          strands the people who already installed it. The old name resolves and voli says so first - it
+          does not quietly hand you something else.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli install python
+note: python is now python-embed
+<span class="ok">&#10003;</span> installed python-embed 3.14.6</div>
+        <p>
+          An <strong>existing</strong> install is left exactly as it is. The new name is a different package
+          with its own shims, so switching is your call rather than something an upgrade does behind your
+          back - but it is never silent either, because the old name will not see another update.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli upgrade --all
+python (3.14.6) was renamed to python-embed and is no longer updated
+  switch with: voli install python-embed &amp;&amp; voli delete python</div>
+        <div class="note">
+          <code>voli doctor</code> reports the same thing as a warning, so a package that has quietly stopped
+          receiving updates stays visible. Aliases resolve in exactly one hop and never chain, a live package
+          always beats an alias on the same name, and the index build refuses to publish an alias that shadows
+          a real package or that two packages both claim.
         </div>
       </section>
 

@@ -174,6 +174,11 @@ pub fn run_info(root: &Path, package: &str, json: bool) -> i32 {
         println!("{}", serde_json::to_string_pretty(&m).unwrap());
         return EXIT_OK;
     }
+    // Showing a package under a name the user did not type, without saying so,
+    // is how someone ends up believing `python` is still in the catalog.
+    if m.name != package_ref.name {
+        println!("note: {} is now {}", package_ref.name, m.name);
+    }
     println!("{} {}", qualified_name(m.kind, &m.name), m.version);
     if let Some(d) = &m.description {
         println!("  {d}");

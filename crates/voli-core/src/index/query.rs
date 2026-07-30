@@ -3,7 +3,7 @@
 //! All read the downloaded `index.sqlite` — instant and offline. A missing
 //! index surfaces as [`IndexError::NoIndex`] ("run `voli update` first").
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::{IndexError, latest_version, open_index};
 use crate::manifest::{Kind, Manifest, PackageRef};
@@ -71,25 +71,61 @@ pub fn info_ref(
     package: &PackageRef,
 ) -> Result<Option<Manifest>, IndexError> {
     let conn = open_index(root)?;
-    let Some(version) = latest_version(&conn, package.kind, &package.name)? else {
+    let name = resolve(&conn, package)?;
+    let Some(version) = latest_version(&conn, package.kind, &name)? else {
         return Ok(None);
     };
     let toml_text: String = if package.kind == Kind::App {
         conn.query_row(
             "SELECT manifest_toml FROM packages
              WHERE name = ?1 AND version = ?2 LIMIT 1",
-            rusqlite::params![package.name, version],
+            rusqlite::params![name, version],
             |r| r.get(0),
         )?
     } else {
         conn.query_row(
             "SELECT manifest_toml FROM agent_packages
              WHERE kind = ?1 AND name = ?2 AND version = ?3 LIMIT 1",
-            rusqlite::params![package.kind.as_str(), package.name, version],
+            rusqlite::params![package.kind.as_str(), name, version],
             |r| r.get(0),
         )?
     };
     Ok(Some(Manifest::from_toml_str(&toml_text)?))
+}
+
+/// The real package name for `package`, following an alias if the name is one.
+///
+/// A real package always wins over an alias, so a catalog that later reuses a
+/// retired name resolves to the live package rather than the redirect. Exactly
+/// one hop: the build rejects an alias pointing at another alias, so there is
+/// no chain to walk and no cycle to guard against.
+fn resolve(conn: &Connection, package: &PackageRef) -> Result<String, IndexError> {
+    if latest_version(conn, package.kind, &package.name)?.is_some() {
+        return Ok(package.name.clone());
+    }
+    if !table_exists(conn, "aliases")? {
+        return Ok(package.name.clone()); // index predates aliases
+    }
+    let aliased: Option<String> = conn
+        .query_row(
+            "SELECT name FROM aliases WHERE alias = ?1 AND kind = ?2",
+            rusqlite::params![package.name, package.kind.as_str()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(aliased.unwrap_or_else(|| package.name.clone()))
+}
+
+/// The real name `name` resolves to, or `None` when it is already real or
+/// unknown. Callers use this to *report* a rename; resolution itself is
+/// automatic in [`info_ref`] and [`manifest_at_ref`].
+pub fn resolved_alias(
+    root: &std::path::Path,
+    package: &PackageRef,
+) -> Result<Option<String>, IndexError> {
+    let conn = open_index(root)?;
+    let real = resolve(&conn, package)?;
+    Ok((real != package.name).then_some(real))
 }
 
 /// Manifest of a specific `name`@`version`, or `None` if that exact (name,
@@ -116,11 +152,12 @@ pub fn manifest_at_ref(
     version: &str,
 ) -> Result<Option<Manifest>, IndexError> {
     let conn = open_index(root)?;
+    let name = resolve(&conn, package)?;
     let toml_text: Option<String> = if package.kind == Kind::App {
         conn.query_row(
             "SELECT manifest_toml FROM packages
              WHERE name = ?1 AND version = ?2 LIMIT 1",
-            rusqlite::params![package.name, version],
+            rusqlite::params![name, version],
             |r| r.get(0),
         )
         .ok()
@@ -128,7 +165,7 @@ pub fn manifest_at_ref(
         conn.query_row(
             "SELECT manifest_toml FROM agent_packages
              WHERE kind = ?1 AND name = ?2 AND version = ?3 LIMIT 1",
-            rusqlite::params![package.kind.as_str(), package.name, version],
+            rusqlite::params![package.kind.as_str(), name, version],
             |r| r.get(0),
         )
         .ok()

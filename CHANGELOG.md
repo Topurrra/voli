@@ -34,6 +34,14 @@ schema may still change.
   it out of an editor rather than the terminal. `--print` sends it to stdout
   instead, `--out <path>` chooses the file, and `--per-project` writes the
   project-scoped variant.
+- **Package aliases.** A renamed package keeps answering to its old name, so a
+  rename no longer strands the people who installed it. `voli install python`
+  installs `python-embed` and says so; an existing install is reported by
+  `voli upgrade` and `voli doctor` rather than silently skipped, and is never
+  migrated automatically, because the new name is a different package with its
+  own shims. Aliases resolve in exactly one hop, a live package always beats an
+  alias on the same name, and the index build rejects an alias that shadows a
+  real package or that two packages both claim.
 - **`jq`** joins the registry.
 
 ### Changed
@@ -51,7 +59,7 @@ schema may still change.
 - **`python` is now `python-embed`.** The manifest installed the embeddable
   distribution, which is not a full Python: no `pip`, no `venv`, no standard
   install layout. The name now says what you get rather than implying what you
-  don't.
+  don't. `python` remains a working alias, so nothing breaks on upgrade.
 
 ### Fixed
 

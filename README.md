@@ -114,6 +114,27 @@ voli self-update
 voli self-delete
 ```
 
+## Renamed packages
+
+A package that gets renamed keeps answering to its old name. `voli install
+python` installs `python-embed` and says so first - the old name resolves, it
+just never pretends nothing changed.
+
+An existing install is left alone, because the new name is a different package
+with its own shims and switching is your call, not the package manager's:
+
+```powershell
+voli upgrade --all
+# python (3.14.6) was renamed to python-embed and is no longer updated
+#   switch with: voli install python-embed && voli delete python
+```
+
+`voli doctor` reports the same thing as a warning, so a package that has quietly
+stopped receiving updates is visible rather than silent. Aliases are one hop and
+never chain, a live package always beats an alias on the same name, and the
+index build refuses to publish an alias that shadows a real package or that two
+packages both claim.
+
 `voli delete <pkg> --purge` also removes the package's persisted user data.
 Without `--purge`, persist directories survive so a later reinstall can reuse
 them. The older `uninstall` and `self-uninstall` spellings remain supported as

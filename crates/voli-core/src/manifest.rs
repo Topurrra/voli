@@ -340,6 +340,13 @@ pub struct Manifest {
     pub license: Option<String>,
     pub kind: Kind,
 
+    /// Former names this package answers to, so a rename does not strand the
+    /// people who installed it under the old one. Resolution is one hop and
+    /// never transitive: an alias points at a real package or the index build
+    /// rejects it.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+
     #[serde(default)]
     pub source: Sources,
 
@@ -385,6 +392,12 @@ pub enum ManifestError {
 
     #[error("invalid package name '{0}': must be lowercase alphanumeric and dashes only")]
     Name(String),
+
+    #[error("package '{0}' lists itself as an alias")]
+    SelfAlias(String),
+
+    #[error("alias '{0}' is listed twice")]
+    DuplicateAlias(String),
 
     #[error("no source: at least one of [source.x64] or [source.arm64] is required")]
     NoSource,
@@ -573,6 +586,12 @@ impl Manifest {
         if let Some(gui) = self.gui {
             o.push_str(&format!("gui = {gui}\n"));
         }
+        if !self.aliases.is_empty() {
+            o.push_str(&format!(
+                "aliases = {}\n",
+                inline_array(&self.aliases, |a| esc(a))
+            ));
+        }
         if !self.bin.is_empty() {
             o.push_str(&format!("bin = {}\n", inline_array(&self.bin, bin_value)));
         }
@@ -688,6 +707,18 @@ impl Manifest {
 
     fn validate(&self) -> Result<(), ManifestError> {
         validate_name(&self.name)?;
+        // An alias is a name users type, so it lives under the same rules as a
+        // real one. Aliasing yourself would make the package unreachable by its
+        // own name the moment resolution prefers the alias table.
+        for alias in &self.aliases {
+            validate_name(alias)?;
+            if *alias == self.name {
+                return Err(ManifestError::SelfAlias(alias.clone()));
+            }
+        }
+        if let Some(dup) = first_duplicate(&self.aliases) {
+            return Err(ManifestError::DuplicateAlias(dup));
+        }
         // The version becomes a directory name under apps\<name>\ (Paths::version_dir).
         check_component(&self.version, "version")?;
 
@@ -861,6 +892,16 @@ fn check_icon_url(url: &str) -> Result<(), ManifestError> {
     } else {
         Err(ManifestError::IconUrl(url.to_string()))
     }
+}
+
+/// First value that appears more than once, if any. Alias lists are a handful
+/// of entries, so a scan beats building a set.
+fn first_duplicate(values: &[String]) -> Option<String> {
+    values
+        .iter()
+        .enumerate()
+        .find(|(i, v)| values[..*i].contains(v))
+        .map(|(_, v)| v.clone())
 }
 
 fn validate_name(name: &str) -> Result<(), ManifestError> {
@@ -1339,6 +1380,45 @@ checkver = { github = "BurntSushi/ripgrep" }
     /// The other half: serialize → re-parse → equal `Manifest`. Byte-identity
     /// alone would be satisfied by a serializer that drops a field the fixtures
     /// happen not to use.
+    #[test]
+    fn aliases_are_validated_like_real_names() {
+        let base = |extra: &str| {
+            format!(
+                "name = \"pkg\"
+version = \"1.0.0\"
+kind = \"app\"
+{extra}
+                 [source.x64]
+url = \"https://e.com/a.zip\"
+sha256 = \"{}\"
+",
+                "a".repeat(64)
+            )
+        };
+        // An alias is a name users type, so it obeys the package-name charset.
+        for bad in ["\"UPPER\"", "\"has space\"", "\"under_score\"", "\"\""] {
+            let toml = base(&format!("aliases = [{bad}]"));
+            assert!(
+                Manifest::from_toml_str(&toml).is_err(),
+                "{bad} should be rejected"
+            );
+        }
+        // Aliasing yourself would make the name ambiguous with itself.
+        assert!(Manifest::from_toml_str(&base("aliases = [\"pkg\"]")).is_err());
+        // The same alias twice is a copy-paste slip, not an intent.
+        assert!(Manifest::from_toml_str(&base("aliases = [\"a\", \"a\"]")).is_err());
+        // Two different former names are fine.
+        let m = Manifest::from_toml_str(&base("aliases = [\"old\", \"older\"]")).unwrap();
+        assert_eq!(m.aliases, vec!["old", "older"]);
+        // Absent is the norm and stays empty.
+        assert!(
+            Manifest::from_toml_str(&base(""))
+                .unwrap()
+                .aliases
+                .is_empty()
+        );
+    }
+
     #[test]
     fn canonical_toml_round_trips_every_field() {
         let mut cases: Vec<Manifest> = REAL

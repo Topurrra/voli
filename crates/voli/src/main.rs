@@ -605,6 +605,21 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool) -> i32 {
                     serde_json::json!({ "name": name, "status": "up_to_date", "version": version }),
                 );
             }
+            Ok(UpgradeOutcome::Renamed { to, version }) => {
+                // Not an error: nothing is broken and the old install still
+                // works. But `--all` must not let this scroll past silently,
+                // because the old name will never see another update.
+                if !json {
+                    println!("{name} ({version}) was renamed to {to} and is no longer updated");
+                    println!("  switch with: voli install {to} && voli delete {name}");
+                }
+                results.push(serde_json::json!({
+                    "name": name,
+                    "status": "renamed",
+                    "version": version,
+                    "renamed_to": to,
+                }));
+            }
             Ok(UpgradeOutcome::Upgraded(r)) => {
                 upgraded_count += 1;
                 upgraded_bytes = upgraded_bytes.saturating_add(bytes);
@@ -1938,6 +1953,39 @@ fn cmd_doctor(json: bool) -> i32 {
             Err(_) => {
                 // Cannot read the key — not fatal.
             }
+        }
+    }
+
+    // 8. Installed under a name the registry has since renamed. Nothing is
+    // broken, so this is a warning, not a failure — but the package will never
+    // see another update under the old name, and only doctor would ever say so.
+    {
+        let renamed: Vec<String> = state
+            .as_ref()
+            .and_then(|s| s.list().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|pkg| {
+                let to = voli_core::index::resolved_alias(
+                    &root,
+                    &voli_core::PackageRef {
+                        kind: voli_core::Kind::App,
+                        name: pkg.name.clone(),
+                    },
+                )
+                .ok()
+                .flatten()?;
+                Some(format!("{} -> {to}", pkg.name))
+            })
+            .collect();
+        // Silent when there is no index at all: `voli update` is that message's
+        // job, and doctor already reports a missing index elsewhere.
+        if !renamed.is_empty() {
+            add(
+                Status::Warn,
+                "renamed packages",
+                format!("{} (no longer updated)", renamed.join(", ")),
+            );
         }
     }
 

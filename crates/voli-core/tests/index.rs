@@ -610,3 +610,119 @@ fn update_offline_reports_local_copy() {
         }
     ));
 }
+
+// ---- aliases --------------------------------------------------------------
+
+/// A manifest carrying former names, used for the rename tests below.
+fn aliased(name: &str, version: &str, aliases: &[&str]) -> Manifest {
+    let list = aliases
+        .iter()
+        .map(|a| format!("\"{a}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let toml = format!(
+        r#"
+name = "{name}"
+version = "{version}"
+kind = "app"
+aliases = [{list}]
+bin = ["{name}.exe"]
+
+[source.x64]
+url = "https://example.com/{name}.zip"
+sha256 = "{hash}"
+"#,
+        hash = "a".repeat(64),
+    );
+    Manifest::from_toml_str(&toml).expect("aliased fixture parses")
+}
+
+#[test]
+fn an_alias_resolves_to_the_package_that_claims_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifests = vec![aliased("python-embed", "3.14.6", &["python"])];
+    index::build(&manifests, &index::index_db_path(tmp.path())).unwrap();
+
+    // The old name finds the new package, and the manifest says which it is,
+    // so a caller can report the rename rather than swap it silently.
+    let found = index::info(tmp.path(), "python")
+        .unwrap()
+        .expect("resolved");
+    assert_eq!(found.name, "python-embed");
+    let real = PackageRef {
+        kind: Kind::App,
+        name: "python".into(),
+    };
+    assert_eq!(
+        index::resolved_alias(tmp.path(), &real).unwrap().as_deref(),
+        Some("python-embed")
+    );
+
+    // Pinning a version through the old name works too.
+    assert_eq!(
+        index::manifest_at(tmp.path(), "python", "3.14.6")
+            .unwrap()
+            .expect("pinned")
+            .name,
+        "python-embed"
+    );
+
+    // A real name is not an alias, and an unknown name resolves to nothing.
+    for name in ["python-embed", "nothing-here"] {
+        let r = PackageRef {
+            kind: Kind::App,
+            name: name.into(),
+        };
+        assert_eq!(index::resolved_alias(tmp.path(), &r).unwrap(), None);
+    }
+}
+
+#[test]
+fn a_real_package_always_beats_an_alias_on_the_same_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    // `legacy` is both a live package and a name `newthing` used to answer to.
+    // The live package has to win, or publishing that name would be a way to
+    // hijack it.
+    let manifests = vec![
+        aliased("newthing", "2.0.0", &["legacy"]),
+        manifest("legacy", "1.0.0", "the real legacy package", "legacy.exe"),
+    ];
+    // The build refuses this outright rather than picking a winner.
+    let err = index::build(&manifests, &index::index_db_path(tmp.path())).unwrap_err();
+    assert!(
+        err.to_string().contains("already a real package name"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn two_packages_cannot_claim_one_alias() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifests = vec![
+        aliased("one", "1.0.0", &["shared"]),
+        aliased("two", "1.0.0", &["shared"]),
+    ];
+    let err = index::build(&manifests, &index::index_db_path(tmp.path())).unwrap_err();
+    assert!(
+        err.to_string().contains("claimed by both"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn one_package_may_keep_its_alias_across_versions() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Same package, two versions, same alias on both: one row, not a conflict.
+    let manifests = vec![
+        aliased("python-embed", "3.14.6", &["python"]),
+        aliased("python-embed", "3.15.0", &["python"]),
+    ];
+    index::build(&manifests, &index::index_db_path(tmp.path())).unwrap();
+    let found = index::info(tmp.path(), "python")
+        .unwrap()
+        .expect("resolved");
+    assert_eq!(
+        (found.name.as_str(), found.version.as_str()),
+        ("python-embed", "3.15.0")
+    );
+}

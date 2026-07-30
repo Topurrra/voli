@@ -25,7 +25,7 @@ pub use build::{build, read_epoch, stamp_epoch};
 pub use net::{MAX_EPOCH, UpdateOutcome, update, update_with_pubkey};
 pub use query::{
     SearchHit, Suggestion, did_you_mean, did_you_mean_ref, info, info_ref, manifest_at,
-    manifest_at_ref, search,
+    manifest_at_ref, resolved_alias, search,
 };
 pub use sign::{DEV_PUBKEY, sign, verify};
 
@@ -42,6 +42,15 @@ pub enum IndexError {
     TomlSer(#[from] toml::ser::Error),
     #[error("manifest error: {0}")]
     Manifest(#[from] crate::manifest::ManifestError),
+
+    #[error("alias '{alias}' on '{package}' is already a real package name")]
+    AliasShadowsPackage { alias: String, package: String },
+    #[error("alias '{alias}' is claimed by both '{first}' and '{second}'")]
+    AliasClaimedTwice {
+        alias: String,
+        first: String,
+        second: String,
+    },
 
     #[error("no package index yet — run `voli update` first")]
     NoIndex,

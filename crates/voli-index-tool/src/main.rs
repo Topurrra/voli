@@ -244,6 +244,8 @@ fn wizard_manifest(
     Manifest {
         name: name.to_string(),
         version: version.to_string(),
+        // A brand-new package has no former name to answer to.
+        aliases: Vec::new(),
         description: None,
         homepage: None,
         icon: None,

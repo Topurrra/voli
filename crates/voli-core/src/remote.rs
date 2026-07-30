@@ -511,6 +511,9 @@ pub fn install_remote_env(
 pub enum UpgradeOutcome {
     /// The installed version is already the newest in the index.
     UpToDate { version: String },
+    /// The package was renamed upstream. Not upgraded: the new name is a
+    /// different package with its own shims, so switching is the user's call.
+    Renamed { to: String, version: String },
     /// A newer version was installed (junction flipped; old dir kept for cleanup).
     Upgraded(UpgradeReport),
 }
@@ -540,6 +543,17 @@ pub fn upgrade(
         name: name.to_string(),
         suggestions: index::did_you_mean(root, name).unwrap_or_default(),
     })?;
+
+    // A rename is not an upgrade. Following the alias here would compare against
+    // a different package's version line -- reporting "up to date" forever at
+    // best, and at worst installing the new package's manifest over the old
+    // one's directory and shims. Stop and let the user decide.
+    if latest.name != name {
+        return Ok(UpgradeOutcome::Renamed {
+            to: latest.name,
+            version: current,
+        });
+    }
 
     if index::cmp_version(&latest.version, &current) != Ordering::Greater {
         return Ok(UpgradeOutcome::UpToDate { version: current });

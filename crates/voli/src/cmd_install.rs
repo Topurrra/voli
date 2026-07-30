@@ -394,6 +394,19 @@ fn install_network(
         };
         parsed.push((package, version));
     }
+    // Follow renames before anything draws a progress row, so the rows, the
+    // ledger and the summary all say the same real name — and say out loud that
+    // it is not the name that was typed.
+    for (package, _) in &mut parsed {
+        // A miss here (no index yet, or no alias) leaves the name alone and lets
+        // the install path report it exactly as it always has.
+        if let Ok(Some(real)) = voli_core::index::resolved_alias(root, package) {
+            if !json {
+                println!("note: {} is now {real}", package.name);
+            }
+            package.name = real;
+        }
+    }
     let kind = parsed[0].0.kind;
     if parsed.iter().any(|(package, _)| package.kind != kind) {
         eprintln!("error: install app and skill packages in separate commands");

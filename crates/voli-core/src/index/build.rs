@@ -38,6 +38,12 @@ CREATE TABLE agent_packages (
 );
 CREATE VIRTUAL TABLE agent_packages_fts
     USING fts5(kind UNINDEXED, name, description, bin_names);
+CREATE TABLE aliases (
+    alias TEXT NOT NULL,
+    kind  TEXT NOT NULL,
+    name  TEXT NOT NULL,
+    PRIMARY KEY (alias, kind)
+);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
 /// Build an `index.sqlite` at `out` from the given manifests (overwrites `out`).
@@ -106,6 +112,44 @@ pub fn build(manifests: &[Manifest], out: &Path) -> Result<(), IndexError> {
                 rusqlite::params![m.kind.as_str(), m.name, m.description, bin_names],
             )?;
         }
+    }
+
+    // Aliases last: an alias that shadows a real package would make that
+    // package unreachable by its own name, and two packages claiming one alias
+    // would resolve by whichever happened to be inserted first. Both are silent
+    // catalog corruption, so they fail the build instead.
+    let real: std::collections::HashSet<(&str, &str)> = manifests
+        .iter()
+        .map(|m| (m.kind.as_str(), m.name.as_str()))
+        .collect();
+    let mut claimed: std::collections::HashMap<(&str, &str), &str> =
+        std::collections::HashMap::new();
+    for m in manifests {
+        for alias in &m.aliases {
+            let key = (m.kind.as_str(), alias.as_str());
+            if real.contains(&key) {
+                return Err(IndexError::AliasShadowsPackage {
+                    alias: alias.clone(),
+                    package: m.name.clone(),
+                });
+            }
+            if let Some(first) = claimed.insert(key, &m.name)
+                && first != m.name
+            {
+                return Err(IndexError::AliasClaimedTwice {
+                    alias: alias.clone(),
+                    first: first.to_string(),
+                    second: m.name.clone(),
+                });
+            }
+        }
+    }
+    // One row per (alias, kind) even when a package has many versions.
+    for ((kind, alias), name) in &claimed {
+        tx.execute(
+            "INSERT INTO aliases (alias, kind, name) VALUES (?1, ?2, ?3)",
+            rusqlite::params![alias, kind, name],
+        )?;
     }
 
     tx.commit()?;

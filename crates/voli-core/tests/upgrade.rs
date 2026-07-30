@@ -327,3 +327,51 @@ fn upgrade_when_already_latest_is_up_to_date() {
     let outcome = upgrade("app", root, &mut |_| {}).unwrap();
     assert!(matches!(outcome, UpgradeOutcome::UpToDate { version } if version == "2.0.0"));
 }
+
+/// A renamed package must not be silently "upgraded" into the new name.
+///
+/// The new name is a different package with its own directory and shims, so
+/// following the alias here would install its manifest over the old install --
+/// and if the versions happened to match, would instead report "up to date"
+/// forever while the package quietly stopped receiving updates.
+#[test]
+fn upgrade_reports_a_rename_instead_of_following_it() {
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path();
+    let srv = setup(root);
+
+    install_remote("app", Some("1.0.0"), root, &mut |_| {}).unwrap();
+    assert!(root.join("apps/app/1.0.0/app.exe").is_file());
+
+    // Republish the catalog with `app` renamed to `app-ng`, keeping the old
+    // name as an alias -- and offering a NEWER version, which is the case that
+    // would otherwise overwrite the old install.
+    let z2 = app_zip("2.0.0", &["app.exe", "new.exe"]);
+    let renamed = voli_core::Manifest::from_toml_str(
+        &manifest_toml(
+            "2.0.0",
+            &format!("{}/app-2.0.0.zip", srv.base),
+            &sha256_hex(&z2),
+            &["app.exe", "new.exe"],
+        )
+        .replace("name = \"app\"", "name = \"app-ng\"\naliases = [\"app\"]"),
+    )
+    .unwrap();
+    index::build(&[renamed], &index::index_db_path(root)).unwrap();
+
+    match upgrade("app", root, &mut |_| {}).unwrap() {
+        UpgradeOutcome::Renamed { to, version } => {
+            assert_eq!(to, "app-ng");
+            assert_eq!(version, "1.0.0");
+        }
+        other => panic!("expected Renamed, got {other:?}"),
+    }
+
+    // The old install is untouched and nothing was written under the new name.
+    assert!(root.join("apps/app/1.0.0/app.exe").is_file());
+    assert!(!root.join("apps/app-ng").exists());
+    assert!(!root.join("apps/app/2.0.0").exists());
+
+    // Installing the new name still works, and reaches it through the alias.
+    assert_eq!(index::info(root, "app").unwrap().unwrap().name, "app-ng");
+}
