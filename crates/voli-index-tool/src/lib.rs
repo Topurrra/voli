@@ -164,18 +164,26 @@ fn layout_errors(rel: &Path, m: &Manifest) -> Vec<String> {
 }
 
 /// Human-readable validate: returns the error list (empty = valid).
+///
+/// Includes canonical-form drift. That was once only a report, because hundreds
+/// of legacy files were still in the old expanded shape and failing on them
+/// would have blocked every publish. They have all been normalized, so drift is
+/// now an error and the one canonical form stays that way instead of eroding a
+/// file at a time back into weekly merge conflicts.
+///
+/// [`build`] deliberately does not go through here — it calls [`analyze`]
+/// directly, so a formatting nit can never block publishing an index.
 pub fn validate(dir: &Path) -> Result<Vec<String>> {
-    Ok(analyze(dir)?.1)
+    let mut errors = analyze(dir)?.1;
+    errors.extend(check_format(dir)?);
+    Ok(errors)
 }
 
 /// Every manifest under `dir` that is not in canonical form, as
 /// `<relative path>: not in canonical form (…)` lines.
 ///
-/// Deliberately NOT part of [`validate`]: the registry publish runs validate, and
-/// hundreds of legacy files are still in the old expanded shape — a hard failure
-/// here would block publishing until every one of them is normalized. This is a
-/// drift *report*, so the next reformat shows up as a diff rather than as a merge
-/// conflict. Unparseable files are validate's problem and are skipped.
+/// Part of [`validate`], and also callable on its own to see drift without the
+/// rest of the checks. Unparseable files are validate's problem and are skipped.
 pub fn check_format(dir: &Path) -> Result<Vec<String>> {
     let mut drift = Vec::new();
     for abs in collect_toml_files(dir)? {
@@ -1007,11 +1015,12 @@ sha256 = "{hash}"
         assert_eq!(manifests.len(), 3, "two ripgrep versions + one fd");
     }
 
-    /// The drift detector. It must stay OFF the validate path: the registry
-    /// publish runs validate, and hundreds of legacy files are still in the old
-    /// expanded shape, so a hard failure would block publishing outright.
+    /// The drift detector, now a validation error. Every legacy file has been
+    /// normalized, so canonical form is enforced rather than merely reported --
+    /// that is what stops the one canonical form eroding back into the weekly
+    /// merge conflicts it was introduced to end.
     #[test]
-    fn check_format_reports_drift_without_failing_validate() {
+    fn check_format_drift_is_a_validation_error() {
         let td = registry_with_examples();
         let root = td.path();
         assert!(
@@ -1050,10 +1059,18 @@ extra = []
         let drift = check_format(root).unwrap();
         assert_eq!(drift.len(), 1, "{drift:?}");
         assert!(drift[0].contains("fd"), "{drift:?}");
-        assert!(
-            validate(root).unwrap().is_empty(),
-            "format drift must not be a validation error"
-        );
+
+        // validate now surfaces it, so a PR that hand-edits a manifest out of
+        // canonical form fails the gate instead of landing and drifting.
+        let errors = validate(root).unwrap();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("not in canonical form"), "{errors:?}");
+
+        // But publishing is never blocked by formatting: build goes through
+        // analyze, which only reports real validation errors.
+        let (manifests, analyze_errors) = analyze(root).unwrap();
+        assert!(analyze_errors.is_empty(), "{analyze_errors:?}");
+        assert_eq!(manifests.len(), 3);
     }
 
     #[test]
