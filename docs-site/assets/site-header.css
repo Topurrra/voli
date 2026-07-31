@@ -387,3 +387,64 @@ footer.site {
   color: var(--sage);
   font-size: .85rem;
 }
+
+/* ==========================================================================
+   Scrollbars. Site-wide, because the browser default is a light-grey bar that
+   ignores the palette entirely and reads as a seam down the edge of a dark
+   page. Uses each page's own :root tokens, like everything else in this file.
+
+   The thumb's `border` is what insets it from the track: WebKit has no padding
+   on the thumb, so a border in the track colour is the way to float a pill
+   inside the rail. Firefox gets `scrollbar-color`, which cannot express the
+   inset -- it lands on a plain vermillion thumb, which is the same idea.
+   ========================================================================== */
+
+/* Page scrollbar: slightly wider than the inner ones, since it runs the full
+   height of the viewport and is the one people actually grab. */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--verm) var(--bg-dark);
+}
+
+html::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+html::-webkit-scrollbar-track {
+  background: var(--bg-dark);
+  border-left: 1px solid var(--border);
+}
+
+html::-webkit-scrollbar-thumb {
+  background: var(--verm);
+  border-radius: 999px;
+  border: 3px solid var(--bg-dark);
+}
+
+html::-webkit-scrollbar-thumb:hover { background: var(--verm-bright); }
+
+/* Everything that scrolls inside the page: the docs sidebar, code snippets,
+   wide tables, the search popover. Same treatment, one step smaller. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--bg-dark);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--verm);
+  border-radius: 999px;
+  border: 2px solid var(--bg-dark);
+}
+
+*::-webkit-scrollbar-thumb:hover { background: var(--verm-bright); }
+
+/* Where a horizontal and a vertical bar meet, so the gap is not default white. */
+*::-webkit-scrollbar-corner { background: var(--bg-dark); }
+
+* { scrollbar-width: thin; scrollbar-color: var(--verm) var(--bg-dark); }

@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Changelog · Voli</title>
+  <meta name="description"
+    content="Every Voli release, newest first - what landed in each version from the first public build to today.">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="assets/favicon-64.png">
+  <style>
+    @font-face {
+      font-family: "Space Grotesk";
+      font-style: normal;
+      font-weight: 400 700;
+      font-display: swap;
+      src: url("assets/fonts/space-grotesk-latin.woff2") format("woff2");
+    }
+
+    :root {
+      --bg: #001C16;
+      --bg-dark: #00120E;
+      --bg-darker: #000F0C;
+      --panel: #023A2E;
+      --panel-2: #04463A;
+      --border: rgba(233, 226, 210, .14);
+      --border-strong: rgba(233, 226, 210, .24);
+      --cream: #EEE3CE;
+      --cream-muted: #D1C8B4;
+      --ink: #10241D;
+      --verm: #ED5126;
+      --verm-bright: #FF5526;
+      --verm-deep: #891f01;
+      --sage: #8BA399;
+      --sage-bright: #A7BDB3;
+      --amber: #E0A23C;
+      --pos: #6ED08C;
+      --mono: "Cascadia Code", "Cascadia Mono", "SF Mono", ui-monospace, Consolas, monospace;
+      --sans: "Space Grotesk", "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 84px;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--cream);
+      font: 16px/1.65 var(--sans);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+
+    ::selection { background: var(--verm); color: #fff; }
+    a { color: var(--cream); text-underline-offset: 3px; }
+    :focus-visible { outline: 2px solid var(--verm-bright); outline-offset: 3px; border-radius: 6px; }
+
+    /* site-wide film grain: static SVG fractal noise over everything, so the
+       flat greens/creams read tactile instead of digital. */
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 240px 240px;
+      mix-blend-mode: overlay;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .5rem 1rem;
+      border-radius: 999px;
+      font-weight: 500;
+      font-size: .88rem;
+      text-decoration: none;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: transform .15s, background .15s, border-color .15s;
+      white-space: nowrap;
+    }
+
+    .btn-cream { background: var(--cream); color: var(--bg); }
+    .btn-cream:hover { transform: translateY(-2px); background: #fff; }
+    .btn-ghost { background: transparent; color: var(--cream); border-color: var(--border-strong); }
+    .btn-ghost:hover { border-color: var(--cream); transform: translateY(-2px); }
+    .btn-sm { padding: .5rem 1rem; font-size: .88rem; }
+
+    /* ---------- layout ---------- */
+    .wrap {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 2.4rem 1.5rem 7rem;
+    }
+
+    .doc-hero { margin-bottom: 1rem; }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      font-size: .74rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: .16em;
+      color: var(--sage);
+      margin: 0 0 1rem;
+    }
+
+    .doc-hero h1 {
+      font-size: clamp(2.1rem, 5vw, 3rem);
+      font-weight: 500;
+      line-height: 1.05;
+      letter-spacing: -.04em;
+      margin: 0 0 .9rem;
+    }
+
+    .doc-hero h1 .accent { color: var(--verm); }
+
+    .doc-hero .lede {
+      color: var(--sage-bright);
+      font-size: 1.12rem;
+      max-width: 62ch;
+      margin: 0;
+    }
+
+    /* ---------- the rail ---------- */
+    .log {
+      position: relative;
+      margin-top: 3rem;
+      padding-left: 1.85rem;
+    }
+
+    /* One continuous hairline behind every dot. Stops short at the bottom so
+       the timeline reads as "so far", not as a truncated list. */
+    .log::before {
+      content: "";
+      position: absolute;
+      left: 5px;
+      top: .75rem;
+      bottom: 2.5rem;
+      width: 1px;
+      background: linear-gradient(var(--border-strong), var(--border), transparent);
+    }
+
+    .rel { position: relative; padding: 0 0 2.4rem; scroll-margin-top: 84px; }
+
+    .rel::before {
+      content: "";
+      position: absolute;
+      left: -1.85rem;
+      top: .62rem;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+    }
+
+    /* Only the newest release is filled in — the current version, at a glance. */
+    .rel.is-latest::before {
+      background: var(--verm);
+      border-color: var(--verm);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--verm) 18%, transparent);
+    }
+
+    .rel-head {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: .1rem .75rem;
+      margin-bottom: .55rem;
+    }
+
+    .rel-head h2 {
+      font: 600 1.12rem/1.3 var(--mono);
+      letter-spacing: -.01em;
+      margin: 0;
+      color: var(--cream);
+    }
+
+    .rel-head h2 a { color: inherit; text-decoration: none; }
+    .rel-head h2 a:hover { color: var(--verm-bright); }
+
+    .rel-date {
+      font: .78rem var(--mono);
+      color: var(--sage);
+      letter-spacing: .04em;
+    }
+
+    .tag {
+      font: .66rem var(--mono);
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      padding: .12rem .48rem;
+      border-radius: 999px;
+      border: 1px solid var(--border-strong);
+      color: var(--sage-bright);
+    }
+
+    .tag.now { color: var(--verm-bright); border-color: color-mix(in srgb, var(--verm) 55%, transparent); }
+    .tag.first { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+
+    .rel ul {
+      color: var(--cream-muted);
+      max-width: 68ch;
+      margin: 0;
+      padding-left: 1.05rem;
+      font-size: .95rem;
+    }
+
+    .rel li { margin: .3rem 0; }
+    .rel li strong { color: var(--cream); font-weight: 600; }
+
+    code {
+      font: .86em var(--mono);
+      color: var(--cream);
+      background: color-mix(in srgb, var(--panel) 55%, transparent);
+      padding: .05rem .34rem;
+      border-radius: 5px;
+    }
+
+    /* A run of patch releases is real history, but it should not out-shout the
+       feature releases around it. */
+    .rel.minor .rel-head h2 { font-weight: 400; color: var(--cream-muted); }
+    .rel.minor ul { font-size: .9rem; }
+
+    .note {
+      margin: 2.6rem 0 0;
+      padding: 1rem 1.2rem;
+      border-left: 2px solid var(--verm);
+      background: color-mix(in srgb, var(--panel) 40%, transparent);
+      border-radius: 0 10px 10px 0;
+      color: var(--cream-muted);
+      font-size: .95rem;
+    }
+
+    .note strong { color: var(--cream); }
+    .note a { color: var(--verm-bright); }
+
+    .skip {
+      position: absolute;
+      left: -9999px;
+      top: 0;
+      background: var(--panel);
+      color: var(--cream);
+      padding: .6rem 1rem;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      z-index: 100;
+    }
+
+    .skip:focus { left: 12px; top: 12px; }
+
+    @media (max-width: 560px) {
+      .log { padding-left: 1.4rem; }
+      .rel::before { left: -1.4rem; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+
+      * {
+        transition: none !important;
+        animation: none !important;
+      }
+    }
+  </style>
+  <link rel="stylesheet" href="assets/site-header.css">
+</head>
+
+<body>
+  <a class="skip" href="#log">Skip to the changelog</a>
+
+  <header class="site" id="site-header"></header>
+
+  <div class="wrap">
+    <div class="doc-hero">
+      <p class="eyebrow">Changelog</p>
+      <h1>Every release, <span class="accent">newest first</span></h1>
+      <p class="lede">
+        Voli is pre-1.0 and moves fast
+        <br>
+        Full notes and binaries live on the
+        <a href="https://github.com/Topurrra/voli/releases" rel="noopener">GitHub releases page</a>.
+      </p>
+    </div>
+
+    <div class="log" id="log">
+
+      <section class="rel is-latest" id="v0-10-1">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.10.1" rel="noopener">v0.10.1</a></h2>
+          <span class="rel-date">2026-07-31</span>
+          <span class="tag now">current</span>
+        </div>
+        <ul>
+          <li><strong><code>voli-index-tool fmt</code></strong> rewrites manifests into canonical form, so a
+            generator can emit any valid TOML instead of reimplementing the canonical shape and drifting from it.</li>
+        </ul>
+      </section>
+
+      <section class="rel" id="v0-10-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.10.0" rel="noopener">v0.10.0</a></h2>
+          <span class="rel-date">2026-07-31</span>
+        </div>
+        <ul>
+          <li><strong><code>voli web</code></strong> - open a search shortcut in your browser. Voli builds the URL
+            and fetches nothing, so there is no API key, no quota, and nothing to bot-block.</li>
+          <li><strong><code>voli fetch</code></strong> - retrieve a page as text, Markdown, or JSON with the
+            provenance to prove what was read: final URL, timestamp, sha256, and byte length.</li>
+          <li><strong>Package aliases</strong> - a renamed package keeps answering to its old name, so a rename
+            no longer strands the people who installed it.</li>
+          <li><strong>arm64 is real</strong> - <code>[source.arm64]</code> used to be inert, with every install
+            path hardcoding x64. Host architecture is now detected at runtime.</li>
+          <li><strong>One canonical manifest form</strong> - serialization had drifted across three emitters;
+            288 manifests were normalized to a single shape, with no change of meaning to any of them.</li>
+          <li><code>python</code> is now <code>python-embed</code>, because it installs the embeddable build:
+            no <code>pip</code>, no <code>venv</code>. The old name still resolves.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-9-2">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.9.2" rel="noopener">v0.9.2</a></h2>
+          <span class="rel-date">2026-07-29</span>
+        </div>
+        <ul>
+          <li>Memory help drops its internal engine name and documents project scope.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-9-1">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.9.1" rel="noopener">v0.9.1</a></h2>
+          <span class="rel-date">2026-07-29</span>
+        </div>
+        <ul>
+          <li><strong>Per-project memory</strong> - a store scoped to one codebase, found automatically from
+            anywhere inside it.</li>
+          <li>A <code>binary</code> source kind for single-executable packages, and a 7-Zip offset fix.</li>
+        </ul>
+      </section>
+
+      <section class="rel" id="v0-9-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.9.0" rel="noopener">v0.9.0</a></h2>
+          <span class="rel-date">2026-07-29</span>
+        </div>
+        <ul>
+          <li><strong>Security pass.</strong> Every manifest path field is validated and extraction is hardened,
+            so a hostile manifest cannot write outside its own directory.</li>
+          <li>The index epoch is signed <em>inside</em> the snapshot, closing a replay that could freeze a client
+            on an old catalog forever.</li>
+          <li>Memory summaries are cryptographically bound to the memories they cover.</li>
+          <li>CI gates the release version, so the tag and the binary can never disagree.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-8-2">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.8.2" rel="noopener">v0.8.2</a></h2>
+          <span class="rel-date">2026-07-28</span>
+        </div>
+        <ul>
+          <li>The Tier-1 skill catalog goes live: 267 skills installable from the signed registry.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-8-1">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.8.1" rel="noopener">v0.8.1</a></h2>
+          <span class="rel-date">2026-07-28</span>
+        </div>
+        <ul>
+          <li>GUI packages get the windowless shim stub, so launching one no longer flashes a console.</li>
+        </ul>
+      </section>
+
+      <section class="rel" id="v0-8-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.8.0" rel="noopener">v0.8.0</a></h2>
+          <span class="rel-date">2026-07-28</span>
+        </div>
+        <ul>
+          <li><strong><code>voli memory</code></strong> - encrypted, local, zero-network memory for AI agents.
+            Every record is encrypted at rest and hash-chained, so tampering is detectable.</li>
+          <li>Shims carry the target app's icon instead of a generic stub.</li>
+          <li>A full documentation page, with a shared header and footer across the site.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-7-1">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.7.1" rel="noopener">v0.7.1</a></h2>
+          <span class="rel-date">2026-07-27</span>
+        </div>
+        <ul>
+          <li>The default index URL is pinned to the index release tag. Pointing at
+            <code>/releases/latest</code> meant creating any other release silently 404'd every client's index
+            fetch.</li>
+        </ul>
+      </section>
+
+      <section class="rel" id="v0-7-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.7.0" rel="noopener">v0.7.0</a></h2>
+          <span class="rel-date">2026-07-27</span>
+        </div>
+        <ul>
+          <li><strong>Skill targeting</strong> - multi-agent selection, explicit project or global scope, and
+            reference-counted deletion for agents that share one directory.</li>
+          <li>A confirmation gate that shows the plan before anything is written.</li>
+          <li>Skill search on the website.</li>
+        </ul>
+      </section>
+
+      <section class="rel" id="v0-6-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.6.0" rel="noopener">v0.6.0</a></h2>
+          <span class="rel-date">2026-07-27</span>
+        </div>
+        <ul>
+          <li><strong>Agent skills</strong> - a new package kind, installed into and removed from a verified
+            agent directory, recorded per target in the ledger.</li>
+          <li><code>uninstall</code> becomes <code>delete</code>, with the old spelling kept as a hidden alias.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-5-x">
+        <div class="rel-head">
+          <h2>v0.5.1 &ndash; v0.5.7</h2>
+          <span class="rel-date">2026-07-26</span>
+        </div>
+        <ul>
+          <li>Package search on the website, with catalog icons and automatic per-package favicons.</li>
+          <li>Hardened installs and self-uninstall; Scoop archive rename fragments handled.</li>
+          <li>Better setup and install progress, plus a completion banner.</li>
+        </ul>
+      </section>
+
+      <section class="rel" id="v0-5-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.5.0" rel="noopener">v0.5.0</a></h2>
+          <span class="rel-date">2026-07-25</span>
+        </div>
+        <ul>
+          <li><strong>Installer-archive extraction</strong> - an EXE or MSI can be opened as a container and
+            unpacked. The installer itself is never executed.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-4-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.4.0" rel="noopener">v0.4.0</a></h2>
+          <span class="rel-date">2026-07-24</span>
+        </div>
+        <ul>
+          <li>An auto-bump command for the registry, and <code>self-uninstall</code>.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-3-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.3.0" rel="noopener">v0.3.0</a></h2>
+          <span class="rel-date">2026-07-24</span>
+        </div>
+        <ul>
+          <li>Apps &amp; Features registration, so installed packages appear where Windows users expect them.</li>
+          <li>A published catalog and package search on the website.</li>
+        </ul>
+      </section>
+
+      <section class="rel" id="v0-2-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.2.0" rel="noopener">v0.2.0</a></h2>
+          <span class="rel-date">2026-07-24</span>
+        </div>
+        <ul>
+          <li><strong><code>voli self-update</code></strong>, plus 7-Zip extraction, Start Menu shortcuts,
+            sha512 hashes, multi-URL sources, and <code>write_file</code>.</li>
+          <li>A manifest wizard for scaffolding a package from a release URL.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-1-1">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.1.1" rel="noopener">v0.1.1</a></h2>
+          <span class="rel-date">2026-07-24</span>
+        </div>
+        <ul>
+          <li>Voli shims itself, so <code>voli</code> resolves on PATH straight after <code>setup</code>.</li>
+        </ul>
+      </section>
+
+      <section class="rel" id="v0-1-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.1.0" rel="noopener">v0.1.0</a></h2>
+          <span class="rel-date">2026-07-24</span>
+          <span class="tag first">first release</span>
+        </div>
+        <ul>
+          <li><strong>The install engine</strong> - transactional install and uninstall, recorded in a ledger
+            that <code>delete</code> replays backwards. That is the zero-trace guarantee, by construction.</li>
+          <li><strong>The signed index</strong> - an Ed25519-signed sqlite snapshot with full-text search,
+            resumable cached downloads, dependency resolution, and did-you-mean on a miss.</li>
+          <li><code>upgrade</code>, <code>pin</code>, <code>cleanup</code>, <code>doctor</code>,
+            <code>config</code>, and a consent flow for environment variables.</li>
+          <li>Self-install with user-level PATH setup - no admin, at any point.</li>
+          <li>The one-line installer and volibear.dev.</li>
+        </ul>
+      </section>
+
+    </div>
+
+    <div class="note">
+      <strong>Pre-1.0.</strong> Commands and the manifest schema may still change before v1. Versions before
+      then are not a stability promise - but the four guarantees (no admin, clean uninstall, no scripts, and
+      everything pinned) have held since v0.1.0 and are not up for negotiation.
+    </div>
+  </div>
+
+  <footer class="site" id="site-footer"></footer>
+
+  <script src="assets/catalog.js"></script>
+  <script src="assets/site-header.js"></script>
+</body>
+
+</html>
