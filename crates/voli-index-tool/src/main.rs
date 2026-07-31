@@ -27,6 +27,19 @@ enum Command {
         /// The `manifests/` directory (`<letter>/<name>/<version>.toml`).
         dir: PathBuf,
     },
+    /// Rewrite every manifest under <dir> into canonical form.
+    ///
+    /// Run this after any tool that generates manifests: the generator can emit
+    /// whatever valid TOML is convenient and this makes it canonical, so no
+    /// generator has to reimplement the canonical shape and drift from it.
+    Fmt {
+        /// The `manifests/` directory.
+        dir: PathBuf,
+        /// Rewrite the files. Without it, only list what would change (and exit
+        /// non-zero if anything would), which is the shape a CI check wants.
+        #[arg(long)]
+        write: bool,
+    },
     /// Validate, then compile → compress → sign → write index.json into --out.
     Build {
         /// The `manifests/` directory.
@@ -104,6 +117,28 @@ fn run() -> anyhow::Result<ExitCode> {
                 eprintln!("\n{} manifest error(s) found", errors.len());
                 Ok(ExitCode::FAILURE)
             }
+        }
+        Command::Fmt { dir, write } => {
+            let changed = voli_index_tool::format_dir(&dir, write)?;
+            if changed.is_empty() {
+                println!("ok: every manifest under {} is canonical", dir.display());
+                return Ok(ExitCode::SUCCESS);
+            }
+            for c in &changed {
+                println!(
+                    "{}: {}",
+                    if write { "formatted" } else { "would format" },
+                    c
+                );
+            }
+            println!("\n{} manifest(s)", changed.len());
+            // Without --write this is a check, and a check that found work to do
+            // has failed. With --write the work is done, so it succeeded.
+            Ok(if write {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
         }
         Command::Build {
             dir,

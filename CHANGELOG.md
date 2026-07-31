@@ -3,6 +3,18 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
+## v0.10.1
+
+### Added
+
+- **`voli-index-tool fmt <dir>`** rewrites manifests into canonical form
+  (`--write`), or lists what would change and exits non-zero without it - the
+  shape a CI check wants. A manifest generator can now emit whatever valid TOML
+  is convenient and pipe it through this, instead of reimplementing the
+  canonical shape and drifting from it. That is what the registry's Python skill
+  importer was doing, making it a fourth emitter that agreed with the others
+  only by coincidence.
+
 ## v0.10.0
 
 ### Added

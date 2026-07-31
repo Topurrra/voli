@@ -179,6 +179,42 @@ pub fn validate(dir: &Path) -> Result<Vec<String>> {
     Ok(errors)
 }
 
+/// Rewrite every manifest under `dir` into canonical form, returning the
+/// relative paths actually changed.
+///
+/// This is what lets a generator stop caring about formatting: emit any valid
+/// TOML, run this, and the result is byte-identical to what every other tool
+/// produces. Without it each generator has to reimplement the canonical shape,
+/// and they drift — which is the whole reason canonical form exists.
+///
+/// Unparseable and already-canonical files are left untouched, and the write is
+/// skipped entirely when the bytes would not change, so this is safe to run on
+/// every sync and shows up as an empty diff when there is nothing to do.
+pub fn format_dir(dir: &Path, write: bool) -> Result<Vec<String>> {
+    let mut changed = Vec::new();
+    for abs in collect_toml_files(dir)? {
+        let Ok(text) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        // A file that does not parse is validate's problem to report, not this
+        // one's to guess at.
+        let Ok(m) = Manifest::from_toml_str(&text) else {
+            continue;
+        };
+        if m.is_canonical_toml(&text) {
+            continue;
+        }
+        let rel = abs.strip_prefix(dir).unwrap_or(&abs).display().to_string();
+        if write {
+            std::fs::write(&abs, m.to_canonical_toml())
+                .with_context(|| format!("rewriting {}", abs.display()))?;
+        }
+        changed.push(rel);
+    }
+    changed.sort();
+    Ok(changed)
+}
+
 /// Every manifest under `dir` that is not in canonical form, as
 /// `<relative path>: not in canonical form (…)` lines.
 ///
@@ -1071,6 +1107,81 @@ extra = []
         let (manifests, analyze_errors) = analyze(root).unwrap();
         assert!(analyze_errors.is_empty(), "{analyze_errors:?}");
         assert_eq!(manifests.len(), 3);
+    }
+
+    /// fmt has to fix exactly what validate rejects. If the two ever disagree,
+    /// a contributor gets a failing gate with no command that clears it.
+    #[test]
+    fn fmt_fixes_exactly_what_validate_rejects() {
+        let td = registry_with_examples();
+        let root = td.path();
+        assert!(
+            format_dir(root, false).unwrap().is_empty(),
+            "already canonical"
+        );
+
+        // The old expanded shape: empty collections and a split-out checkver.
+        let dir = root.join("f").join("fd");
+        fs::write(
+            dir.join("10.1.0.toml"),
+            format!(
+                r#"name = "fd"
+version = "10.1.0"
+description = "test package fd"
+homepage = "https://example.com/fd"
+icon = "https://example.com/fd.svg"
+kind = "app"
+bin = ["fd.exe"]
+persist = []
+shortcuts = []
+
+[source.x64]
+url = "https://example.com/fd-10.1.0.zip"
+sha256 = "{hash}"
+
+[env]
+"#,
+                hash = "a".repeat(64)
+            ),
+        )
+        .unwrap();
+
+        // A dry run reports it and changes nothing on disk.
+        let before = fs::read_to_string(dir.join("10.1.0.toml")).unwrap();
+        assert_eq!(format_dir(root, false).unwrap().len(), 1);
+        assert_eq!(fs::read_to_string(dir.join("10.1.0.toml")).unwrap(), before);
+        assert_eq!(validate(root).unwrap().len(), 1);
+
+        // --write fixes it, and validate is clean afterwards.
+        assert_eq!(format_dir(root, true).unwrap().len(), 1);
+        assert!(
+            validate(root).unwrap().is_empty(),
+            "fmt must satisfy validate"
+        );
+
+        // Idempotent: a second pass has nothing left to do.
+        assert!(format_dir(root, true).unwrap().is_empty());
+
+        // And it preserved meaning, not just shape.
+        let m =
+            Manifest::from_toml_str(&fs::read_to_string(dir.join("10.1.0.toml")).unwrap()).unwrap();
+        assert_eq!(m.name, "fd");
+        assert_eq!(m.version, "10.1.0");
+        assert_eq!(m.bin.len(), 1);
+    }
+
+    /// A file that does not parse is validate's to report, not fmt's to guess at.
+    #[test]
+    fn fmt_leaves_unparseable_files_alone() {
+        let td = registry_with_examples();
+        let root = td.path();
+        let bad = root.join("f").join("fd").join("10.1.0.toml");
+        fs::write(&bad, "this is not = valid = toml").unwrap();
+        assert!(format_dir(root, true).unwrap().is_empty());
+        assert_eq!(
+            fs::read_to_string(&bad).unwrap(),
+            "this is not = valid = toml"
+        );
     }
 
     #[test]
