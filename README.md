@@ -18,7 +18,7 @@ The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else - read it first
 if you like: [`install.ps1`](install.ps1).
 
-> **Status: v0.11.0, still pre-1.0.** The core workflow is released and working,
+> **Status: v0.12.0, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)
@@ -47,7 +47,7 @@ Global options:
 | `voli delete skill/<name> --for <agent>` | Delete one or more target-scoped skill mappings. |
 | `voli memory <cmd>` | Encrypted, local memory for AI agents - see [Agent memory](#agent-memory). |
 | `voli memory serve --mcp` | Serve memory to an agent over MCP (stdio), so it reads and writes with native tools. |
-| `voli memory hook` | Print the SessionStart hook that loads memory before the agent decides anything. |
+| `voli memory hook --global\|--project-shared\|--project-local` | Wire the SessionStart hook that loads memory before the agent decides anything. `--remove` takes it out. |
 | `voli web <bang> <query>` | Open a search shortcut in your browser. Voli builds the URL and fetches nothing. |
 | `voli fetch <url>` | Fetch a page as text, Markdown, or JSON, with provenance - see [Web search and fetch](#web-search-and-fetch). |
 | `voli update` | Refresh the local signed package index. |
@@ -187,7 +187,7 @@ voli memory note "<one line>"                    # record a fact or decision
 voli memory search "<question>"                  # best-match retrieval
 voli memory verify                               # prove nothing was altered
 
-voli memory hook                                 # deterministic load at session start
+voli memory hook --project-local                 # deterministic load at session start
 voli memory serve --mcp                          # native tools instead of shelling out
 ```
 
@@ -209,13 +209,21 @@ memory lives in the conversation, so it scrolls away and dies at compaction. A
 SessionStart hook runs before the model chooses anything:
 
 ```powershell
-voli memory hook          # prints the block to merge into the agent's settings
+voli memory hook --project-local     # this project, just you
+voli memory hook --project-shared    # this project, committed for the team
+voli memory hook --global            # every project on this machine
 ```
 
-It prints rather than edits: that file belongs to the agent, and Voli has no
-ledger entry to reverse the change with. If the store is missing or locked the
-hook contributes nothing and exits cleanly - it must never fail the session it
-is starting.
+Each edits that settings file in place, merging into whatever hooks are already
+there - your permissions and other hooks are untouched. Running it twice is a
+no-op rather than a second copy, and `--remove` takes it back out, pruning the
+scaffolding it created. A settings file that does not parse is refused rather
+than rewritten, because a broken one silently disables every setting in it.
+
+`voli memory hook` with no target explains the three and writes nothing.
+
+If the store is missing or locked the hook contributes nothing and exits
+cleanly - it must never fail the session it is starting.
 
 **The MCP server** keeps the tools present. A tool definition does not decay,
 because the harness re-sends the tool list on every request:
@@ -251,15 +259,19 @@ A project can keep its own store for knowledge about that codebase, separate
 from what you know about the user:
 
 ```powershell
-voli memory init --project      # creates .voli\memory here, git-ignores .voli\
+voli memory init                 # creates .voli\memory here, git-ignores .voli\
 voli memory prompt --per-project # writes voli-memory-prompt.project.md
 ```
+
+`init` works like `git init`: it makes a store for the codebase you are standing
+in. Use `voli memory init --global` for the machine-wide store instead - who you
+are and how you like to work, the things that follow you between projects.
 
 Every `voli memory` command run anywhere inside the project then finds it
 automatically - the nearest `.voli\memory` in the current directory or an
 ancestor wins, so nested repositories each keep their own. Detection requires
-the store to exist, so a directory that never ran `init --project` keeps using
-the machine-wide store. Add `--global` to any command to reach that store from
+the store to exist, so a directory that never ran `init` keeps using the
+machine-wide store. Add `--global` to any command to reach that store from
 inside a project, and `$VOLI_MEMORY_DIR` still overrides everything.
 
 ## Web search and fetch

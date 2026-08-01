@@ -790,7 +790,7 @@ This domain is for use in documentation examples without needing permission. Avo
           <table>
             <thead><tr><th>Command</th><th>What it does</th></tr></thead>
             <tbody>
-              <tr><td><code>init</code></td><td>Create the memory and print the agent setup prompt. <code>--project</code> creates a store for this codebase instead.</td></tr>
+              <tr><td><code>init</code></td><td>Create a store for THIS codebase, like <code>git init</code>, and print the agent setup prompt. <code>--global</code> makes the machine-wide one instead.</td></tr>
               <tr><td><code>read</code></td><td>Load core facts + task-relevant memories + a decaying timeline. Run first.</td></tr>
               <tr><td><code>note "&lt;line&gt;"</code></td><td>Record one memory. Flags below.</td></tr>
               <tr><td><code>search "&lt;q&gt;"</code></td><td>Ranked best-match retrieval (BM25).</td></tr>
@@ -805,6 +805,8 @@ This domain is for use in documentation examples without needing permission. Avo
               <tr><td><code>stats</code> / <code>doctor</code></td><td>Show statistics; diagnose caches that are out of step.</td></tr>
               <tr><td><code>export</code></td><td>Print every memory in time order (<code>--json</code> for machine output).</td></tr>
               <tr><td><code>prompt</code></td><td>Print the agent setup prompt. <code>--per-project</code> prints the one for a project store.</td></tr>
+              <tr><td><code>hook</code></td><td>Wire the session-start hook that loads memory before the agent decides anything. Needs a target: <code>--project-local</code>, <code>--project-shared</code> or <code>--global</code>. <code>--remove</code> takes it out.</td></tr>
+              <tr><td><code>serve --mcp</code></td><td>Serve this memory to an agent over MCP on stdin/stdout - see <a class="inline" href="#mcp">MCP</a>.</td></tr>
               <tr><td><code>--global</code></td><td>Not a command - a flag on any of the above. Uses the machine-wide store even inside a project that has its own.</td></tr>
             </tbody>
           </table>
@@ -823,7 +825,7 @@ This domain is for use in documentation examples without needing permission. Avo
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
             <span class="tt">voli memory</span>
           </div>
-          <pre><span class="p">PS&gt;</span> voli memory init --project
+          <pre><span class="p">PS&gt;</span> voli memory init
   <span class="ok">&#10003;</span> project memory created <span class="mut">(C:\work\api\.voli\memory)</span>
   <span class="ok">&#10003;</span> <span class="mut">added .voli/ to .gitignore</span>
 
@@ -954,17 +956,24 @@ This domain is for use in documentation examples without needing permission. Avo
         <h3>1. The hook - not the agent's decision</h3>
         <p>
           A prompt telling an agent to read its memory lives in the conversation, so it scrolls away and dies at
-          compaction. A <strong>SessionStart hook</strong> runs before the model chooses anything.
-          <code>voli memory hook</code> prints the block to merge into your agent's settings:
+          compaction. A <strong>SessionStart hook</strong> runs before the model chooses anything. Pick where it
+          should live and Voli edits that settings file for you:
         </p>
-        <div class="snip"><span class="p">PS&gt;</span> voli memory hook</div>
+        <div class="snip"><span class="p">PS&gt;</span> voli memory hook --project-local     <span class="cmt"># this project, just you</span>
+<span class="p">PS&gt;</span> voli memory hook --project-shared    <span class="cmt"># this project, committed for the team</span>
+<span class="p">PS&gt;</span> voli memory hook --global            <span class="cmt"># every project on this machine</span></div>
         <p>
-          It prints rather than edits, because that file belongs to the agent and Voli has no ledger entry to
-          reverse the change with. Merge it into <code>~/.claude/settings.json</code> (all projects) or
-          <code>.claude/settings.json</code> (this one), keeping any hooks already there. If the store is
-          missing or locked, the hook contributes nothing and exits cleanly - it must never fail the session it
-          is starting.
+          Each one <strong>merges</strong> into whatever hooks are already in that file - your permissions and
+          other hooks are untouched. Running it twice is a no-op rather than a second copy, and
+          <code>--remove</code> takes it back out, pruning the scaffolding it created.
+          <code>voli memory hook</code> with no target explains the three and writes nothing.
         </p>
+        <div class="note">
+          A settings file that does not parse is <strong>refused, not rewritten</strong>: it may hold hooks and
+          permissions that took real effort, and a broken one silently disables every setting in it. If the
+          memory store is missing or locked, the hook contributes nothing and exits cleanly - it must never fail
+          the session it is starting.
+        </div>
         <h3>2. The MCP server - always present</h3>
         <p>
           <code>voli memory serve --mcp</code> puts read, search, note, recall, history and verify in the

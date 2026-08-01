@@ -17,14 +17,17 @@ use stela::{CustodyMode, Store, custody_mode, parse_block_id};
 
 #[derive(Subcommand)]
 pub enum MemoryCmd {
-    /// Create this memory and print the agent setup prompt.
+    /// Create a memory here, for THIS codebase, and print the agent setup prompt.
     ///
-    /// With --project, creates a store for THIS codebase in the current
-    /// directory (.voli\memory) and adds .voli\ to .gitignore. Every memory
-    /// command run anywhere inside the project then finds it automatically.
+    /// Like `git init`: it creates `.voli\memory` in the current directory and
+    /// git-ignores `.voli\`. Every memory command run anywhere inside the project
+    /// then finds it automatically, with no path to pass.
+    ///
+    /// Use `--global` for the machine-wide store instead: who you are and how you
+    /// like to work, the things that follow you between projects.
     Init {
-        /// Create a project-local store in the current directory and git-ignore it.
-        #[arg(long)]
+        /// Accepted and ignored: a project store is what plain `init` now makes.
+        #[arg(long, hide = true)]
         project: bool,
     },
     /// Load memory: core + task-relevant + a decaying timeline. Run first.
@@ -49,8 +52,23 @@ pub enum MemoryCmd {
     /// context and is lost to compaction. A hook does not -- it fires before the
     /// model chooses anything, so loading memory stops being the agent's job to
     /// remember.
+    /// Wire the session-start hook that loads memory before the agent decides
+    /// anything.
+    ///
+    /// With no target flag this explains the options and writes nothing. Pick a
+    /// target and it edits that settings file for you, merging into whatever
+    /// hooks are already there.
     Hook {
-        /// Which agent's config format to print (currently: claude-code).
+        /// Write to this project, for you only (.claude\settings.local.json).
+        #[arg(long, conflicts_with = "project_shared")]
+        project_local: bool,
+        /// Write to this project, shared with the team (.claude\settings.json).
+        #[arg(long)]
+        project_shared: bool,
+        /// Take the hook back out of the same file.
+        #[arg(long)]
+        remove: bool,
+        /// Which agent's config format (currently: claude-code).
         #[arg(long, default_value = "claude-code")]
         for_agent: String,
     },
@@ -174,7 +192,9 @@ pub fn run(action: &MemoryCmd, force_global: bool) -> i32 {
     // inside a project can still record a fact that is not about this codebase.
     GLOBAL_ONLY.store(force_global, Ordering::Relaxed);
     match action {
-        MemoryCmd::Init { project } => cmd_init(*project),
+        // `--project` is the default now, so the flag survives only so an older
+        // command line keeps working rather than erroring on an unknown arg.
+        MemoryCmd::Init { project: _ } => cmd_init(!force_global),
         MemoryCmd::Prompt {
             per_project,
             print,
@@ -209,7 +229,19 @@ pub fn run(action: &MemoryCmd, force_global: bool) -> i32 {
             }
             with_store(|s| out(s.render_read(*budget, task.as_deref(), *k)))
         }
-        MemoryCmd::Hook { for_agent } => print_hook_config(for_agent),
+        MemoryCmd::Hook {
+            project_local,
+            project_shared,
+            remove,
+            for_agent,
+        } => cmd_hook(
+            for_agent,
+            // `--global` is the existing machine-wide flag on `voli memory`, so
+            // it keeps meaning the same thing here rather than gaining a second
+            // spelling.
+            HookTarget::pick(force_global, *project_shared, *project_local),
+            *remove,
+        ),
         MemoryCmd::Serve { mcp } => {
             if !*mcp {
                 eprintln!("error: `{TOOL} serve` speaks only MCP; pass --mcp");
@@ -476,9 +508,31 @@ fn with_store(f: impl FnOnce(Store) -> i32) -> i32 {
 
 // ---------------------------------------------------------------- commands
 
+/// Whether `init` should make a store for the current directory.
+///
+/// Split out because getting it wrong is silent: the store lands in whatever
+/// directory the command happened to run from, and nothing says so. An explicit
+/// `$VOLI_MEMORY_DIR` always wins -- it is documented as overriding everything,
+/// project detection included.
+fn wants_project_store(project_requested: bool, explicit: Option<&Path>) -> bool {
+    project_requested && explicit.is_none()
+}
+
 fn cmd_init(project: bool) -> i32 {
     let mut gitignore_note = None;
-    let dir = if project {
+    // `$VOLI_MEMORY_DIR` is documented as overriding everything, project
+    // detection included. That used to be true of `init` for free, because it
+    // went through memory_dir(); now that a project store is the default, the
+    // override has to be honoured explicitly or a scripted init silently makes
+    // `.voli\` in whatever directory it was run from.
+    let explicit = ["VOLI_MEMORY_DIR", "STELA_DIR"]
+        .iter()
+        .find_map(|var| std::env::var_os(var).filter(|v| !v.is_empty()))
+        .map(PathBuf::from);
+    let project = wants_project_store(project, explicit.as_deref());
+    let dir = if let Some(dir) = explicit {
+        dir
+    } else if project {
         let root = match std::env::current_dir() {
             Ok(d) => d,
             Err(e) => return fail(&e.to_string()),
@@ -498,11 +552,15 @@ fn cmd_init(project: bool) -> i32 {
     } else {
         memory_dir()
     };
+    // Ask BEFORE init_key: passphrase custody writes its file into this
+    // directory, so by the time the store computes its own answer the directory
+    // exists and a first run reports "found".
+    let fresh = !dir.is_dir();
     let (key, mode) = match init_key(&dir) {
         Ok(k) => k,
         Err(e) => return fail(&e),
     };
-    let (store, fresh) = match Store::init_with_key(&dir, key) {
+    let (store, _) = match Store::init_with_key(&dir, key) {
         Ok(sf) => sf,
         Err(e) => return fail(&e.to_string()),
     };
@@ -515,6 +573,12 @@ fn cmd_init(project: bool) -> i32 {
     );
     if let Some(note) = gitignore_note {
         println!("{note}");
+    }
+    // Plain `init` used to mean the machine-wide store. Anyone carrying that
+    // habit now gets a store in whatever directory they happened to be in, so
+    // name the other one rather than let them find out later.
+    if project && fresh {
+        println!("  (for the machine-wide store instead: {TOOL} init --global)");
     }
     println!();
     let scope = if project {
@@ -937,42 +1001,243 @@ fn hook_envelope(body: &str) -> Option<serde_json::Value> {
     }))
 }
 
-/// Print the hook block to add to the agent's settings, and say where it goes.
+/// Which settings file the hook goes in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HookTarget {
+    /// Explain the choices; touch nothing.
+    Explain,
+    /// `~/.claude/settings.json` -- every project on this machine.
+    Global,
+    /// `.claude/settings.json` -- this project, committed, shared with the team.
+    ProjectShared,
+    /// `.claude/settings.local.json` -- this project, yours, git-ignored.
+    ProjectLocal,
+}
+
+impl HookTarget {
+    fn pick(global: bool, shared: bool, local: bool) -> HookTarget {
+        match (global, shared, local) {
+            (true, _, _) => HookTarget::Global,
+            (_, true, _) => HookTarget::ProjectShared,
+            (_, _, true) => HookTarget::ProjectLocal,
+            _ => HookTarget::Explain,
+        }
+    }
+
+    fn path(self) -> Option<PathBuf> {
+        let rel = match self {
+            HookTarget::Explain => return None,
+            HookTarget::Global => {
+                return crate::user_home().map(|h| h.join(".claude").join("settings.json"));
+            }
+            HookTarget::ProjectShared => "settings.json",
+            HookTarget::ProjectLocal => "settings.local.json",
+        };
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join(".claude").join(rel))
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            HookTarget::Explain => "",
+            HookTarget::Global => "every project on this machine",
+            HookTarget::ProjectShared => "this project, shared with the team",
+            HookTarget::ProjectLocal => "this project, just you",
+        }
+    }
+}
+
+/// The hook entry voli owns.
 ///
-/// Deliberately prints rather than edits: this file belongs to the agent, and
-/// voli has no ledger entry for it yet. Merging into someone's settings.json
-/// without the ability to reverse it exactly would break the promise the rest of
-/// the product keeps.
-fn print_hook_config(for_agent: &str) -> i32 {
+/// Exec form: `args` makes the harness spawn the executable directly rather than
+/// hand a line to a shell, which is the rule the rest of the product follows --
+/// nothing voli emits should need a shell to interpret it.
+fn hook_entry() -> serde_json::Value {
+    serde_json::json!({
+        "type": "command",
+        "command": "voli",
+        "args": ["memory", "read", "--hook"],
+        "timeout": 10,
+        "statusMessage": "Loading voli memory"
+    })
+}
+
+/// True when an entry is voli's hook, so a second run is a no-op rather than a
+/// duplicate that loads memory twice.
+fn is_voli_hook(entry: &serde_json::Value) -> bool {
+    entry.get("command").and_then(|c| c.as_str()) == Some("voli")
+        && entry
+            .get("args")
+            .and_then(|a| a.as_array())
+            .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("--hook")))
+}
+
+enum Outcome {
+    Added,
+    Removed,
+    AlreadyPresent,
+    NotPresent,
+}
+
+fn cmd_hook(for_agent: &str, target: HookTarget, remove: bool) -> i32 {
     if for_agent != "claude-code" {
         eprintln!("error: no hook format known for '{for_agent}' (try: claude-code)");
         return 1;
     }
-    // Exec form: `args` makes the harness spawn the executable directly instead
-    // of handing the line to a shell, which is the same rule the installer
-    // follows -- nothing voli emits should need a shell to interpret it.
-    let block = serde_json::json!({
-        "hooks": {
-            "SessionStart": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": "voli",
-                    "args": ["memory", "read", "--hook"],
-                    "timeout": 10,
-                    "statusMessage": "Loading voli memory"
-                }]
-            }]
+    let Some(path) = target.path() else {
+        return explain_hook();
+    };
+    match edit_hook(&path, remove) {
+        Ok(Outcome::Added) => {
+            println!("added the voli memory hook to {}", path.display());
+            println!("  scope: {}", target.label());
+            println!("  memory now loads at the start of every session, unasked.");
+            0
         }
-    });
-    println!("{}", serde_json::to_string_pretty(&block).unwrap());
-    eprintln!();
-    eprintln!("Merge the block above into one of:");
-    eprintln!("  ~/.claude/settings.json          every project");
-    eprintln!("  .claude/settings.json            this project, shared");
-    eprintln!("  .claude/settings.local.json      this project, just you");
-    eprintln!();
-    eprintln!("Keep any hooks already there -- merge into the arrays, do not replace them.");
-    eprintln!("Memory then loads at the start of every session without being asked.");
+        Ok(Outcome::Removed) => {
+            println!("removed the voli memory hook from {}", path.display());
+            0
+        }
+        Ok(Outcome::AlreadyPresent) => {
+            println!("{} already has the hook - nothing to do", path.display());
+            0
+        }
+        Ok(Outcome::NotPresent) => {
+            println!("{} has no voli hook - nothing to remove", path.display());
+            0
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+/// Merge the hook into (or out of) an agent settings file.
+///
+/// Refuses outright on malformed JSON rather than replacing it: the file is the
+/// user's, it may hold hooks and permissions that took real effort, and a
+/// settings file that fails to parse silently disables every setting in it.
+fn edit_hook(path: &Path, remove: bool) -> Result<Outcome, String> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let mut root: serde_json::Value = match existing.as_deref().map(str::trim) {
+        None | Some("") => serde_json::json!({}),
+        Some(text) => serde_json::from_str(text).map_err(|e| {
+            format!(
+                "{} is not valid JSON ({e}). Refusing to touch it -- fix or move it first.",
+                path.display()
+            )
+        })?,
+    };
+    let Some(obj) = root.as_object_mut() else {
+        return Err(format!("{} is not a JSON object", path.display()));
+    };
+
+    let hooks = obj
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| format!("{}: hooks is not an object", path.display()))?;
+    let groups = hooks
+        .entry("SessionStart")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| format!("{}: SessionStart is not an array", path.display()))?;
+
+    let mut present = false;
+    for group in groups.iter_mut() {
+        if let Some(entries) = group.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+            if remove {
+                let before = entries.len();
+                entries.retain(|e| !is_voli_hook(e));
+                present |= entries.len() != before;
+            } else if entries.iter().any(is_voli_hook) {
+                present = true;
+            }
+        }
+    }
+
+    if remove {
+        if !present {
+            return Ok(Outcome::NotPresent);
+        }
+        // Drop groups this emptied, so removal leaves as little behind as a
+        // shared file allows.
+        groups.retain(|g| {
+            g.get("hooks")
+                .and_then(|h| h.as_array())
+                .is_none_or(|entries| !entries.is_empty())
+        });
+        prune_empty(&mut root);
+    } else {
+        if present {
+            return Ok(Outcome::AlreadyPresent);
+        }
+        groups.push(serde_json::json!({ "hooks": [hook_entry()] }));
+    }
+
+    write_settings(path, &root)?;
+    Ok(if remove {
+        Outcome::Removed
+    } else {
+        Outcome::Added
+    })
+}
+
+/// Drop `hooks.SessionStart` and `hooks` once they hold nothing, so an uninstall
+/// does not leave scaffolding behind in someone else's file.
+fn prune_empty(root: &mut serde_json::Value) {
+    let Some(obj) = root.as_object_mut() else {
+        return;
+    };
+    let empty_sessionstart = obj
+        .get("hooks")
+        .and_then(|h| h.get("SessionStart"))
+        .and_then(|s| s.as_array())
+        .is_some_and(|a| a.is_empty());
+    if empty_sessionstart && let Some(hooks) = obj.get_mut("hooks").and_then(|h| h.as_object_mut())
+    {
+        hooks.remove("SessionStart");
+    }
+    let empty_hooks = obj
+        .get("hooks")
+        .and_then(|h| h.as_object())
+        .is_some_and(|h| h.is_empty());
+    if empty_hooks {
+        obj.remove("hooks");
+    }
+}
+
+/// Parent created, temp file then rename, so a crash mid-write cannot leave a
+/// half-written settings file behind.
+fn write_settings(path: &Path, value: &serde_json::Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    let mut text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+    text.push('\n');
+    let tmp = path.with_extension("voli-tmp");
+    std::fs::write(&tmp, text).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("cannot replace {}: {e}", path.display())
+    })
+}
+
+/// No target given: say what the choices are and change nothing.
+fn explain_hook() -> i32 {
+    println!("The session-start hook loads your memory before the agent decides");
+    println!("anything, so you stop having to ask it. Pick where it should live:");
+    println!();
+    println!("  {TOOL} hook --project-local     this project, just you");
+    println!("  {TOOL} hook --project-shared    this project, shared with the team");
+    println!("  {TOOL} hook --global            every project on this machine");
+    println!();
+    println!("Each edits that settings file in place, keeping any hooks already");
+    println!("there. Add --remove to the same command to take it back out.");
     0
 }
 
@@ -1027,5 +1292,163 @@ knows rust
             )
             .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod hook_edit_tests {
+    use super::{HookTarget, Outcome, edit_hook};
+
+    fn read(path: &std::path::Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn voli_hooks(v: &serde_json::Value) -> usize {
+        v["hooks"]["SessionStart"]
+            .as_array()
+            .map(|groups| {
+                groups
+                    .iter()
+                    .filter_map(|g| g["hooks"].as_array())
+                    .flatten()
+                    .filter(|h| h["command"] == "voli")
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// The file belongs to the user and may hold hooks and permissions that took
+    /// real effort. Adding ours must not cost them any of it.
+    #[test]
+    fn adding_the_hook_keeps_every_setting_already_in_the_file() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"permissions":{"allow":["Bash(git *)"]},
+                "hooks":{"PostToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"prettier"}]}],
+                         "SessionStart":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(edit_hook(&path, false), Ok(Outcome::Added)));
+        let after = read(&path);
+        assert_eq!(after["permissions"]["allow"][0], "Bash(git *)");
+        assert_eq!(after["hooks"]["PostToolUse"][0]["matcher"], "Write");
+        assert_eq!(
+            after["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "echo hi"
+        );
+        assert_eq!(voli_hooks(&after), 1);
+    }
+
+    /// Running it twice must not load memory twice.
+    #[test]
+    fn adding_the_hook_twice_leaves_exactly_one() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        assert!(matches!(edit_hook(&path, false), Ok(Outcome::Added)));
+        assert!(matches!(
+            edit_hook(&path, false),
+            Ok(Outcome::AlreadyPresent)
+        ));
+        assert_eq!(voli_hooks(&read(&path)), 1);
+    }
+
+    /// Removal takes ours out and nothing else, and leaves no empty scaffolding
+    /// where the whole file was ours.
+    #[test]
+    fn removing_the_hook_takes_only_ours() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+        )
+        .unwrap();
+        edit_hook(&path, false).unwrap();
+        assert!(matches!(edit_hook(&path, true), Ok(Outcome::Removed)));
+        let after = read(&path);
+        assert_eq!(voli_hooks(&after), 0);
+        assert_eq!(
+            after["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "echo hi"
+        );
+        // Nothing of ours left to remove a second time.
+        assert!(matches!(edit_hook(&path, true), Ok(Outcome::NotPresent)));
+    }
+
+    /// A file that was empty before we touched it goes back to empty, rather than
+    /// keeping `hooks: { SessionStart: [] }` forever.
+    #[test]
+    fn removing_the_only_hook_prunes_the_scaffolding_it_created() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        edit_hook(&path, false).unwrap();
+        edit_hook(&path, true).unwrap();
+        let after = read(&path);
+        assert!(after.get("hooks").is_none(), "left scaffolding: {after}");
+    }
+
+    /// A settings file that fails to parse silently disables every setting in it,
+    /// so a half-understood file must be refused, not rewritten.
+    #[test]
+    fn malformed_json_is_refused_and_the_file_is_left_byte_for_byte() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("settings.json");
+        let original = r#"{ "permissions": { "allow": ["Bash(git *)"] ,, }"#;
+        std::fs::write(&path, original).unwrap();
+        assert!(edit_hook(&path, false).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// `--global` already means the machine-wide store everywhere else in
+    /// `voli memory`, so it keeps that meaning here instead of gaining a second
+    /// spelling, and it wins when combined.
+    #[test]
+    fn the_target_flags_resolve_in_a_fixed_order() {
+        assert!(matches!(
+            HookTarget::pick(false, false, false),
+            HookTarget::Explain
+        ));
+        assert!(matches!(
+            HookTarget::pick(false, false, true),
+            HookTarget::ProjectLocal
+        ));
+        assert!(matches!(
+            HookTarget::pick(false, true, false),
+            HookTarget::ProjectShared
+        ));
+        assert!(matches!(
+            HookTarget::pick(true, false, false),
+            HookTarget::Global
+        ));
+        assert!(matches!(
+            HookTarget::pick(true, true, true),
+            HookTarget::Global
+        ));
+    }
+}
+
+#[cfg(test)]
+mod init_target_tests {
+    use super::wants_project_store;
+    use std::path::Path;
+
+    /// `$VOLI_MEMORY_DIR` is documented as overriding everything, project
+    /// detection included. When `init` defaulted to the machine-wide store this
+    /// held for free; once a project store became the default, an override that
+    /// lost would silently create `.voli/` in the caller's working directory.
+    #[test]
+    fn an_explicit_store_directory_beats_the_project_default() {
+        assert!(!wants_project_store(true, Some(Path::new("/somewhere"))));
+        assert!(!wants_project_store(false, Some(Path::new("/somewhere"))));
+    }
+
+    #[test]
+    fn without_an_override_the_default_is_a_store_for_this_directory() {
+        assert!(wants_project_store(true, None));
+        // `--global` asked for the machine-wide store, so no project store.
+        assert!(!wants_project_store(false, None));
     }
 }

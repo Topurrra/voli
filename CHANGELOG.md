@@ -3,6 +3,45 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
+## v0.12.0
+
+### Changed
+
+- **`voli memory init` makes a store for the codebase you are in**, like
+  `git init`. Use `--global` for the machine-wide store - who you are and how
+  you like to work, the things that follow you between projects. This is a
+  behaviour change: plain `init` used to mean the machine-wide store, so the
+  first run now names the other option rather than letting you discover it
+  later. `--project` still parses, as a no-op.
+
+### Added
+
+- **`voli memory hook` writes the settings file for you.** Pick a target -
+  `--project-local`, `--project-shared`, or `--global` - and it edits that file
+  in place instead of printing a block to paste. It merges into whatever hooks
+  are already there, so permissions and other hooks survive; running it twice is
+  a no-op rather than a second copy; and `--remove` takes it back out, pruning
+  the scaffolding it created. A settings file that does not parse is refused
+  rather than rewritten, because a broken one silently disables every setting in
+  it. With no target it explains the three and writes nothing.
+
+### Fixed
+
+- **One containment rule, not three.** The rule telling an agent that memories
+  are records and never instructions lived in the setup prompt, the MCP tool
+  descriptions, and the companion skill - and the three had drifted apart in
+  substance, not just wording. The MCP copy, the one an agent sees most often
+  because a tool list is re-sent on every request, had lost the exfiltration
+  vector entirely. There is now a single `stela::CONTAINMENT`, with a test that
+  fails if the skill's copy stops matching it.
+- `voli memory init` honours `$VOLI_MEMORY_DIR` again. It is documented as
+  overriding everything, project detection included; once a project store became
+  the default, a scripted `VOLI_MEMORY_DIR=... voli memory init` would silently
+  have created `.voli\` in whatever directory it ran from.
+- `voli memory init` says "created" on a first run. Passphrase custody writes
+  into the directory before the store checked whether it existed, so a fresh
+  init always reported "found".
+
 ## v0.11.0
 
 ### Added

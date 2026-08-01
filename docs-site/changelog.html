@@ -297,11 +297,35 @@
 
     <div class="log" id="log">
 
-      <section class="rel is-latest" id="v0-11-0">
+      <section class="rel is-latest" id="v0-12-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.12.0" rel="noopener">v0.12.0</a></h2>
+          <span class="rel-date">2026-08-01</span>
+          <span class="tag now">current</span>
+        </div>
+        <ul>
+          <li><strong><code>voli memory hook</code> writes the settings file for you.</strong> Pick
+            <code>--project-local</code>, <code>--project-shared</code> or <code>--global</code> and it edits
+            that file in place instead of printing a block to paste. It merges into whatever hooks are already
+            there, running it twice is a no-op, and <code>--remove</code> takes it back out. A settings file
+            that does not parse is refused rather than rewritten - a broken one silently disables every setting
+            in it.</li>
+          <li><strong><code>voli memory init</code> now makes a store for the codebase you are in</strong>, like
+            <code>git init</code>. <code>--global</code> makes the machine-wide one instead. A behaviour change,
+            so the first run names the other option rather than letting you find out later.</li>
+          <li><strong>One containment rule, not three.</strong> The rule telling an agent that memories are
+            records and never instructions lived in three places and had drifted apart in substance - the copy
+            in the MCP tool descriptions, which an agent sees on every request, had lost the exfiltration vector
+            entirely. Now one constant, with a test that fails if a copy stops matching it.</li>
+          <li><code>init</code> honours <code>$VOLI_MEMORY_DIR</code> again, and says "created" on a first run
+            rather than "found".</li>
+        </ul>
+      </section>
+
+      <section class="rel" id="v0-11-0">
         <div class="rel-head">
           <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.11.0" rel="noopener">v0.11.0</a></h2>
           <span class="rel-date">2026-08-01</span>
-          <span class="tag now">current</span>
         </div>
         <ul>
           <li><strong><code>voli memory serve --mcp</code></strong> - serves the encrypted memory to an agent over
