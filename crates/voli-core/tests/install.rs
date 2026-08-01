@@ -192,23 +192,63 @@ fn snapshot(root: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
 /// vars mid-run races every parallel sibling.
 fn scratch_global_env() -> std::path::PathBuf {
     static INIT: std::sync::Once = std::sync::Once::new();
-    let dir = std::env::temp_dir().join("voli-test-shortcuts-installbin");
+    // Per-process, not per-binary. HKCU belongs to the USER, not to a checkout,
+    // so a fixed subkey collides with any OTHER copy of this binary running at
+    // the same time -- a second worktree, a CI matrix leg, two terminals. Those
+    // processes cannot see each other's in-process locks, so the pid is the only
+    // thing that can separate them.
+    let scratch = format!("voli-scratch-installbin-{}", std::process::id());
+    let dir = std::env::temp_dir().join(&scratch);
     INIT.call_once(|| {
         let _ = std::fs::create_dir_all(&dir);
         // SAFETY: set once before any reader thread, same value for the whole
         // test binary, never mutated again.
         unsafe {
-            std::env::set_var("VOLI_UNINSTALL_SUBKEY", "Software\\voli-scratch-installbin");
+            std::env::set_var("VOLI_UNINSTALL_SUBKEY", format!("Software\\{scratch}"));
             std::env::set_var("VOLI_SHORTCUT_DIR", &dir);
         }
     });
     dir
 }
 
-fn setup() -> tempfile::TempDir {
+/// A scratch root, plus the lock that keeps parallel tests out of each other's
+/// Apps & Features keys.
+///
+/// Each test gets its own temp directory, so the filesystem is isolated. The
+/// registry is not: `VOLI_UNINSTALL_SUBKEY` is deliberately process-global (see
+/// [`scratch_global_env`]) and a package's key is `<base>oli.<name>`, so any
+/// two tests installing the SAME package name share one key. A dozen tests here
+/// install `ripgrep` and two install `rgshort`. Rust runs them on parallel
+/// threads, so one test's uninstall deletes the key another is still asserting
+/// on -- observed as `assertion failed: key_exists(sk, "rgshort")` roughly once
+/// every 25 runs.
+///
+/// Serialising the binary is the cheap fix: these tests are I/O-bound and the
+/// whole file runs in about three seconds either way. Making the key unique
+/// instead would mean renaming the package in twenty tests that assert on
+/// `apps/ripgrep/...` paths, which buys nothing but churn.
+struct Scratch {
+    dir: tempfile::TempDir,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Scratch {
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+fn setup() -> Scratch {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     scratch_global_env();
     ensure_stub();
-    tempfile::tempdir().unwrap()
+    Scratch {
+        // A panicking test poisons the lock. Recover rather than propagate:
+        // the shared state it guards is scratch, and turning one real failure
+        // into nineteen poison failures hides the one that matters.
+        _guard: LOCK.lock().unwrap_or_else(|e| e.into_inner()),
+        dir: tempfile::tempdir().unwrap(),
+    }
 }
 
 #[test]
@@ -913,10 +953,13 @@ fn shortcut_and_apps_features_lifecycle() {
     let td = setup();
     let root = td.path();
 
-    // Binary-wide scratch env (set once in setup()) — never flipped mid-run,
-    // so parallel sibling tests can't race between real and scratch registry.
+    // Scratch env is set once in setup() and never flipped mid-run. Read the
+    // subkey back from the environment rather than repeating the literal: it
+    // carries this process's pid, and a hardcoded copy would assert against a
+    // key nothing ever writes to.
     let shortcut_dir = scratch_global_env();
-    let sk = "Software\\voli-scratch-installbin";
+    let sk = &std::env::var("VOLI_UNINSTALL_SUBKEY").expect("scratch subkey set by setup()");
+    let sk = sk.as_str();
 
     // --- Part 1: shortcut created on install, removed on uninstall ---
     let zip = ripgrep_zip();

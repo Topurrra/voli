@@ -3,6 +3,52 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
+## v0.11.0
+
+### Added
+
+- **`voli memory serve --mcp`** - serves the encrypted memory to an agent over
+  MCP (stdio), so it reads and writes with native tools instead of shelling out.
+  Six tools: `memory_read`, `memory_search`, `memory_note`, `memory_recall`,
+  `memory_history`, `memory_verify`. A prompt telling an agent to check its
+  memory decays -- it scrolls out of context and dies at compaction. A tool
+  definition does not, because the harness re-sends the tool list on every
+  request. The disclosure firewall is enforced inside the server rather than by
+  trusting the agent, and the server refuses to start while
+  `VOLI_MEMORY_SHOW_SECRETS` is set: a per-command escape hatch must not quietly
+  become a session-long one aimed at a model.
+- **`voli memory hook`** - prints the SessionStart hook that loads memory before
+  the agent decides anything, which is the only layer that does not depend on a
+  model remembering. It prints rather than edits, because that file belongs to
+  the agent and voli has no ledger entry to reverse the change with. A missing
+  store or a locked keychain contributes nothing and exits cleanly; a hook must
+  never fail the session it is starting.
+- **`voli memory read --hook`** emits the hook's context envelope.
+- A companion skill at `skills/voli-memory/` covering the judgement layer: what
+  earns a note, supersede versus retract, `--private`, project versus global.
+  Authored, not yet published to the registry.
+
+### Fixed
+
+- **The contradiction warning leaked secrets.** `voli memory note` quoted the
+  memory it clashed with verbatim, so an AWS key came back unmasked and a
+  `--private` memory came back in full -- both of which `read` correctly hides.
+  Pre-existing on the CLI path; harmless-looking when a human sees their own
+  secret in their own terminal, and not harmless once an agent receives it and
+  carries it onward. Fixed where contradictions are collected, so the CLI and
+  MCP paths are fixed together.
+- The agent setup prompt and the companion skill now know about the hook and the
+  MCP tools. Both previously said "run `voli memory read` first", which
+  re-reads memory a hook already loaded and shells out when a native tool exists.
+- Progress-row marks are coloured against the stream they are written to.
+  `success_mark`/`cache_mark` asked stdout, but indicatif draws its bars to
+  stderr, so piping stdout alone stripped colour from rows still on a terminal.
+- `installer_archive_extracts_and_uninstalls_cleanly` and its siblings no longer
+  race. Tests share one scratch Apps & Features base and reuse package names, so
+  a key one test asserted on was deleted by another; and because HKCU belongs to
+  the user rather than the checkout, two concurrent test processes collided
+  where no in-process lock could help. The base is now per-process.
+
 ## v0.10.1
 
 ### Added

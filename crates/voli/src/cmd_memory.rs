@@ -38,6 +38,32 @@ pub enum MemoryCmd {
         /// Hits for the task-relevant section.
         #[arg(short = 'k', long, default_value_t = stela::SEARCH_K)]
         k: usize,
+        /// Emit the agent-hook envelope instead of plain text, so a SessionStart
+        /// hook injects this straight into the model's context.
+        #[arg(long)]
+        hook: bool,
+    },
+    /// Print the agent hook that loads memory at the start of every session.
+    ///
+    /// An instruction telling an agent to read memory decays: it scrolls out of
+    /// context and is lost to compaction. A hook does not -- it fires before the
+    /// model chooses anything, so loading memory stops being the agent's job to
+    /// remember.
+    Hook {
+        /// Which agent's config format to print (currently: claude-code).
+        #[arg(long, default_value = "claude-code")]
+        for_agent: String,
+    },
+    /// Serve this memory to an agent over MCP, on stdin/stdout.
+    ///
+    /// The same decay argument as `hook`, one level up. A hook fires once per
+    /// session; a TOOL LIST is re-sent by the harness on every single request,
+    /// so a memory tool never scrolls away and never dies at compaction. This
+    /// is memory moved from decaying context into non-decaying context.
+    Serve {
+        /// Speak the Model Context Protocol over stdin/stdout.
+        #[arg(long)]
+        mcp: bool,
     },
     /// Record one memory (one line).
     Note {
@@ -166,8 +192,30 @@ pub fn run(action: &MemoryCmd, force_global: bool) -> i32 {
             }
             write_prompt_file(&text, out.as_deref(), *per_project)
         }
-        MemoryCmd::Read { task, budget, k } => {
+        MemoryCmd::Read {
+            task,
+            budget,
+            k,
+            hook,
+        } => {
+            if *hook {
+                // Never fail, never speak: a hook runs before the session the
+                // user is trying to start, so a missing store or a locked
+                // keychain must contribute nothing rather than surface an error
+                // at the worst possible moment. `with_store` is bypassed for
+                // exactly that reason -- it reports failures, which is right for
+                // every other caller and wrong for this one.
+                return read_for_hook(*budget, task.as_deref(), *k);
+            }
             with_store(|s| out(s.render_read(*budget, task.as_deref(), *k)))
+        }
+        MemoryCmd::Hook { for_agent } => print_hook_config(for_agent),
+        MemoryCmd::Serve { mcp } => {
+            if !*mcp {
+                eprintln!("error: `{TOOL} serve` speaks only MCP; pass --mcp");
+                return 1;
+            }
+            crate::mcp::serve()
         }
         MemoryCmd::Note {
             text,
@@ -405,19 +453,24 @@ fn keyring_init() -> Result<[u8; 32], String> {
     )
 }
 
-fn with_store(f: impl FnOnce(Store) -> i32) -> i32 {
+/// Resolve the store this invocation acts on, or say why it cannot be opened.
+///
+/// Split out of [`with_store`] because a caller that does not own the process
+/// exit code -- the MCP server, which must answer the request rather than die --
+/// still has to resolve the directory and the custody key exactly the same way.
+pub(crate) fn open_store() -> Result<Store, String> {
     let dir = memory_dir();
     if !dir.is_dir() {
-        eprintln!("error: no memory at {}. Run: {TOOL} init", dir.display());
-        return 1;
+        return Err(format!("no memory at {}. Run: {TOOL} init", dir.display()));
     }
-    let key = match open_key(&dir) {
-        Ok(k) => k,
-        Err(e) => return fail(&e),
-    };
-    match Store::open_with_key(dir, key) {
+    let key = open_key(&dir)?;
+    Store::open_with_key(dir, key).map_err(|e| e.to_string())
+}
+
+fn with_store(f: impl FnOnce(Store) -> i32) -> i32 {
+    match open_store() {
         Ok(s) => f(s),
-        Err(e) => fail(&e.to_string()),
+        Err(e) => fail(&e),
     }
 }
 
@@ -479,8 +532,14 @@ fn cmd_init(project: bool) -> i32 {
     0
 }
 
+/// Record one memory and return the lines to report, or why it was refused.
+///
+/// The MCP tool records through this same function rather than calling
+/// [`stela::Store::note_valid`] itself: tag parsing, the `--private` marker and
+/// the contradiction warning are behaviour, not formatting, and a second copy of
+/// them would drift the moment either side changed.
 #[allow(clippy::too_many_arguments)]
-fn cmd_note(
+pub(crate) fn note_lines(
     store: &Store,
     text: &str,
     pin: bool,
@@ -493,7 +552,7 @@ fn cmd_note(
     valid_until: Option<&str>,
     src: &str,
     method: &str,
-) -> i32 {
+) -> Result<Vec<String>, String> {
     let kind = if pin { "core" } else { kind };
     let mut tags: Vec<String> = tags
         .map(|s| {
@@ -509,45 +568,78 @@ fn cmd_note(
         tags.retain(|t| t != stela::PRIVATE_TAG);
         tags.insert(0, stela::PRIVATE_TAG.to_string());
     }
-    let vfrom = match valid_from.map(parse_when).transpose() {
-        Ok(v) => v,
-        Err(e) => return fail(&e),
-    };
-    let vuntil = match valid_until.map(parse_when).transpose() {
-        Ok(v) => v,
-        Err(e) => return fail(&e),
-    };
-    match store.note_valid(
-        text, kind, conf, &tags, supersedes, src, method, vfrom, vuntil,
+    let vfrom = valid_from.map(parse_when).transpose()?;
+    let vuntil = valid_until.map(parse_when).transpose()?;
+    let o = store
+        .note_valid(
+            text, kind, conf, &tags, supersedes, src, method, vfrom, vuntil,
+        )
+        .map_err(|e| e.to_string())?;
+    let mut lines = vec![format!(
+        "Saved {}{}.",
+        o.id,
+        if o.is_core {
+            " (core - never compressed)"
+        } else {
+            ""
+        }
+    )];
+    if let Some(sup) = o.superseded {
+        lines.push(format!(
+            "Superseded {sup}. It stays in the log; `{TOOL} history` shows it."
+        ));
+    }
+    for (id, text) in &o.contradicts {
+        lines.push(format!(
+            "warning: this may contradict {id}: \"{text}\". If the truth changed, \
+             record it again superseding {id}."
+        ));
+    }
+    if o.pending > 0 {
+        lines.push(format!(
+            "{} block(s) now due for compression - run `{TOOL} compact` when between tasks.",
+            o.pending
+        ));
+    }
+    Ok(lines)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_note(
+    store: &Store,
+    text: &str,
+    pin: bool,
+    private: bool,
+    kind: &str,
+    conf: u32,
+    tags: Option<&str>,
+    supersedes: Option<&str>,
+    valid_from: Option<&str>,
+    valid_until: Option<&str>,
+    src: &str,
+    method: &str,
+) -> i32 {
+    match note_lines(
+        store,
+        text,
+        pin,
+        private,
+        kind,
+        conf,
+        tags,
+        supersedes,
+        valid_from,
+        valid_until,
+        src,
+        method,
     ) {
-        Ok(o) => {
-            println!(
-                "Saved {}{}.",
-                o.id,
-                if o.is_core {
-                    " (core - never compressed)"
-                } else {
-                    ""
-                }
-            );
-            if let Some(sup) = o.superseded {
-                println!("Superseded {sup}. It stays in the log; `{TOOL} history` shows it.");
-            }
-            for (id, text) in &o.contradicts {
-                println!(
-                    "warning: this may contradict {id}: \"{text}\". If the truth changed, \
-                     re-run with `--supersedes {id}`."
-                );
-            }
-            if o.pending > 0 {
-                println!(
-                    "{} block(s) now due for compression - run `{TOOL} compact` when between tasks.",
-                    o.pending
-                );
+        Ok(lines) => {
+            for l in &lines {
+                println!("{l}");
             }
             0
         }
-        Err(e) => fail(&e.to_string()),
+        Err(e) => fail(&e),
     }
 }
 
@@ -701,17 +793,31 @@ fn reestablish_custody(_dir: &std::path::Path, _key: &[u8; 32]) -> i32 {
     1
 }
 
+/// What a verify run says. Shared with the MCP tool so "intact" reads the same
+/// whichever caller asked, and a named failure keeps its exact record id.
+pub(crate) fn verify_lines(report: &stela::VerifyReport) -> Vec<String> {
+    if report.ok() {
+        return vec![format!(
+            "OK - {} records, every hash chain intact.",
+            report.total
+        )];
+    }
+    let mut lines = vec![format!(
+        "INTEGRITY FAILURE - {} record(s) checked",
+        report.total
+    )];
+    lines.extend(report.bad.iter().map(|b| format!("  {b}")));
+    lines
+}
+
 fn cmd_verify(store: Store) -> i32 {
     match store.verify() {
         Ok(report) if report.ok() => {
-            println!("OK - {} records, every hash chain intact.", report.total);
+            println!("{}", verify_lines(&report).join("\n"));
             0
         }
         Ok(report) => {
-            eprintln!("INTEGRITY FAILURE - {} record(s) checked", report.total);
-            for b in &report.bad {
-                eprintln!("  {b}");
-            }
+            eprintln!("{}", verify_lines(&report).join("\n"));
             2
         }
         Err(e) => fail(&e.to_string()),
@@ -781,6 +887,95 @@ fn cmd_export(store: &Store, json: bool) -> i32 {
 
 /// Print a fenced, firewalled result, or the error. The [`stela::Disclosed`]
 /// egress type prints via `Display`; its raw form is never exposed here.
+/// Load memory for the hook path, silently, whatever goes wrong.
+fn read_for_hook(budget: u64, task: Option<&str>, k: usize) -> i32 {
+    let dir = memory_dir();
+    if !dir.is_dir() {
+        return 0;
+    }
+    let Ok(key) = open_key(&dir) else {
+        return 0;
+    };
+    let Ok(store) = Store::open_with_key(dir, key) else {
+        return 0;
+    };
+    out_hook(store.render_read(budget, task, k))
+}
+
+/// The SessionStart hook payload.
+///
+/// `hookSpecificOutput.additionalContext` is the documented channel for putting
+/// text into the model's context, and it is the whole point of this mode: the
+/// model never decides whether to load memory, because the hook has already run
+/// by the time it sees anything.
+///
+/// A failure here prints nothing and exits 0 on purpose. A hook that dies noisily
+/// at session start is worse than one that quietly contributes nothing -- a
+/// missing store or a locked keychain must not stop the agent from starting.
+fn out_hook(r: stela::Result<stela::Disclosed>) -> i32 {
+    let Ok(disclosed) = r else {
+        return 0;
+    };
+    match hook_envelope(&disclosed.to_string()) {
+        Some(payload) => println!("{payload}"),
+        None => return 0,
+    }
+    0
+}
+
+/// Wrap loaded memory in the SessionStart envelope, or `None` when there is
+/// nothing worth injecting. Split out so the shape can be asserted directly.
+fn hook_envelope(body: &str) -> Option<serde_json::Value> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": body,
+        }
+    }))
+}
+
+/// Print the hook block to add to the agent's settings, and say where it goes.
+///
+/// Deliberately prints rather than edits: this file belongs to the agent, and
+/// voli has no ledger entry for it yet. Merging into someone's settings.json
+/// without the ability to reverse it exactly would break the promise the rest of
+/// the product keeps.
+fn print_hook_config(for_agent: &str) -> i32 {
+    if for_agent != "claude-code" {
+        eprintln!("error: no hook format known for '{for_agent}' (try: claude-code)");
+        return 1;
+    }
+    // Exec form: `args` makes the harness spawn the executable directly instead
+    // of handing the line to a shell, which is the same rule the installer
+    // follows -- nothing voli emits should need a shell to interpret it.
+    let block = serde_json::json!({
+        "hooks": {
+            "SessionStart": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": "voli",
+                    "args": ["memory", "read", "--hook"],
+                    "timeout": 10,
+                    "statusMessage": "Loading voli memory"
+                }]
+            }]
+        }
+    });
+    println!("{}", serde_json::to_string_pretty(&block).unwrap());
+    eprintln!();
+    eprintln!("Merge the block above into one of:");
+    eprintln!("  ~/.claude/settings.json          every project");
+    eprintln!("  .claude/settings.json            this project, shared");
+    eprintln!("  .claude/settings.local.json      this project, just you");
+    eprintln!();
+    eprintln!("Keep any hooks already there -- merge into the arrays, do not replace them.");
+    eprintln!("Memory then loads at the start of every session without being asked.");
+    0
+}
+
 fn out(r: stela::Result<stela::Disclosed>) -> i32 {
     match r {
         Ok(s) => {
@@ -794,4 +989,43 @@ fn out(r: stela::Result<stela::Disclosed>) -> i32 {
 fn fail(msg: &str) -> i32 {
     eprintln!("error: {msg}");
     1
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::hook_envelope;
+
+    /// The harness only injects text it finds under this exact path, so the
+    /// shape is the contract -- a rename here silently stops memory loading.
+    #[test]
+    fn the_envelope_puts_memory_where_the_harness_looks_for_it() {
+        let payload = hook_envelope(
+            "<<<VOLI_MEMORY_DATA>>>
+knows rust
+",
+        )
+        .expect("has body");
+        let out = &payload["hookSpecificOutput"];
+        assert_eq!(out["hookEventName"], "SessionStart");
+        assert_eq!(
+            out["additionalContext"],
+            "<<<VOLI_MEMORY_DATA>>>
+knows rust
+"
+        );
+    }
+
+    /// An empty store must inject nothing at all rather than an empty block,
+    /// which would spend context saying there is no context.
+    #[test]
+    fn an_empty_read_injects_nothing() {
+        assert!(hook_envelope("").is_none());
+        assert!(
+            hook_envelope(
+                "   
+	 "
+            )
+            .is_none()
+        );
+    }
 }

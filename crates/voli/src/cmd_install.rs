@@ -322,7 +322,7 @@ impl PackageRows {
                 };
                 bar.set_message(format!(
                     "[{position}/{total}] {} {source} for {name} · {}",
-                    crate::cache_mark(),
+                    crate::cache_mark_on(crate::MarkStream::Stderr),
                     HumanBytes(bytes)
                 ));
             }
@@ -665,6 +665,21 @@ impl Reporter {
         reporter
     }
 
+    /// Where this reporter's status lines end up.
+    ///
+    /// `retain_line` is exactly the "keep the progress row and rewrite it"
+    /// mode, and a retained row is drawn by indicatif to stderr. Every other
+    /// path clears the bar and falls back to `println!` on stdout. One
+    /// predicate, so a mark can never be gated on the handle it is not
+    /// actually headed for.
+    fn mark_stream(&self) -> crate::MarkStream {
+        if self.retain_line {
+            crate::MarkStream::Stderr
+        } else {
+            crate::MarkStream::Stdout
+        }
+    }
+
     pub(crate) fn step(&mut self, step: Step) {
         if self.json {
             return;
@@ -687,7 +702,7 @@ impl Reporter {
                 let status = format!(
                     "{}{} installed {} {}",
                     self.prefix,
-                    crate::success_mark(),
+                    crate::success_mark_on(self.mark_stream()),
                     r.name,
                     r.version
                 );
@@ -718,7 +733,7 @@ impl Reporter {
                 let status = format!(
                     "{}{} {name} {version} already installed - skipped",
                     self.prefix,
-                    crate::success_mark()
+                    crate::success_mark_on(self.mark_stream())
                 );
                 if self.retain_line {
                     if let Some(pb) = &self.bar {
@@ -811,10 +826,13 @@ impl Reporter {
         let pb = if self.retain_line {
             let pb = self.bar.take().unwrap_or_else(ProgressBar::new_spinner);
             if cache_hit {
+                // `ProgressBar::println` prints above the bar, on the bar's own
+                // draw target, which is stderr -- not the stdout that the plain
+                // `println!` in the other arm uses.
                 pb.println(format!(
                     "{}{} found verified download in cache",
                     self.prefix,
-                    crate::cache_mark()
+                    crate::cache_mark_on(crate::MarkStream::Stderr)
                 ));
             }
             pb.enable_steady_tick(Duration::from_millis(80));
@@ -896,7 +914,7 @@ impl Reporter {
         let status = format!(
             "{}{} installed skill/{} {} for {} ({})",
             self.prefix,
-            crate::success_mark(),
+            crate::success_mark_on(self.mark_stream()),
             report.name,
             report.version,
             report.target.as_str(),
@@ -931,7 +949,7 @@ impl Reporter {
         let status = format!(
             "{}{} skill/{name} {version} already installed for {} ({scope}) - skipped",
             self.prefix,
-            crate::success_mark(),
+            crate::success_mark_on(self.mark_stream()),
             target.as_str()
         );
         if self.retain_line {
@@ -1053,4 +1071,31 @@ fn print_json(
         });
     }
     println!("{}", serde_json::to_string_pretty(&obj).unwrap());
+}
+
+#[cfg(test)]
+mod reporter_tests {
+    use super::Reporter;
+    use crate::MarkStream;
+
+    /// A retained progress row is drawn by indicatif to stderr; every other
+    /// path clears the bar and falls back to `println!` on stdout. The mark has
+    /// to follow that split, or a piped stdout silently decolours rows that are
+    /// still on a terminal.
+    #[test]
+    fn a_retained_progress_row_gates_its_mark_on_stderr() {
+        let mut reporter = Reporter::new(false, 1, 1);
+        assert_eq!(
+            reporter.mark_stream(),
+            MarkStream::Stdout,
+            "without a retained row the status is printed to stdout"
+        );
+
+        reporter.retain_line = true;
+        assert_eq!(
+            reporter.mark_stream(),
+            MarkStream::Stderr,
+            "a retained row is drawn to stderr, so the mark must ask stderr"
+        );
+    }
 }

@@ -5,6 +5,7 @@ mod cmd_index;
 mod cmd_install;
 mod cmd_memory;
 mod cmd_web;
+mod mcp;
 mod skill_cli;
 
 use std::io::{IsTerminal, Read, Write};
@@ -1003,20 +1004,75 @@ fn progress_colors_enabled() -> bool {
     !matches!(std::env::var_os("NO_COLOR"), Some(value) if !value.is_empty())
 }
 
-pub(crate) fn success_mark() -> &'static str {
-    if progress_colors_enabled() && std::io::stdout().is_terminal() {
-        "\x1b[32m✓\x1b[0m"
-    } else {
-        "✓"
+/// Which handle a mark is about to be written to.
+///
+/// `println!` reaches stdout, but indicatif draws its bars to stderr, so a mark
+/// embedded in a bar message that asks stdout whether it is a terminal is
+/// asking the wrong handle: piping stdout alone strips the colour from rows
+/// that are still being drawn to a terminal.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MarkStream {
+    Stdout,
+    Stderr,
+}
+
+impl MarkStream {
+    fn is_terminal(self) -> bool {
+        self.pick(
+            std::io::stdout().is_terminal(),
+            std::io::stderr().is_terminal(),
+        )
+    }
+
+    /// Which of the two handle states this variant selects.
+    ///
+    /// Split out from [`Self::is_terminal`] purely so the mapping is testable:
+    /// under a test harness both real handles are pipes, so a variant wired to
+    /// the wrong one is invisible unless the two states can be posed apart.
+    fn pick(self, stdout_is_terminal: bool, stderr_is_terminal: bool) -> bool {
+        match self {
+            MarkStream::Stdout => stdout_is_terminal,
+            MarkStream::Stderr => stderr_is_terminal,
+        }
     }
 }
 
-pub(crate) fn cache_mark() -> &'static str {
-    if progress_colors_enabled() && std::io::stdout().is_terminal() {
-        "\x1b[36m◆\x1b[0m"
+/// The colour decision itself, with the terminal answer passed in so it can be
+/// exercised both ways without a pty.
+fn mark(colored: &'static str, plain: &'static str, is_terminal: bool) -> &'static str {
+    show_color(progress_colors_enabled(), is_terminal, colored, plain)
+}
+
+/// Both inputs passed in, so the rule can be asserted without depending on the
+/// developer's environment: reading `NO_COLOR` here made the test fail for
+/// anyone who happens to set it.
+fn show_color(
+    colors_enabled: bool,
+    is_terminal: bool,
+    colored: &'static str,
+    plain: &'static str,
+) -> &'static str {
+    if colors_enabled && is_terminal {
+        colored
     } else {
-        "◆"
+        plain
     }
+}
+
+pub(crate) fn success_mark() -> &'static str {
+    success_mark_on(MarkStream::Stdout)
+}
+
+pub(crate) fn success_mark_on(stream: MarkStream) -> &'static str {
+    mark("\x1b[32m✓\x1b[0m", "✓", stream.is_terminal())
+}
+
+pub(crate) fn cache_mark() -> &'static str {
+    cache_mark_on(MarkStream::Stdout)
+}
+
+pub(crate) fn cache_mark_on(stream: MarkStream) -> &'static str {
+    mark("\x1b[36m◆\x1b[0m", "◆", stream.is_terminal())
 }
 
 #[derive(Clone, Copy)]
@@ -2143,7 +2199,50 @@ fn cmd_which(bin: &str) -> i32 {
 
 #[cfg(test)]
 mod ui_tests {
-    use super::{PULSE_TICKS, TaskbarProgress, taskbar_sequence};
+    use super::{
+        MarkStream, PULSE_TICKS, TaskbarProgress, cache_mark_on, show_color, success_mark_on,
+        taskbar_sequence,
+    };
+
+    /// The bug this guards: a mark drawn into an indicatif row asked stdout
+    /// whether it was a terminal, but indicatif draws to stderr. Piping stdout
+    /// alone then stripped the colour from rows still going to a terminal.
+    #[test]
+    fn a_mark_is_coloured_only_when_its_own_stream_is_a_terminal() {
+        for (colored, plain) in [("[32m✓[0m", "✓"), ("[36m◆[0m", "◆")] {
+            // Colour needs BOTH: colours not switched off, and a real terminal.
+            assert_eq!(show_color(true, true, colored, plain), colored);
+            assert_eq!(show_color(true, false, colored, plain), plain);
+            // NO_COLOR wins even on a terminal.
+            assert_eq!(show_color(false, true, colored, plain), plain);
+            assert_eq!(show_color(false, false, colored, plain), plain);
+        }
+    }
+
+    /// Each variant must consult its own handle. Wiring `Stderr` to stdout is
+    /// exactly the defect being fixed, and it only shows up when the two handle
+    /// states differ -- which is the case this pins: stdout piped, stderr still
+    /// a terminal, i.e. `voli install pkg | tee log`.
+    #[test]
+    fn each_stream_variant_reads_its_own_handle() {
+        // stdout piped, stderr a terminal: the redirect case from the report.
+        assert!(MarkStream::Stderr.pick(false, true));
+        assert!(!MarkStream::Stdout.pick(false, true));
+        // and the mirror, so neither variant is merely returning a constant.
+        assert!(MarkStream::Stdout.pick(true, false));
+        assert!(!MarkStream::Stderr.pick(true, false));
+    }
+
+    /// Under `cargo test` neither handle is a terminal, so both marks must come
+    /// out plain whichever stream is named -- and, critically, identical to the
+    /// bytes shipped before this change.
+    #[test]
+    fn the_plain_fallback_is_unchanged_on_every_stream() {
+        for stream in [MarkStream::Stdout, MarkStream::Stderr] {
+            assert_eq!(success_mark_on(stream), "✓");
+            assert_eq!(cache_mark_on(stream), "◆");
+        }
+    }
 
     #[test]
     fn pulse_bar_frames_keep_a_constant_width() {

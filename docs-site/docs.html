@@ -386,7 +386,7 @@
         <a href="#agent">Wiring an agent</a>
         <a href="#env">Environment</a>
         <span class="side-group">MCP</span>
-        <a href="#mcp">Planned</a>
+        <a href="#mcp">MCP</a>
       </nav>
     </aside>
 
@@ -936,6 +936,30 @@ This domain is for use in documentation examples without needing permission. Avo
       <section id="agent">
         <h2>Wiring an agent</h2>
         <p>
+          Three layers, and they do different jobs. Use all three: an instruction can be forgotten, a tool can
+          go uncalled, but a hook fires whether the model cooperates or not.
+        </p>
+        <h3>1. The hook - not the agent's decision</h3>
+        <p>
+          A prompt telling an agent to read its memory lives in the conversation, so it scrolls away and dies at
+          compaction. A <strong>SessionStart hook</strong> runs before the model chooses anything.
+          <code>voli memory hook</code> prints the block to merge into your agent's settings:
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli memory hook</div>
+        <p>
+          It prints rather than edits, because that file belongs to the agent and Voli has no ledger entry to
+          reverse the change with. Merge it into <code>~/.claude/settings.json</code> (all projects) or
+          <code>.claude/settings.json</code> (this one), keeping any hooks already there. If the store is
+          missing or locked, the hook contributes nothing and exits cleanly - it must never fail the session it
+          is starting.
+        </p>
+        <h3>2. The MCP server - always present</h3>
+        <p>
+          <code>voli memory serve --mcp</code> puts read, search, note, recall, history and verify in the
+          agent's tool list, which the harness re-sends every request. See <a class="inline" href="#mcp">MCP</a>.
+        </p>
+        <h3>3. The prompt - the judgement</h3>
+        <p>
           <code>voli memory prompt</code> emits a compact setup prompt: run <code>read</code> at startup,
           <code>note</code> as you learn, <code>search</code> to retrieve - plus the load-bearing safety rule.
           It writes <code>voli-memory-prompt.md</code> by default (<code>--per-project</code> writes
@@ -958,7 +982,7 @@ This domain is for use in documentation examples without needing permission. Avo
             <tbody>
               <tr><td><code>VOLI_MEMORY_DIR</code></td><td>Where the memory lives. Overrides everything, including project detection. Otherwise: the nearest <code>.voli\memory</code> in the current directory or an ancestor, else <code>%LOCALAPPDATA%\voli\memory</code>.</td></tr>
               <tr><td><code>VOLI_MEMORY_PASSPHRASE</code></td><td>Use passphrase custody instead of the OS keychain.</td></tr>
-              <tr><td><code>VOLI_MEMORY_SHOW_SECRETS</code></td><td>Reveal masked secrets for one command (escape hatch).</td></tr>
+              <tr><td><code>VOLI_MEMORY_SHOW_SECRETS</code></td><td>Reveal masked secrets for one command (escape hatch). <code>serve --mcp</code> refuses to start while it is set: a per-command hatch must not become a session-long one aimed at a model.</td></tr>
               <tr><td><code>VOLI_MEMORY_CONTRADICT=off</code></td><td>Disable contradiction warnings.</td></tr>
             </tbody>
           </table>
@@ -967,11 +991,42 @@ This domain is for use in documentation examples without needing permission. Avo
 
       <section id="mcp">
         <h2>MCP</h2>
+        <p>
+          Voli ships <strong>one MCP server of its own</strong>: it serves
+          <a class="inline" href="#overview">voli memory</a> over stdio, so an agent reads and writes memory
+          through native tools instead of shelling out. Run it with:
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli memory serve --mcp</div>
+        <p>
+          Six tools - <code>memory_read</code>, <code>memory_search</code>, <code>memory_note</code>,
+          <code>memory_recall</code>, <code>memory_history</code> and <code>memory_verify</code> - each mapping onto
+          the command of the same name. Point an agent at it by adding voli to that agent's MCP config:
+        </p>
+        <div class="snip">{
+  <span class="str">"mcpServers"</span>: {
+    <span class="str">"voli-memory"</span>: {
+      <span class="str">"command"</span>: <span class="str">"voli"</span>,
+      <span class="str">"args"</span>: [<span class="str">"memory"</span>, <span class="str">"serve"</span>, <span class="str">"--mcp"</span>]
+    }
+  }
+}</div>
         <div class="note">
-          <strong>Planned.</strong> Model Context Protocol support is on the roadmap. A future release will let Voli
-          manage MCP servers with the same signed, no-scripts, zero-trace guarantees as apps and skills. There are no
-          MCP commands yet - this section will fill in when the work lands.
+          <strong>Why a tool and not an instruction.</strong> An instruction telling an agent to check its memory
+          decays: it scrolls out of context and is lost to compaction. A tool definition does not, because the
+          harness re-sends the tool list on every request. That is the whole reason this exists - and why
+          <code>voli memory hook</code> exists alongside it, for the part that should not be the agent's decision
+          at all.
         </div>
+        <div class="note">
+          The disclosure firewall is enforced <strong>inside the server</strong>, not by trusting the agent: secrets
+          are masked and <code>--private</code> memories withheld before anything crosses the wire. The server
+          refuses to start if <code>VOLI_MEMORY_SHOW_SECRETS</code> is set, because a per-command escape hatch must
+          not quietly become a session-long one aimed at a model.
+        </div>
+        <p>
+          Installing <em>third-party</em> MCP servers - <code>voli install mcp/&lt;name&gt;</code>, with the config
+          edits recorded in the ledger so deletion reverses them exactly - is still planned, not shipped.
+        </p>
       </section>
     </main>
   </div>

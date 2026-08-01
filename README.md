@@ -18,7 +18,7 @@ The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else - read it first
 if you like: [`install.ps1`](install.ps1).
 
-> **Status: v0.10.1, still pre-1.0.** The core workflow is released and working,
+> **Status: v0.11.0, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)
@@ -46,6 +46,8 @@ Global options:
 | `voli delete <pkg> ...` | Delete packages by replaying their ledger. Persist data is kept by default. |
 | `voli delete skill/<name> --for <agent>` | Delete one or more target-scoped skill mappings. |
 | `voli memory <cmd>` | Encrypted, local memory for AI agents - see [Agent memory](#agent-memory). |
+| `voli memory serve --mcp` | Serve memory to an agent over MCP (stdio), so it reads and writes with native tools. |
+| `voli memory hook` | Print the SessionStart hook that loads memory before the agent decides anything. |
 | `voli web <bang> <query>` | Open a search shortcut in your browser. Voli builds the URL and fetches nothing. |
 | `voli fetch <url>` | Fetch a page as text, Markdown, or JSON, with provenance - see [Web search and fetch](#web-search-and-fetch). |
 | `voli update` | Refresh the local signed package index. |
@@ -175,6 +177,9 @@ voli memory read --task "<what you're doing>"   # load context - run first
 voli memory note "<one line>"                    # record a fact or decision
 voli memory search "<question>"                  # best-match retrieval
 voli memory verify                               # prove nothing was altered
+
+voli memory hook                                 # deterministic load at session start
+voli memory serve --mcp                          # native tools instead of shelling out
 ```
 
 Recall is firewalled - secrets (keys, cards, SSNs) are masked before an agent
@@ -184,6 +189,49 @@ setup prompt that wires an agent to the whole workflow into
 terminal; add `--print` to send it to stdout instead, or `--out <path>` to choose
 the file. Bitemporal validity, supersession, contradiction warnings, and
 passphrase recovery are built in.
+
+### Wiring an agent
+
+Three layers, doing different jobs. An instruction can be forgotten and a tool
+can go uncalled, but a hook fires whether the model cooperates or not.
+
+**The hook** is the deterministic one. A prompt telling an agent to check its
+memory lives in the conversation, so it scrolls away and dies at compaction. A
+SessionStart hook runs before the model chooses anything:
+
+```powershell
+voli memory hook          # prints the block to merge into the agent's settings
+```
+
+It prints rather than edits: that file belongs to the agent, and Voli has no
+ledger entry to reverse the change with. If the store is missing or locked the
+hook contributes nothing and exits cleanly - it must never fail the session it
+is starting.
+
+**The MCP server** keeps the tools present. A tool definition does not decay,
+because the harness re-sends the tool list on every request:
+
+```powershell
+voli memory serve --mcp
+```
+
+Six tools - `memory_read`, `memory_search`, `memory_note`, `memory_recall`,
+`memory_history`, `memory_verify` - each mapping onto the command of the same
+name. Point an agent at it with:
+
+```json
+{ "mcpServers": { "voli-memory": {
+  "command": "voli", "args": ["memory", "serve", "--mcp"] } } }
+```
+
+The disclosure firewall runs *inside* the server rather than trusting the agent:
+secrets are masked and `--private` memories withheld before anything crosses the
+wire. The server refuses to start while `VOLI_MEMORY_SHOW_SECRETS` is set,
+because a per-command escape hatch must not quietly become a session-long one
+aimed at a model.
+
+**The prompt** supplies the judgement - what is worth saving, when to supersede
+versus retract. That is the part that genuinely needs a model.
 
 ### Per-project memory
 

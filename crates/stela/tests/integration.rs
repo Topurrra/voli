@@ -646,6 +646,89 @@ fn contradiction_kill_switch_disables_detection() {
     );
 }
 
+/// The contradiction warning quotes an older memory back at the user, and that
+/// quote is a disclosure like any other. It used to return raw text, so the one
+/// place the firewall did not reach was the one place it printed a stored
+/// secret verbatim.
+#[test]
+fn a_contradiction_warning_masks_secrets_in_the_memory_it_quotes() {
+    let (_d, mut store) = fresh();
+    store.set_contradiction_detection(true);
+    note(
+        &store,
+        "jenkins token AKIAIOSFODNN7EXAMPLE works everywhere",
+    );
+    let out = store
+        .note(
+            "jenkins token never works everywhere",
+            "fact",
+            80,
+            &[],
+            None,
+            "user",
+            "note",
+        )
+        .unwrap();
+    let quoted = out
+        .contradicts
+        .iter()
+        .map(|(_, t)| t.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        !quoted.contains("AKIAIOSFODNN7EXAMPLE"),
+        "the raw key must never come back in a warning: {quoted}"
+    );
+    assert!(
+        quoted.contains("AKIA***MPLE"),
+        "expected the same masking `read` applies: {quoted}"
+    );
+}
+
+/// A `--private` memory is withheld everywhere it is rendered. A warning that
+/// quotes it in full is a rendering, and was withholding nothing.
+#[test]
+fn a_contradiction_warning_withholds_a_private_memory_entirely() {
+    let (_d, mut store) = fresh();
+    store.set_contradiction_detection(true);
+    store
+        .note(
+            "office wifi password bluebird77 works everywhere",
+            "fact",
+            80,
+            &[stela::PRIVATE_TAG.to_string()],
+            None,
+            "user",
+            "note",
+        )
+        .unwrap();
+    let out = store
+        .note(
+            "office wifi password never works everywhere",
+            "fact",
+            80,
+            &[],
+            None,
+            "user",
+            "note",
+        )
+        .unwrap();
+    let quoted = out
+        .contradicts
+        .iter()
+        .map(|(_, t)| t.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        !quoted.contains("bluebird77"),
+        "private text must never be quoted back: {quoted}"
+    );
+    assert!(
+        quoted.contains("(private, withheld)"),
+        "expected the withheld marker: {quoted}"
+    );
+}
+
 // ---------------------------------------------------------------- tree / compact
 
 /// Drive every compression the given budget asks for. Returns the blocks built.
