@@ -81,6 +81,7 @@ voli install skill/tdd --for codex
 voli install skill/tdd --for codex --for cursor
 voli install skill/tdd --for detected --global
 voli install skill/tdd --for all --project
+voli install skill/voli-memory --for claude-code
 
 voli list
 voli info ripgrep
@@ -157,6 +158,14 @@ voli list
 voli delete skill/example-skill --for codex
 ```
 
+Voli ships one of its own: `skill/voli-memory` teaches an agent the judgement
+half of `voli memory` - what earns a note, when a fact has been *superseded*
+rather than *retracted*, and what should never be written down at all.
+
+```powershell
+voli install skill/voli-memory --for claude-code
+```
+
 Skill installation uses direct copies and supports repeatable `--for` targets,
 `--for detected`, `--for all`, and explicit `--project` or `--global` scope.
 Without `--for`, an interactive terminal offers a filtered multi-select and
@@ -230,8 +239,11 @@ wire. The server refuses to start while `VOLI_MEMORY_SHOW_SECRETS` is set,
 because a per-command escape hatch must not quietly become a session-long one
 aimed at a model.
 
-**The prompt** supplies the judgement - what is worth saving, when to supersede
-versus retract. That is the part that genuinely needs a model.
+**The prompt or the skill** supplies the judgement - what is worth saving, when
+to supersede versus retract. That is the part that genuinely needs a model.
+`voli memory prompt` writes it as a file to paste;
+`voli install skill/voli-memory --for <agent>` installs it as a skill the agent
+loads on its own.
 
 ### Per-project memory
 

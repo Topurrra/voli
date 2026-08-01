@@ -536,6 +536,18 @@ python (3.14.6) was renamed to python-embed and is no longer updated
           <a class="inline" href="search.html?kind=skill">packages page</a>. Local skill archives install the
           same way.
         </div>
+        <h3>Voli's own skill</h3>
+        <p>
+          <code>skill/voli-memory</code> teaches an agent the judgement half of
+          <a class="inline" href="#overview">voli memory</a>: what earns a note, when a fact has been
+          <em>superseded</em> rather than <em>retracted</em>, and what should never be written down at all.
+        </p>
+        <div class="snip"><span class="p">PS&gt;</span> voli install skill/voli-memory --for claude-code</div>
+        <p>
+          It is the third of the three layers in <a class="inline" href="#agent">Wiring an agent</a>. The hook
+          guarantees memory is loaded and the MCP server guarantees the tools are there; neither decides what is
+          worth keeping. That part needs a model, which is what a skill is for.
+        </p>
       </section>
 
       <section id="skills-install">

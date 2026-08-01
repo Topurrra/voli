@@ -297,11 +297,36 @@
 
     <div class="log" id="log">
 
-      <section class="rel is-latest" id="v0-10-1">
+      <section class="rel is-latest" id="v0-11-0">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.11.0" rel="noopener">v0.11.0</a></h2>
+          <span class="rel-date">2026-08-01</span>
+          <span class="tag now">current</span>
+        </div>
+        <ul>
+          <li><strong><code>voli memory serve --mcp</code></strong> - serves the encrypted memory to an agent over
+            MCP, so it reads and writes with native tools instead of shelling out. An instruction telling an agent
+            to check its memory decays: it scrolls out of context and dies at compaction. A tool definition does
+            not, because the harness re-sends the tool list on every request.</li>
+          <li><strong><code>voli memory hook</code></strong> - prints the session-start hook that loads memory
+            <em>before</em> the agent decides anything. The one layer that does not depend on a model
+            remembering.</li>
+          <li><strong>A companion skill</strong> - <code>voli install skill/voli-memory</code> - for the part that
+            genuinely needs judgement: what earns a note, supersede versus retract, what must never be written
+            down at all.</li>
+          <li><strong>A leak, fixed.</strong> The contradiction warning quoted the memory it clashed with
+            verbatim, so a key came back unmasked and a <code>--private</code> memory came back in full - both of
+            which <code>read</code> correctly hides. Harmless-looking when a human sees their own secret in their
+            own terminal; not harmless once an agent receives it and carries it onward.</li>
+          <li>Progress marks keep their colour when only stdout is piped, and a long-standing test race is
+            gone.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-10-1">
         <div class="rel-head">
           <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.10.1" rel="noopener">v0.10.1</a></h2>
           <span class="rel-date">2026-07-31</span>
-          <span class="tag now">current</span>
         </div>
         <ul>
           <li><strong><code>voli-index-tool fmt</code></strong> rewrites manifests into canonical form, so a
