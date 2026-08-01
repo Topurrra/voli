@@ -25,3 +25,9 @@ Cargo.lock.bak
 
 # stela: python/unix reference kept for future Linux/macOS; the Rust engine ships
 /crates/stela/reference/
+
+# voli project memory (local knowledge, not for the repo)
+.voli/
+# the setup prompt is generated from crates/stela; a committed copy only
+# goes stale the next time the wording changes
+voli-memory-prompt*.md

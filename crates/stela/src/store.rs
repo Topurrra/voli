@@ -1281,7 +1281,7 @@ is global; if it is about this code, it is here.",
         Scope::Global => String::new(),
         Scope::Project => format!(
             "\nIf a command ever reports no memory here, the project store was never
-created -- run `{TOOL} init --project` from the project root once, which also
+created -- run `{TOOL} init` from the project root once, which also
 adds `.voli/` to `.gitignore`.\n"
         ),
     };

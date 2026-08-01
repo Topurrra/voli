@@ -297,11 +297,26 @@
 
     <div class="log" id="log">
 
-      <section class="rel is-latest" id="v0-12-0">
+      <section class="rel minor is-latest" id="v0-12-1">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.12.1" rel="noopener">v0.12.1</a></h2>
+          <span class="rel-date">2026-08-01</span>
+          <span class="tag now">current</span>
+        </div>
+        <ul>
+          <li><code>voli memory init</code> stops printing the whole setup prompt. Seventy lines buried the one
+            thing the command was run for; it now names the three ways to wire an agent instead.</li>
+          <li>The session-start hook injects nothing when the store is empty, rather than spending an agent's
+            context to say there is no context.</li>
+          <li><code>voli memory prompt</code> git-ignores the file it writes - it is generated, so a committed
+            copy only goes stale.</li>
+        </ul>
+      </section>
+
+      <section class="rel" id="v0-12-0">
         <div class="rel-head">
           <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.12.0" rel="noopener">v0.12.0</a></h2>
           <span class="rel-date">2026-08-01</span>
-          <span class="tag now">current</span>
         </div>
         <ul>
           <li><strong><code>voli memory hook</code> writes the settings file for you.</strong> Pick

@@ -955,7 +955,7 @@ fn rebuilding_a_stale_block_leaves_untouched_blocks_alone() {
 // ---------------------------------------------------------------- project scope
 
 /// Detection is opt-in: a `.voli/memory` counts only once it exists, so a
-/// directory that never ran `init --project` keeps using the global store and
+/// directory that never ran `init` keeps using the global store and
 /// writes are never silently redirected.
 #[test]
 fn project_store_is_found_from_any_depth_but_only_once_created() {
@@ -1016,13 +1016,16 @@ fn project_and_global_prompts_differ_and_explain_scope() {
 
     assert_ne!(global, project);
     assert!(project.contains("--global"), "must name the escape hatch");
+    // Match the sentence, not the bare verb: `init` alone now creates a project
+    // store, so the word appears in both prompts and only the phrasing separates
+    // them.
     assert!(
-        project.contains("init --project"),
+        project.contains("from the project root"),
         "must say how to create it"
     );
     assert!(project.contains(".gitignore"), "must mention it is ignored");
     assert!(
-        !global.contains("init --project"),
+        !global.contains("from the project root"),
         "the global prompt should not talk about project stores"
     );
     // Both keep the instruction-injection guard.

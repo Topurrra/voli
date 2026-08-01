@@ -3,6 +3,28 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
+## v0.12.1
+
+### Changed
+
+- **`voli memory init` no longer prints the whole setup prompt.** Seventy lines
+  of text buried the one thing the command was run for - that the store exists -
+  under something you cannot act on from a terminal. It now names the three ways
+  to wire an agent (`hook`, `serve --mcp`, `skill/voli-memory`) plus
+  `prompt` for the file, each scoped to the store it just made.
+
+### Fixed
+
+- The session-start hook injects nothing when the store is empty. It used to
+  emit a fence saying "0 live memories", spending an agent's context to tell it
+  there is no context.
+- `voli memory prompt` git-ignores the file it writes, and says the file is
+  regenerated rather than kept. The prompt is generated from `stela`, so a
+  committed copy is a duplicate that goes stale the next time the wording
+  changes. Outside a repository it creates no `.gitignore`.
+- The setup prompt said `voli memory init --project`, left over from before a
+  project store became what plain `init` makes.
+
 ## v0.12.0
 
 ### Changed

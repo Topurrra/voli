@@ -69,7 +69,7 @@ pub const PROJECT_MEMORY_REL: &str = ".voli/memory";
 ///
 /// Walks `start` and its ancestors looking for an initialized `.voli/memory`.
 /// Existence is the opt-in: a project has a store only once someone ran
-/// `voli memory init --project` there, so this can never silently redirect
+/// `voli memory init` there, so this can never silently redirect
 /// writes away from the global store in a directory that never asked for it.
 /// The nearest one wins, which is what you want for a repo inside a repo.
 pub fn project_memory_dir(start: &Path) -> Option<PathBuf> {
