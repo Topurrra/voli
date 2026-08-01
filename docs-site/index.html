@@ -509,6 +509,7 @@
     /* ---------- staggered children (sections used to fade in as one block) ---------- */
     .stat-grid .stat.reveal:nth-child(2)  { transition-delay: .10s; }
     .stat-grid .stat.reveal:nth-child(3)  { transition-delay: .20s; }
+    .stat-grid .stat.reveal:nth-child(4)  { transition-delay: .30s; }
     .g-grid .g-card.reveal:nth-child(2)   { transition-delay: .08s; }
     .g-grid .g-card.reveal:nth-child(3)   { transition-delay: .16s; }
     .g-grid .g-card.reveal:nth-child(4)   { transition-delay: .24s; }
@@ -744,7 +745,9 @@
 
     .stat-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      /* auto-fit, not a fixed count: the downloads card only appears once its
+         number arrives, so the row has to read right with three or with four. */
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
       gap: 1.1rem;
     }
 
@@ -1238,7 +1241,6 @@
     /* ---------- responsive ---------- */
     @media (max-width: 880px) {
 
-      .stat-grid,
       .steps {
         grid-template-columns: 1fr;
       }
@@ -1386,6 +1388,13 @@
           <div class="stat reveal">
             <p class="num">100<small>%</small></p>
             <p>Ledgered. Every mutation is recorded, so uninstall replays each action backwards - zero trace.</p>
+          </div>
+          <!-- Hidden until the count actually arrives: a stat that renders 0 while
+               the network is slow, or sticks at 0 when GitHub rate-limits, is
+               worse than one that simply is not there. -->
+          <div class="stat reveal" id="dl-stat" hidden>
+            <p class="num" id="dl-count">&nbsp;</p>
+            <p>Downloads. Every install goes through a release asset, including the one-line installer.</p>
           </div>
         </div>
       </div>
@@ -2120,6 +2129,53 @@
         });
       }, { threshold: .25 });
       document.querySelectorAll('.fx-term').forEach(function (t) { io.observe(t); });
+    })();
+
+    /* Total release-asset downloads, straight from GitHub.
+       Every install path ends at a release asset -- the one-line installer
+       fetches voli-x64.zip from releases/latest -- so this is the whole picture
+       rather than a slice of it.
+       Nothing is collected to produce it: the number is GitHub's, already
+       public, and the page just reads it. */
+    (function () {
+      var stat = document.getElementById('dl-stat');
+      var out = document.getElementById('dl-count');
+      if (!stat || !out) return;
+
+      var CACHE = 'voli-dl-count';
+
+      function show(total) {
+        if (!(total > 0)) return; // nothing worth showing, stay hidden
+        out.textContent = total.toLocaleString();
+        stat.hidden = false;
+      }
+
+      // A number seen earlier this session paints immediately, which also keeps
+      // repeat views off GitHub's 60-requests-per-hour anonymous limit.
+      try {
+        var cached = sessionStorage.getItem(CACHE);
+        if (cached) show(parseInt(cached, 10));
+      } catch (e) { /* private mode: just fetch */ }
+
+      fetch('https://api.github.com/repos/Topurrra/voli/releases?per_page=100', {
+        headers: { Accept: 'application/vnd.github+json' }
+      })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function (releases) {
+          if (!Array.isArray(releases)) return;
+          var total = 0;
+          releases.forEach(function (rel) {
+            (rel.assets || []).forEach(function (a) {
+              if (a.name && a.name.slice(-4) === '.zip') total += a.download_count || 0;
+            });
+          });
+          try { sessionStorage.setItem(CACHE, String(total)); } catch (e) { /* ignore */ }
+          show(total);
+        })
+        .catch(function () {
+          /* Rate-limited, offline, or blocked. The card stays hidden and the row
+             reads as three -- no error, no zero, no stale placeholder. */
+        });
     })();
   </script>
   <script src="assets/hero-bg.js" defer></script>
