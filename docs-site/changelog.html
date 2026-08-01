@@ -297,11 +297,26 @@
 
     <div class="log" id="log">
 
-      <section class="rel minor is-latest" id="v0-12-1">
+      <section class="rel minor is-latest" id="v0-12-2">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.12.2" rel="noopener">v0.12.2</a></h2>
+          <span class="rel-date">2026-08-01</span>
+          <span class="tag now">current</span>
+        </div>
+        <ul>
+          <li>The memory commands are coloured in a terminal - ids in amber, because those are what you retype
+            into <code>--supersedes</code>; dates and tags dimmed. The memory text stays plain, so colour keeps
+            meaning what it already meant there: a masked secret or a withheld note.</li>
+          <li><code>voli memory stats</code> now reports records it could not decrypt. The skip was always
+            deliberate - one bad record must not blind a whole store - but it was silent, so every command a
+            person actually runs under-reported while <code>verify</code> counted the full set.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-12-1">
         <div class="rel-head">
           <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.12.1" rel="noopener">v0.12.1</a></h2>
           <span class="rel-date">2026-08-01</span>
-          <span class="tag now">current</span>
         </div>
         <ul>
           <li><code>voli memory init</code> stops printing the whole setup prompt. Seventy lines buried the one

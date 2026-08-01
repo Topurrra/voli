@@ -86,6 +86,13 @@ pub struct Stats {
     pub shards: Vec<String>,
     pub bytes: u64,
     pub pending: u64,
+    /// Whole records on disk that could not be decrypted or parsed.
+    ///
+    /// [`Store::log_iter`] skips them on purpose - one bad record should not
+    /// blind the whole store - but the skip is silent, so `read`, `search` and
+    /// `stats` all quietly under-report while `verify` counts the full set.
+    /// Counting the gap is what lets a caller say so out loud.
+    pub unreadable: u64,
 }
 
 /// A memory store rooted at a directory, holding the master key.
@@ -1045,6 +1052,9 @@ impl Store {
             .map(|s| fs::metadata(self.log_path(s)).map(|m| m.len()).unwrap_or(0))
             .sum();
         let t = alive.iter().filter(|r| r.kind != "core").count() as u64;
+        // `log_count` divides by the fixed record width, so a torn trailing
+        // record is excluded from both sides and cannot fake a gap.
+        let on_disk: u64 = shards.iter().map(|s| self.log_count(s)).sum();
         Ok(Stats {
             live: alive.len(),
             total: recs.len(),
@@ -1053,12 +1063,25 @@ impl Store {
             shards,
             bytes,
             pending: self.pending_count(t),
+            unreadable: on_disk.saturating_sub(recs.len() as u64),
         })
     }
 
     /// What is out of step and what to do. Never touches LOG files (the truth).
     pub fn doctor(&self) -> Result<Vec<String>> {
         let mut issues = Vec::new();
+        // The one failure that is otherwise invisible: every command a person
+        // actually runs skips these silently, and only `verify` counts them.
+        if let Ok(st) = self.stats()
+            && st.unreadable > 0
+        {
+            issues.push(format!(
+                "{} record(s) on disk cannot be decrypted or parsed, so they are \
+                 missing from read, search and stats. Run `{TOOL} verify` to see \
+                 which. A store written under a different key is the usual cause.",
+                st.unreadable
+            ));
+        }
         for dev in self.shards()? {
             let path = self.log_path(&dev);
             if let Ok(m) = fs::metadata(&path)

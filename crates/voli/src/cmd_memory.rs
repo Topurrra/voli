@@ -962,14 +962,43 @@ fn cmd_verify(store: Store) -> i32 {
 fn cmd_stats(store: Store) -> i32 {
     match store.stats() {
         Ok(s) => {
-            println!("memories      {} live / {} total", s.live, s.total);
-            println!("superseded    {}", s.superseded);
+            let p = Paint::for_stdout();
+            println!(
+                "{}      {} live / {} total",
+                p.label("memories"),
+                p.count(&s.live.to_string()),
+                s.total
+            );
+            println!("{}    {}", p.label("superseded"), s.superseded);
             for (k, c) in &s.by_kind {
-                println!("  {k:<10}  {c}   ({})", stela::kind_help(k));
+                println!(
+                    "  {:<10}  {}   {}",
+                    p.kind_name(k),
+                    p.count(&c.to_string()),
+                    p.dim(&format!("({})", stela::kind_help(k)))
+                );
             }
-            println!("shards        {}", s.shards.join(", "));
-            println!("on disk       {:.1} MB", s.bytes as f64 / 1e6);
-            println!("pending merge {}", s.pending);
+            println!("{}        {}", p.label("shards"), s.shards.join(", "));
+            println!(
+                "{}       {:.1} MB",
+                p.label("on disk"),
+                s.bytes as f64 / 1e6
+            );
+            println!("{} {}", p.label("pending merge"), s.pending);
+            // The one number that means something is wrong. Every other command
+            // skips these records without a word, so this is where the silence
+            // ends.
+            if s.unreadable > 0 {
+                println!();
+                println!(
+                    "{} {} record(s) on disk cannot be decrypted or parsed.",
+                    p.warn("!"),
+                    s.unreadable
+                );
+                println!("  They are missing from read, search and stats. `{TOOL} verify`");
+                println!("  shows which; a store written under a different key is the");
+                println!("  usual cause.");
+            }
             0
         }
         Err(e) => fail(&e.to_string()),
@@ -1317,10 +1346,170 @@ fn explain_hook() -> i32 {
     0
 }
 
+/// Colour for a terminal, and nothing at all for anything else.
+///
+/// Rendered memory reaches three audiences: a person at a terminal, an agent
+/// through `--hook` or MCP, and a pipe. Only the first can use escape codes --
+/// inside the fence they are context an agent pays for and a parser can trip
+/// over -- so painting happens here, at the edge, never in `stela`.
+#[derive(Clone, Copy)]
+pub(crate) struct Paint {
+    on: bool,
+}
+
+impl Paint {
+    /// Painted only when stdout is a terminal and colour is not switched off.
+    pub(crate) fn for_stdout() -> Paint {
+        Paint {
+            on: crate::colors_enabled(crate::MarkStream::Stdout),
+        }
+    }
+
+    fn wrap(self, code: &str, text: &str) -> String {
+        if self.on {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+
+    fn dim(self, text: &str) -> String {
+        self.wrap("2", text)
+    }
+
+    fn label(self, text: &str) -> String {
+        self.wrap("1", text)
+    }
+
+    fn count(self, text: &str) -> String {
+        self.wrap("1;36", text)
+    }
+
+    fn warn(self, text: &str) -> String {
+        self.wrap("1;33", text)
+    }
+
+    fn kind_name(self, text: &str) -> String {
+        self.wrap("36", text)
+    }
+
+    /// Paint the *structure* of rendered memory: the fence, the headings, the
+    /// ids you retype into other commands, dates, tags and scores.
+    ///
+    /// The memory text itself is left alone. It is the user's content, and
+    /// colouring it would compete with the one thing colour already means here
+    /// -- that a secret was masked or a private note withheld.
+    pub(crate) fn memory(self, text: &str) -> String {
+        if !self.on {
+            return text.to_string();
+        }
+        text.lines()
+            .map(|line| self.memory_line(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn memory_line(self, line: &str) -> String {
+        if line.starts_with("<<<") {
+            return self.dim(line);
+        }
+        if let Some(heading) = line.strip_prefix("## ") {
+            return format!("{} {}", self.dim("##"), self.wrap("1", heading));
+        }
+        // `<mark> #<dev>:<seq> <date> <text...>` is the one shape worth taking
+        // apart; anything else is prose and stays as written.
+        let Some((mark, rest)) = split_mark(line) else {
+            return line.to_string();
+        };
+        let Some((id, after_id)) = take_word(rest) else {
+            return line.to_string();
+        };
+        if !id.starts_with('#') {
+            return line.to_string();
+        }
+        let (date, body) = match take_word(after_id) {
+            Some((d, b)) if looks_like_date(d) => (Some(d), b),
+            _ => (None, after_id),
+        };
+        let mut out = String::new();
+        out.push_str(&self.mark(mark));
+        out.push(' ');
+        out.push_str(&self.wrap("33", id));
+        if let Some(date) = date {
+            out.push(' ');
+            out.push_str(&self.dim(date));
+        }
+        out.push(' ');
+        out.push_str(&self.body(body));
+        out
+    }
+
+    /// The leading glyph carries the record's standing, so it is the one thing
+    /// worth telling apart at a glance.
+    fn mark(self, mark: char) -> String {
+        match mark {
+            '*' => self.wrap("1;31", "*"), // core: never compacted
+            '!' => self.wrap("33", "!"),   // pinned/notable
+            '~' => self.dim("~"),          // superseded or weak match
+            other => self.dim(&other.to_string()),
+        }
+    }
+
+    /// Trailing `[tags]` and `(score n)` are metadata, not what was remembered.
+    fn body(self, body: &str) -> String {
+        let mut text = body;
+        let mut suffix = String::new();
+        if let Some(open) = text.rfind(" (score ")
+            && text.ends_with(')')
+        {
+            suffix = format!("{}{}", self.dim(&text[open..]), suffix);
+            text = &text[..open];
+        }
+        if let Some(open) = text.rfind(" [")
+            && text.ends_with(']')
+        {
+            suffix = format!("{}{}", self.dim(&text[open..]), suffix);
+            text = &text[..open];
+        }
+        format!("{text}{suffix}")
+    }
+}
+
+/// `"* rest"` → `('*', "rest")`, for the single-glyph record markers only.
+fn split_mark(line: &str) -> Option<(char, &str)> {
+    let mut chars = line.chars();
+    let mark = chars.next()?;
+    if !matches!(mark, '*' | '!' | '~' | '-') {
+        return None;
+    }
+    let rest = chars.as_str();
+    rest.strip_prefix(' ').map(|r| (mark, r))
+}
+
+fn take_word(s: &str) -> Option<(&str, &str)> {
+    let end = s.find(' ')?;
+    Some((&s[..end], &s[end + 1..]))
+}
+
+/// `YYYY-MM-DD`, checked by shape so a memory that merely starts with a number
+/// is not mistaken for a timestamp.
+fn looks_like_date(s: &str) -> bool {
+    s.len() == 10
+        && s.as_bytes()[4] == b'-'
+        && s.as_bytes()[7] == b'-'
+        && s.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        })
+}
+
 fn out(r: stela::Result<stela::Disclosed>) -> i32 {
     match r {
         Ok(s) => {
-            println!("{s}");
+            println!("{}", Paint::for_stdout().memory(&s.to_string()));
             0
         }
         Err(e) => fail(&e.to_string()),
@@ -1589,5 +1778,120 @@ mod gitignore_tests {
         std::fs::write(&file, "prompt").unwrap();
         ignore_generated_prompt(&file);
         assert!(!td.path().join(".gitignore").exists());
+    }
+}
+
+#[cfg(test)]
+mod paint_tests {
+    use super::Paint;
+
+    const SAMPLE: &str = "\
+<<<VOLI_MEMORY_DATA>>>
+voli memory - 2 live memories (1 core, 0 superseded).
+
+## Core (never compressed)
+* #287673:0 2026-08-01 voli is a no-admin package manager [voli,core]
+
+## Timeline (detail decays with age)
+- #287673:4 2026-08-01 the build command is cargo build --release [voli] (score 2.2)
+<<<END_VOLI_MEMORY_DATA>>>";
+
+    fn painted() -> Paint {
+        Paint { on: true }
+    }
+
+    fn plain() -> Paint {
+        Paint { on: false }
+    }
+
+    /// The invariant everything else rests on. The same text reaches an agent
+    /// through --hook, through MCP, and through a pipe; one stray escape code in
+    /// any of those is context it pays for and a parser can trip over.
+    #[test]
+    fn with_colour_off_the_text_is_returned_byte_for_byte() {
+        assert_eq!(plain().memory(SAMPLE), SAMPLE);
+        assert!(!plain().memory(SAMPLE).contains('\x1b'));
+
+        // Lines that stress the parser, so byte-identity is a property of the
+        // whole function rather than an accident of tidy sample data.
+        for gnarly in [
+            "- #287673:9 2026-08-01  two  spaces  inside",
+            "- #287673:9 2026-08-01 trailing space ",
+            "- #287673:9 not-a-date body follows",
+            "-  #287673:9 2026-08-01 double space after the glyph",
+            "* #287673:0",
+            "~ #287673:1 2026-08-01 ••• (private, withheld)",
+            "-",
+            "",
+        ] {
+            assert_eq!(plain().memory(gnarly), gnarly, "changed: {gnarly:?}");
+        }
+    }
+
+    /// Strip the escapes back out and the original must be underneath: colour is
+    /// decoration, never an edit.
+    #[test]
+    fn painting_changes_no_text_only_its_colour() {
+        let out = painted().memory(SAMPLE);
+        assert!(out.contains('\x1b'), "nothing was painted");
+        assert_eq!(strip_ansi(&out), SAMPLE);
+    }
+
+    #[test]
+    fn the_parts_you_retype_are_the_parts_that_stand_out() {
+        let out = painted().memory(SAMPLE);
+        // The id is what goes into --supersedes and history, so it is coloured.
+        assert!(
+            out.contains("\x1b[33m#287673:0\x1b[0m"),
+            "id not painted: {out}"
+        );
+        // A core record's glyph is distinct from an ordinary one's.
+        let core = out.lines().find(|l| l.contains("#287673:0")).unwrap();
+        let ordinary = out.lines().find(|l| l.contains("#287673:4")).unwrap();
+        assert!(core.starts_with("\x1b[1;31m*"), "core glyph: {core}");
+        assert!(
+            ordinary.starts_with("\x1b[2m-"),
+            "ordinary glyph: {ordinary}"
+        );
+    }
+
+    /// A memory whose text happens to begin like a record must not be taken apart.
+    #[test]
+    fn prose_that_is_not_a_record_line_is_left_alone() {
+        for line in [
+            "voli memory - 2 live memories (1 core, 0 superseded).",
+            "- nothing on record matches this task.",
+            "* not followed by an id",
+        ] {
+            let out = painted().memory(line);
+            assert_eq!(strip_ansi(&out), line, "text changed: {out}");
+        }
+    }
+
+    /// `looks_like_date` is shape-checked so a memory starting with a number is
+    /// not mistaken for a timestamp and dimmed into near-invisibility.
+    #[test]
+    fn only_a_real_date_is_treated_as_one() {
+        assert!(super::looks_like_date("2026-08-01"));
+        assert!(!super::looks_like_date("2026-8-1"));
+        assert!(!super::looks_like_date("cargo-buil"));
+        assert!(!super::looks_like_date("2026-08-01T"));
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c != '\x1b' {
+                out.push(c);
+                continue;
+            }
+            for c in chars.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        }
+        out
     }
 }

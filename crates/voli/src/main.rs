@@ -1059,6 +1059,14 @@ fn show_color(
     }
 }
 
+/// Whether coloured output is appropriate for `stream`.
+///
+/// Both halves matter: NO_COLOR is the user saying no, and a non-terminal is the
+/// destination saying no -- a pipe, a file, or an agent reading the bytes.
+pub(crate) fn colors_enabled(stream: MarkStream) -> bool {
+    progress_colors_enabled() && stream.is_terminal()
+}
+
 pub(crate) fn success_mark() -> &'static str {
     success_mark_on(MarkStream::Stdout)
 }

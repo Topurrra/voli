@@ -729,6 +729,37 @@ fn a_contradiction_warning_withholds_a_private_memory_entirely() {
     );
 }
 
+/// A record that cannot be decrypted is skipped by every read path on purpose --
+/// one bad record must not blind the whole store. But the skip is silent, so
+/// `read`, `search` and `stats` all under-report while `verify` counts the full
+/// set. `stats.unreadable` is what turns that silence into a number.
+#[test]
+fn stats_counts_records_it_could_not_read() {
+    let (_dir, store) = fresh();
+    note(&store, "one");
+    note(&store, "two");
+    assert_eq!(store.stats().unwrap().unreadable, 0, "clean store");
+
+    // Append one full-width record of garbage: the right size to be counted on
+    // disk, the wrong bytes to authenticate.
+    let dev = store.device().unwrap();
+    let log = store.dir().join(format!("LOG.{dev}.txt"));
+    let mut bytes = std::fs::read(&log).unwrap();
+    bytes.extend(std::iter::repeat_n(0xAB, stela::store::LOG_E));
+    std::fs::write(&log, bytes).unwrap();
+
+    let stats = store.stats().unwrap();
+    assert_eq!(stats.unreadable, 1, "the unreadable record was not counted");
+    assert_eq!(stats.total, 2, "readable records are unaffected");
+
+    // And doctor, which exists to report exactly this kind of drift, says so.
+    let issues = store.doctor().unwrap();
+    assert!(
+        issues.iter().any(|i| i.contains("cannot be decrypted")),
+        "doctor stayed quiet: {issues:?}"
+    );
+}
+
 // ---------------------------------------------------------------- tree / compact
 
 /// Drive every compression the given budget asks for. Returns the blocks built.
