@@ -149,7 +149,7 @@ fn recovery_blob_restores_access_after_keychain_wipe() {
     let store2 = Store::open_with_key(&mem, recovered).unwrap();
     assert!(
         store2
-            .render_read(120, None, 8)
+            .render_read(120, None, 8, &[])
             .unwrap()
             .contains("recoverable memory")
     );
@@ -307,7 +307,7 @@ fn supersession_hidden_from_wake_shown_in_history() {
     assert_eq!(out.superseded.as_deref(), Some(old.as_str()));
 
     // read hides the superseded memory, shows the current one.
-    let read = store.render_read(120, None, 8).unwrap();
+    let read = store.render_read(120, None, 8, &[]).unwrap();
     assert!(
         read.contains("b.example"),
         "current memory missing from read"
@@ -346,7 +346,7 @@ fn core_is_never_compressed() {
     }
     // A tight budget forces the non-core timeline to compress, but CORE stays
     // verbatim under its own section, never inside a block.
-    let read = store.render_read(8, None, 8).unwrap();
+    let read = store.render_read(8, None, 8, &[]).unwrap();
     assert!(read.contains("## Core (never compressed)"));
     assert!(
         read.contains("ALLERGIC to penicillin"),
@@ -362,7 +362,7 @@ fn graceful_degradation_missing_summary_shows_raw_not_crash() {
     }
     // Summaries are NOT built. A tight budget needs them; render must degrade to
     // raw memories / a hint, never error.
-    let read = store.render_read(8, None, 8).unwrap();
+    let read = store.render_read(8, None, 8, &[]).unwrap();
     assert!(read.contains("memory 19"), "most recent raw memory missing");
     assert!(
         read.contains("not yet compressed") || read.contains("memory 1"),
@@ -464,7 +464,7 @@ fn secrets_masked_in_wake_focus_recall_never_raw() {
     note(&store, &format!("test card {card} expires soon"));
 
     // Every recall surface masks the raw secret.
-    let read = store.render_read(120, None, 8).unwrap();
+    let read = store.render_read(120, None, 8, &[]).unwrap();
     let search = store.search("deploy key", 8).unwrap();
     let recall = store.recall("ssn|key|card", true).unwrap();
     for out in [read.as_str(), search.as_str(), recall.as_str()] {
@@ -506,7 +506,7 @@ fn private_note_is_withheld_at_recall() {
         .unwrap();
     note(&store, "a normal visible memory");
 
-    let read = store.render_read(120, None, 8).unwrap();
+    let read = store.render_read(120, None, 8, &[]).unwrap();
     assert!(
         read.contains("••• (private, withheld)"),
         "private not withheld:\n{}",
@@ -580,7 +580,7 @@ fn window_closed_fact_is_history_not_current() {
     );
 
     // read (the CURRENT view) shows only Berlin.
-    let read = store.render_read(120, None, 8).unwrap();
+    let read = store.render_read(120, None, 8, &[]).unwrap();
     assert!(
         read.contains("Berlin"),
         "current fact missing from read:\n{}",
@@ -760,6 +760,103 @@ fn stats_counts_records_it_could_not_read() {
     );
 }
 
+/// A project read shows the user's global core in its own section, so a session
+/// inside a codebase still sees the standing "how to work" rules that do not live
+/// in this store. The two stores are controlled here in tempdirs; production
+/// borrows the real global store, but the rendering path is the same.
+#[test]
+fn a_read_shows_borrowed_global_core_in_its_own_section() {
+    let (_dg, global) = fresh();
+    global
+        .note(
+            "the user prefers plain commit messages",
+            "core",
+            80,
+            &[],
+            None,
+            "user",
+            "note",
+        )
+        .unwrap();
+    let extra = global.live_core().unwrap();
+    assert_eq!(extra.len(), 1);
+
+    let (_dp, project) = fresh();
+    note(&project, "this project builds with cargo build --release");
+    let read = project.render_read(120, None, 8, &extra).unwrap();
+    let text = read.to_string();
+
+    assert!(
+        text.contains("From your global memory"),
+        "no global section: {text}"
+    );
+    assert!(
+        text.contains("plain commit messages"),
+        "global core missing: {text}"
+    );
+    assert!(
+        text.contains("cargo build --release"),
+        "project memory missing: {text}"
+    );
+
+    // With nothing borrowed, the section is absent -- a global read stays clean.
+    let plain = project.render_read(120, None, 8, &[]).unwrap().to_string();
+    assert!(
+        !plain.contains("From your global memory"),
+        "leaked section: {plain}"
+    );
+}
+
+/// The borrowed core is decrypted by a DIFFERENT store under a DIFFERENT key, so
+/// it is the one place the firewall could be bypassed. It must not be: a secret
+/// in a global core memory is masked, and a `--private` one is withheld, exactly
+/// as for a local memory.
+#[test]
+fn borrowed_global_core_is_firewalled_like_any_other() {
+    let (_dg, global) = fresh();
+    global
+        .note(
+            "deploy key AKIAIOSFODNN7EXAMPLE lives in the vault",
+            "core",
+            80,
+            &[],
+            None,
+            "user",
+            "note",
+        )
+        .unwrap();
+    global
+        .note(
+            "office wifi bluebird77",
+            "core",
+            80,
+            &[stela::PRIVATE_TAG.to_string()],
+            None,
+            "user",
+            "note",
+        )
+        .unwrap();
+    let extra = global.live_core().unwrap();
+
+    let (_dp, project) = fresh();
+    note(&project, "anything");
+    let text = project
+        .render_read(120, None, 8, &extra)
+        .unwrap()
+        .to_string();
+
+    assert!(
+        !text.contains("AKIAIOSFODNN7EXAMPLE"),
+        "raw key leaked: {text}"
+    );
+    assert!(text.contains("AKIA***MPLE"), "key not masked: {text}");
+    assert!(!text.contains("bluebird77"), "private text leaked: {text}");
+    assert!(
+        text.contains("(private, withheld)"),
+        "private not withheld: {text}"
+    );
+}
+
 // ---------------------------------------------------------------- tree / compact
 
 /// Drive every compression the given budget asks for. Returns the blocks built.
@@ -800,7 +897,7 @@ fn nap_builds_summaries_and_verify_stays_green() {
             hi - 1
         );
     }
-    let read = store.render_read(8, None, 8).unwrap();
+    let read = store.render_read(8, None, 8, &[]).unwrap();
     assert!(
         read.contains("summary of"),
         "read should surface a summary:\n{read}"
@@ -823,7 +920,7 @@ fn nothing_is_pending_while_the_whole_timeline_fits_the_budget() {
         0,
         "no summary can be shown while the timeline fits the read budget"
     );
-    let read = store.render_read(stela::READ_LINES, None, 8).unwrap();
+    let read = store.render_read(stela::READ_LINES, None, 8, &[]).unwrap();
     assert!(
         !read.contains("await compression"),
         "a read within budget must not ask for compression:\n{read}"

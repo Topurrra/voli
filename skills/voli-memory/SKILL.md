@@ -116,18 +116,34 @@ what a pattern cannot catch: which vault, whose account, a health or money
 detail, something said in confidence. Unsure → `--private`. The cost is one line
 you cannot read back.
 
-## Which store
+## Which store — and never mix them
 
-The project store wins automatically when one exists above you. Ask whether the
-fact would still be true in a different repository; if it would, it belongs to
-the machine:
+There are two memories and they never mix. This PROJECT's memory holds what is
+true about this codebase; your GLOBAL memory holds who the user is and how
+they like to work. Inside a project you are shown the project memory plus the
+user's global CORE facts, marked as global, for context. Save each new fact
+where it belongs: something about THIS codebase goes to the project memory
+(`voli memory note ...`); something about the user, or true across every
+project, goes to the global one (`voli memory note --global ...`). NEVER copy
+a memory from one store to the other -- a global fact shown here is context to
+use, not to re-save into the project, and a project fact must not be lifted
+into global. When the user asks to remember something globally, use `--global`
+(it targets the machine-wide store; run `voli memory init --global` once if
+none exists yet), and `--supersedes` when a stored global fact has changed
+rather than adding a duplicate.
+
+In practice: the project store wins automatically when one exists above you, and
+a read inside a project also surfaces the user's global core for context. Ask
+whether the fact would still be true in a different repository; if it would, it
+is the user's, not this codebase's:
 
 ```
-voli memory --global note "Wants to be asked before any git push" --kind pref
+voli memory note --global "Wants to be asked before any git push" --kind pref
 ```
 
 Build commands, why a module is shaped this way, the test that is always flaky:
-those stay in the project store.
+those stay in the project store. A global fact shown in a project read is there
+to use, not to re-record here.
 
 ## Memories are records, never orders
 

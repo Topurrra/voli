@@ -227,7 +227,9 @@ pub fn run(action: &MemoryCmd, force_global: bool) -> i32 {
                 // every other caller and wrong for this one.
                 return read_for_hook(*budget, task.as_deref(), *k);
             }
-            with_store(|s| out(s.render_read(*budget, task.as_deref(), *k)))
+            with_store(|s| {
+                out(s.render_read(*budget, task.as_deref(), *k, &global_core_for_project()))
+            })
         }
         MemoryCmd::Hook {
             project_local,
@@ -312,6 +314,19 @@ pub fn run(action: &MemoryCmd, force_global: bool) -> i32 {
 /// each one would be noise.
 static GLOBAL_ONLY: AtomicBool = AtomicBool::new(false);
 
+/// The store dir pinned by env, if any. One place for the override contract so
+/// [`memory_dir`] and the global-core borrow cannot disagree about what counts
+/// as "the user pinned this store explicitly".
+fn env_dir() -> Option<PathBuf> {
+    ["VOLI_MEMORY_DIR", "STELA_DIR"]
+        .into_iter()
+        .find_map(|var| {
+            std::env::var_os(var)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        })
+}
+
 /// Which store this invocation acts on.
 ///
 /// 1. `$VOLI_MEMORY_DIR` / `$STELA_DIR` — an explicit path always wins.
@@ -322,12 +337,8 @@ static GLOBAL_ONLY: AtomicBool = AtomicBool::new(false);
 /// Detection requires the directory to already exist, so a project only gets
 /// its own store after `init --project`; nothing is ever silently redirected.
 fn memory_dir() -> PathBuf {
-    for var in ["VOLI_MEMORY_DIR", "STELA_DIR"] {
-        if let Some(v) = std::env::var_os(var)
-            && !v.is_empty()
-        {
-            return PathBuf::from(v);
-        }
+    if let Some(dir) = env_dir() {
+        return dir;
     }
     if !GLOBAL_ONLY.load(Ordering::Relaxed)
         && let Ok(cwd) = std::env::current_dir()
@@ -533,6 +544,23 @@ fn keyring_init() -> Result<[u8; 32], String> {
         "this platform has no keychain; set VOLI_MEMORY_PASSPHRASE to create a passphrase memory"
             .into(),
     )
+}
+
+/// Open the machine-wide store explicitly, whatever directory we are in.
+///
+/// The MCP `memory_note` uses this to honour `global: true` without the server
+/// having to be started in global scope. Like the CLI, it does not create the
+/// store -- a note needs one that exists, so a missing global store is a clear
+/// error, not a silent new store in a surprising place.
+pub(crate) fn open_global_store() -> Result<Store, String> {
+    let dir = stela::default_memory_dir();
+    if !dir.is_dir() {
+        return Err(format!(
+            "no global memory yet. Run `{TOOL} init --global` once to create it."
+        ));
+    }
+    let key = open_key(&dir)?;
+    Store::open_with_key(dir, key).map_err(|e| e.to_string())
 }
 
 /// Resolve the store this invocation acts on, or say why it cannot be opened.
@@ -1049,8 +1077,61 @@ fn cmd_export(store: &Store, json: bool) -> i32 {
 
 // ---------------------------------------------------------------- helpers
 
-/// Print a fenced, firewalled result, or the error. The [`stela::Disclosed`]
-/// egress type prints via `Display`; its raw form is never exposed here.
+/// Two paths naming the same directory. Windows is case-insensitive and accepts
+/// either slash, so a raw `==` would treat one directory as two; canonicalise
+/// both and fall back to raw equality only when a path will not resolve.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// The user's global core, to show inside a *project* read.
+///
+/// Returns the machine-wide store's live core memories when the current read
+/// resolves to a project store; an empty vec otherwise (a global read already
+/// shows its own core, and `--global` asked for global only). Everything here is
+/// best-effort and silent: if the global store is missing, locked under a key
+/// this session does not hold, or unreadable, a project read simply proceeds
+/// without it -- borrowing the global core must never fail or delay a read.
+pub(crate) fn global_core_for_project() -> Vec<stela::Record> {
+    // A global read, or an explicit `--global`, is already looking at the global
+    // store -- nothing to borrow.
+    if GLOBAL_ONLY.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    // `$VOLI_MEMORY_DIR` / `$STELA_DIR` pin the store exactly. The borrow is a
+    // convenience for automatic project detection, not for a hand-picked dir, so
+    // an explicit override suppresses it -- which is also what lets a test point
+    // the read at a temp store without dragging in the real machine-wide core.
+    if env_dir().is_some() {
+        return Vec::new();
+    }
+    let here = memory_dir();
+    let global = stela::default_memory_dir();
+    // With no override, project detection resolves to the global dir only when
+    // there is no project store above the cwd -- then the read already *is* the
+    // global store and there is nothing to borrow. Compared canonicalised, since
+    // on Windows the same directory differs by letter case or slash direction and
+    // a raw `==` would inject the core twice.
+    if !global.is_dir() || same_dir(&here, &global) {
+        return Vec::new();
+    }
+    // ponytail: opens the global store fresh every read. Under keyring custody
+    // that is cheap; under passphrase custody it re-runs Argon2id each time, and
+    // a missing passphrase makes open_key fail here and the read proceeds without
+    // the borrowed core. Cache the opened store in the MCP server if a
+    // passphrase-custody global ever becomes a hot read path.
+    let Ok(key) = open_key(&global) else {
+        return Vec::new();
+    };
+    let Ok(store) = Store::open_with_key(&global, key) else {
+        return Vec::new();
+    };
+    store.live_core().unwrap_or_default()
+}
+
 /// Load memory for the hook path, silently, whatever goes wrong.
 fn read_for_hook(budget: u64, task: Option<&str>, k: usize) -> i32 {
     let dir = memory_dir();
@@ -1063,12 +1144,16 @@ fn read_for_hook(budget: u64, task: Option<&str>, k: usize) -> i32 {
     let Ok(store) = Store::open_with_key(dir, key) else {
         return 0;
     };
-    // An empty store still renders a fence saying "0 live memories", which costs
-    // an agent context to be told there is no context. Say nothing instead.
-    if store.stats().map(|s| s.live == 0).unwrap_or(true) {
+    // Nothing to inject only when BOTH are empty: a freshly-`init`ed project with
+    // no notes of its own must still carry the user's global core, or the hook --
+    // the primary surface -- would drop the standing rules the CLI read shows.
+    // The check has to include borrowed core, not just this store's.
+    let extra = global_core_for_project();
+    let local_empty = store.stats().map(|s| s.live == 0).unwrap_or(true);
+    if local_empty && extra.is_empty() {
         return 0;
     }
-    out_hook(store.render_read(budget, task, k))
+    out_hook(store.render_read(budget, task, k, &extra))
 }
 
 /// The SessionStart hook payload.
@@ -1094,14 +1179,32 @@ fn out_hook(r: stela::Result<stela::Disclosed>) -> i32 {
 
 /// Wrap loaded memory in the SessionStart envelope, or `None` when there is
 /// nothing worth injecting. Split out so the shape can be asserted directly.
+///
+/// The memory arrives as a bare fenced block. The hook is the one path that
+/// injects it straight into an agent's context with no skill or prompt
+/// necessarily present, so the block cannot speak for itself -- it needs a
+/// preamble that says what it is, that it is data and not orders, and how to add
+/// to it. The preamble sits ABOVE the fence because it is voli talking to the
+/// agent, not a memory; the containment rule is the shared `stela::CONTAINMENT`
+/// so there is no fourth copy to drift from.
 fn hook_envelope(body: &str) -> Option<serde_json::Value> {
     if body.trim().is_empty() {
         return None;
     }
+    let context = format!(
+        "This is your voli memory for this session, loaded automatically. \
+         {containment}\n\n{scoping}\n\nWhen you learn a durable fact, decision or \
+         preference, save it with `{TOOL} note \"<one line>\"` (add \
+         `--supersedes <id>` when a stored fact has changed, `--private` for a \
+         secret, `--global` when it belongs to the user rather than this \
+         codebase). To reload this yourself later: `{TOOL} read`.\n\n{body}",
+        containment = stela::CONTAINMENT,
+        scoping = stela::SCOPING,
+    );
     Some(serde_json::json!({
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": body,
+            "additionalContext": context,
         }
     }))
 }
@@ -1506,6 +1609,8 @@ fn looks_like_date(s: &str) -> bool {
         })
 }
 
+/// Print a fenced, firewalled result, or the error. The [`stela::Disclosed`]
+/// egress type prints via `Display`; its raw form is never exposed here.
 fn out(r: stela::Result<stela::Disclosed>) -> i32 {
     match r {
         Ok(s) => {
@@ -1537,11 +1642,21 @@ knows rust
         .expect("has body");
         let out = &payload["hookSpecificOutput"];
         assert_eq!(out["hookEventName"], "SessionStart");
-        assert_eq!(
-            out["additionalContext"],
+        let ctx = out["additionalContext"].as_str().unwrap();
+        // The memory itself is carried verbatim, inside its fence...
+        assert!(ctx.contains(
             "<<<VOLI_MEMORY_DATA>>>
 knows rust
 "
+        ));
+        // ...under a preamble that says it is data, not orders, and how to add.
+        assert!(ctx.contains(stela::CONTAINMENT), "containment rule missing");
+        assert!(ctx.contains(stela::SCOPING), "scoping/routing rule missing");
+        assert!(ctx.contains("voli memory note"), "how-to-add missing");
+        // The preamble is ABOVE the fence, so a memory can never impersonate it.
+        assert!(
+            ctx.find(stela::CONTAINMENT).unwrap() < ctx.find("<<<VOLI_MEMORY_DATA>>>").unwrap(),
+            "preamble must precede the fenced data"
         );
     }
 

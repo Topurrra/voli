@@ -3,6 +3,31 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
+## v0.12.3
+
+### Added
+
+- **Your global memory now reaches a session working inside a project.** A `voli
+  memory read` in a codebase - and the session-start hook - now also show your
+  global core memories, in their own "From your global memory" section beside the
+  project's own. Before, a session inside a project loaded only that project's
+  store, so your machine-wide "how you work" rules never arrived. The borrowed
+  core passes through the same fence and disclosure firewall as a local memory, so
+  a masked secret stays masked and a `--private` note stays withheld.
+- **The routing rule is a single shared constant now**, like the containment rule
+  beside it: check the global core too; save each new fact where it belongs - this
+  codebase to the project store, the user or anything true across every project to
+  the global store via `--global`; and never copy a memory from one store into the
+  other. It reads verbatim on all four surfaces - the hook preamble, the setup
+  prompt, the MCP `memory_note` tool, and the companion skill - guarded by a test
+  that fails if any copy drifts.
+- The session-start hook no longer falls silent when the project store is empty
+  but you have global core to show, and its preamble now states the routing rule
+  too.
+- The MCP `memory_note` tool gained a `global: true` option, to record a fact to
+  the machine-wide store from inside a project. An explicit `$VOLI_MEMORY_DIR`
+  pins the store exactly and suppresses the global-core borrow.
+
 ## v0.12.2
 
 ### Added

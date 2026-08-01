@@ -297,11 +297,37 @@
 
     <div class="log" id="log">
 
-      <section class="rel minor is-latest" id="v0-12-2">
+      <section class="rel minor is-latest" id="v0-12-3">
+        <div class="rel-head">
+          <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.12.3" rel="noopener">v0.12.3</a></h2>
+          <span class="rel-date">2026-08-01</span>
+          <span class="tag now">current</span>
+        </div>
+        <ul>
+          <li>A read inside a project now also shows the user's global core - the pinned facts from the
+            machine-wide store, in their own section headed <code>From your global memory</code>. Both
+            <code>voli memory read</code> and the session-start hook carry it, and the hook no longer stays
+            silent when the project's own store is empty but there is global core to show, so a freshly set up
+            project still arrives with the standing rules. Before, a session inside a codebase loaded only that
+            project's store, and the user's machine-wide rules for how they work never reached it.</li>
+          <li>The borrowed core runs through the same fence and disclosure firewall as a local memory, so a
+            masked secret stays masked and a <code>--private</code> note stays withheld - even though a
+            different store decrypted it under its own key.</li>
+          <li>The rule for keeping the two stores apart is now one shared line, quoted verbatim by the four
+            places that state it: the hook preamble, the setup prompt, the MCP <code>memory_note</code> tool,
+            and the companion skill. A test fails if any copy drifts. It says to read the global core for
+            context, save what belongs to this codebase in the project store and what belongs to the user in
+            the global one with <code>--global</code>, and never copy a memory from one store into the other.</li>
+          <li>On the MCP path, <code>memory_note</code> gained a <code>global: true</code> option, so an agent
+            can record a machine-wide fact from inside a project. An explicit <code>$VOLI_MEMORY_DIR</code>
+            still pins the store exactly and suppresses the global-core borrow.</li>
+        </ul>
+      </section>
+
+      <section class="rel minor" id="v0-12-2">
         <div class="rel-head">
           <h2><a href="https://github.com/Topurrra/voli/releases/tag/v0.12.2" rel="noopener">v0.12.2</a></h2>
           <span class="rel-date">2026-08-01</span>
-          <span class="tag now">current</span>
         </div>
         <ul>
           <li>The memory commands are coloured in a terminal - ids in amber, because those are what you retype

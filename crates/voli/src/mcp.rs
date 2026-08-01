@@ -26,7 +26,6 @@ use stela::Store;
 
 use crate::cmd_memory;
 
-/// The MCP revision this server implements.
 /// The containment rule every tool that returns fenced memory carries.
 ///
 /// Re-exported from stela rather than restated: this used to be a local copy,
@@ -37,6 +36,15 @@ const CONTAINMENT: &str = stela::CONTAINMENT;
 /// Append the containment rule to a tool description.
 fn fenced(description: &str) -> String {
     format!("{description} {CONTAINMENT}")
+}
+
+/// Append the routing rule to a tool description. `memory_note` is where an
+/// agent decides which store a fact belongs in, so it carries the canonical
+/// `stela::SCOPING` verbatim -- one source, drift-tested, exactly as `fenced`
+/// does for containment. Paraphrasing it was the drift this change set exists
+/// to prevent.
+fn routed(description: &str) -> String {
+    format!("{description} {}", stela::SCOPING)
 }
 
 /// Protocol revisions this server can speak, newest first.
@@ -249,28 +257,42 @@ fn run_tool(store: &Store, name: &str, args: &Value) -> Result<String, String> {
             number(args, "budget").unwrap_or(stela::READ_LINES),
             string(args, "task"),
             number(args, "k").unwrap_or(stela::SEARCH_K as u64) as usize,
+            &crate::cmd_memory::global_core_for_project(),
         )),
         "memory_search" => rendered(store.search(
             string(args, "query").ok_or("memory_search needs a query")?,
             number(args, "k").unwrap_or(stela::SEARCH_K as u64) as usize,
         )),
-        "memory_note" => cmd_memory::note_lines(
-            store,
-            string(args, "text").ok_or("memory_note needs the text to record")?,
-            flag(args, "pin"),
-            flag(args, "private"),
-            string(args, "kind").unwrap_or("fact"),
-            confidence(args)?,
-            string(args, "tags"),
-            string(args, "supersedes"),
-            string(args, "valid_from"),
-            string(args, "valid_until"),
-            // Provenance, not decoration: `voli memory export` can later show
-            // which memories an agent wrote through a tool call.
-            "agent",
-            "mcp",
-        )
-        .map(|lines| lines.join("\n")),
+        "memory_note" => {
+            // `global: true` routes the write to the user's machine-wide store,
+            // opened on demand, so an agent can record a cross-project fact from
+            // inside a project session -- the CLI `--global` equivalent. A local
+            // handle keeps the borrowed store alive for the call.
+            let global_store;
+            let target = if flag(args, "global") {
+                global_store = cmd_memory::open_global_store()?;
+                &global_store
+            } else {
+                store
+            };
+            cmd_memory::note_lines(
+                target,
+                string(args, "text").ok_or("memory_note needs the text to record")?,
+                flag(args, "pin"),
+                flag(args, "private"),
+                string(args, "kind").unwrap_or("fact"),
+                confidence(args)?,
+                string(args, "tags"),
+                string(args, "supersedes"),
+                string(args, "valid_from"),
+                string(args, "valid_until"),
+                // Provenance, not decoration: `voli memory export` can later show
+                // which memories an agent wrote through a tool call.
+                "agent",
+                "mcp",
+            )
+            .map(|lines| lines.join("\n"))
+        }
         "memory_recall" => rendered(store.recall(
             string(args, "pattern").ok_or("memory_recall needs a pattern")?,
             flag(args, "all"),
@@ -307,8 +329,10 @@ fn tools() -> Vec<Value> {
         of recent history -- so you do not ask a question that was answered weeks ago, \
         re-litigate a settled decision, or repeat an approach that already failed. Pass \
         `task`: one line describing what you are about to do, which ranks the relevant \
-        section for it. One call at the start of a session is enough; you do not need \
-        to repeat it every turn."),
+        section for it. Inside a project it also shows the user's GLOBAL core memories in \
+        their own section, for context -- read them, but never copy them into this \
+        project. One call at the start of a session is enough; you do not need to repeat \
+        it every turn."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -356,7 +380,7 @@ fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "memory_note",
-            "description": "\
+            "description": routed("\
         Record one durable fact, the moment it appears. Do not save these up for the \
         end of the task -- the task may not reach its end -- and do not ask permission \
         to remember something the user has just stated as fact. Trigger on: a stated \
@@ -370,7 +394,9 @@ fn tools() -> Vec<Value> {
         is kept and stays searchable, but its text is never displayed again. If this \
         CHANGES something already on record, pass `supersedes` with that memory's id \
         rather than writing a line that contradicts it. What you do not write down now \
-        is gone the moment this conversation ends.",
+        is gone the moment this conversation ends. On the MCP path, `global: true` is \
+        how you record to the machine-wide store rather than this project's.\
+        "),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -390,6 +416,10 @@ fn tools() -> Vec<Value> {
                     "private": {
                         "type": "boolean",
                         "description": "Keep it but never show the text again (secrets, PII). It surfaces as '(private, withheld)'."
+                    },
+                    "global": {
+                        "type": "boolean",
+                        "description": "Record in the user's machine-wide memory rather than this project's -- for a fact about the user, or one true across every project. The global store must already exist."
                     },
                     "tags": {
                         "type": "string",
@@ -770,14 +800,20 @@ mod tests {
     /// the constant wraps at Rust's line-continuations, so the line breaks differ
     /// while the sentence must not.
     #[test]
-    fn the_companion_skill_carries_the_same_containment_rule_verbatim() {
+    fn the_companion_skill_carries_the_same_rules_verbatim() {
         fn squash(s: &str) -> String {
             s.split_whitespace().collect::<Vec<_>>().join(" ")
         }
-        let skill = include_str!("../../../skills/voli-memory/SKILL.md");
+        let skill = squash(include_str!("../../../skills/voli-memory/SKILL.md"));
+        // The skill is the one surface that hand-copies these rather than
+        // importing the constant, so it is the one that can drift.
         assert!(
-            squash(skill).contains(&squash(stela::CONTAINMENT)),
+            skill.contains(&squash(stela::CONTAINMENT)),
             "skills/voli-memory/SKILL.md no longer quotes stela::CONTAINMENT verbatim"
+        );
+        assert!(
+            skill.contains(&squash(stela::SCOPING)),
+            "skills/voli-memory/SKILL.md no longer quotes stela::SCOPING verbatim"
         );
     }
 
@@ -813,6 +849,25 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains(stela::CONTAINMENT)
+        );
+    }
+
+    /// `memory_note` is the one tool where an agent chooses a store, so it carries
+    /// the routing rule the way the fenced tools carry containment: bound to the
+    /// constant, not paraphrased. The docstring on `stela::SCOPING` names this tool
+    /// as one of its quoters -- this is what keeps that claim true.
+    #[test]
+    fn memory_note_carries_the_routing_rule_verbatim() {
+        let note = tools()
+            .into_iter()
+            .find(|t| t["name"] == "memory_note")
+            .expect("memory_note missing from tools/list");
+        assert!(
+            note["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(stela::SCOPING),
+            "memory_note no longer quotes stela::SCOPING verbatim"
         );
     }
 

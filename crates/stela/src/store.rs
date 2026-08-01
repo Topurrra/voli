@@ -277,6 +277,19 @@ impl Store {
         Ok(recs)
     }
 
+    /// This store's live `core` memories — the pinned, identity-critical layer.
+    ///
+    /// The seam for showing one store's core inside another store's read (a
+    /// project session seeing the user's global core). Supersession and validity
+    /// are already applied, so the caller gets exactly what a local core section
+    /// would show.
+    pub fn live_core(&self) -> Result<Vec<Record>> {
+        Ok(Self::live(&self.timeline()?)
+            .into_iter()
+            .filter(|r| r.kind == "core")
+            .collect())
+    }
+
     /// Live memories: not superseded, not retractions, and CURRENTLY VALID — i.e.
     /// now falls inside the record's `[valid_from, valid_until)` window. A fact
     /// whose window has closed ("lived in Lisbon [2019, 2022)") is history: it
@@ -773,10 +786,25 @@ impl Store {
 
     // ---- read ------------------------------------------------------------
 
-    /// Render the memory document as of now: CORE, task-relevant hits, and a
-    /// decaying timeline — fenced as DATA. Never blocks; a missing summary shows
-    /// its raw memories (graceful degradation), never a crash.
-    pub fn render_read(&self, budget: u64, task: Option<&str>, k: usize) -> Result<Disclosed> {
+    /// Render the memory document as of now — CORE, task-relevant hits, and a
+    /// decaying timeline, fenced as DATA — plus a section of core memories
+    /// borrowed from elsewhere. Never blocks; a missing summary shows its raw
+    /// memories (graceful degradation), never a crash.
+    ///
+    /// `extra_core` is the user's global core, shown in a project read so a
+    /// session sees the standing "how to work" rules that do not live in this
+    /// codebase's store (the caller passes an empty slice for a global read, or
+    /// when there is no separate global store). Those records were decrypted by
+    /// their own store under their own key; rendering them here still routes
+    /// through the same [`fence`], so masking and `--private` withholding apply
+    /// to them exactly as to a local memory.
+    pub fn render_read(
+        &self,
+        budget: u64,
+        task: Option<&str>,
+        k: usize,
+        extra_core: &[Record],
+    ) -> Result<Disclosed> {
         let recs = self.timeline()?;
         let alive = Self::live(&recs);
         let mut out: Vec<String> = Vec::new();
@@ -798,6 +826,18 @@ impl Store {
         if !core.is_empty() {
             out.push("## Core (never compressed)".into());
             out.extend(core.iter().map(|r| fmt(r, true)));
+            out.push(String::new());
+        }
+
+        // The user's global core, kept in its own section and never merged into
+        // this store's own core -- the two stores stay visibly distinct so an
+        // agent is not tempted to copy one into the other.
+        if !extra_core.is_empty() {
+            out.push(
+                "## From your global memory (core -- context, do not copy into this project)"
+                    .into(),
+            );
+            out.extend(extra_core.iter().map(|r| fmt(r, true)));
             out.push(String::new());
         }
 
@@ -1294,7 +1334,7 @@ machine.
 
 The machine-wide store still exists, and some things belong there instead:
 who the user is, how they like to work, preferences that follow them from
-project to project. Reach it with `{TOOL} --global <verb>` from anywhere.
+project to project. Reach it with `{TOOL} <verb> --global` from anywhere.
 Rule of thumb: if the fact would still be true in a different repository, it
 is global; if it is about this code, it is here.",
             dir = dir.display()
@@ -1350,7 +1390,10 @@ decision, hit a lasting event, or learn a preference.
   --valid-from / --valid-until DATE   the window the fact holds (a role, an
                      address). Outside it the fact is past, not present.
                      Dates: YYYY, YYYY-MM-DD, or unix millis.
+  --global           save to the USER's machine-wide memory, not this project's.
   --kind dcsn|pref|evnt|fact     --tags a,b     --conf 0-100
+
+{scoping}
 
 If a new note clashes with a current fact on the same subject, `note` names the
 clash -- supersede it when the truth has moved on. Do not restate what is already
@@ -1377,6 +1420,7 @@ beside the vault; `{TOOL} recover` restores access if the OS keychain is lost.",
         open = crate::FENCE_OPEN,
         close = crate::FENCE_CLOSE,
         containment = wrap(crate::CONTAINMENT, 78),
+        scoping = wrap(crate::SCOPING, 78),
     )
 }
 

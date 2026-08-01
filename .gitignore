@@ -31,3 +31,7 @@ Cargo.lock.bak
 # the setup prompt is generated from crates/stela; a committed copy only
 # goes stale the next time the wording changes
 voli-memory-prompt*.md
+
+# agent-local config and skills voli installs here; the skill's source of
+# truth is skills/voli-memory/, and settings.local.json is personal
+.claude/
