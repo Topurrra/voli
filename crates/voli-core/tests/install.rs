@@ -427,6 +427,88 @@ fn uninstall_leaves_zero_trace_but_keeps_persist() {
     assert!(state.actions_for("ripgrep").unwrap().is_empty());
 }
 
+/// A package that persists a LOOSE FILE (not a directory) - the Notepad++
+/// shape. A directory junction cannot point at a single file, so the engine
+/// carries it with a hard link into the persist store. The file's contents
+/// must survive an uninstall-keep and a re-provision exactly as a persist dir
+/// would (the freshly extracted default must never clobber the kept file).
+#[test]
+fn loose_file_persist_survives_reprovision() {
+    let td = setup();
+    let root = td.path();
+    let zip = build_zip(&[
+        ("np-1.0.0/", b""),
+        ("np-1.0.0/np.exe", b"fake np binary"),
+        ("np-1.0.0/config.ini", b"[defaults]\ntheme=light"),
+    ]);
+    let archive = root.join("np.zip");
+    fs::write(&archive, &zip).unwrap();
+    let manifest = root.join("np.toml");
+    fs::write(
+        &manifest,
+        format!(
+            r#"
+name = "notepadpp"
+version = "1.0.0"
+kind = "app"
+extract_dir = "np-1.0.0"
+bin = ["np.exe"]
+persist = ["config.ini"]
+
+[source.x64]
+url = "https://example.com/np.zip"
+sha256 = "{}"
+"#,
+            sha256_hex(&zip)
+        ),
+    )
+    .unwrap();
+
+    install_local(&manifest, &archive, root).expect("install should succeed");
+
+    let vdir = root.join("apps/notepadpp/1.0.0");
+    let store = root.join("apps/notepadpp/persist/config.ini");
+    let link = vdir.join("config.ini");
+
+    // The loose file lives in the persist store; the version dir holds it too,
+    // as a hard link (NOT a junction - junctions cannot point at a file).
+    assert!(store.is_file(), "persist store must hold the loose file");
+    assert_eq!(
+        fs::read_to_string(&store).unwrap(),
+        "[defaults]\ntheme=light"
+    );
+    assert!(link.is_file());
+    // junction::exists errors ("not a reparse point") for a hard link, which is
+    // itself proof it is not a junction; Ok(false) says the same.
+    assert!(
+        !junction::exists(&link).unwrap_or(false),
+        "the version-dir entry must be a hard link, not a junction"
+    );
+
+    // Same underlying data: an edit to the store is seen through the link.
+    fs::write(&store, b"[user]\ntheme=dark").unwrap();
+    assert_eq!(fs::read_to_string(&link).unwrap(), "[user]\ntheme=dark");
+
+    // Uninstall (keep) removes the version dir but preserves the persist file.
+    let report = uninstall("notepadpp", root, false).unwrap();
+    assert!(report.kept_persist);
+    assert!(!vdir.exists(), "version dir must be gone");
+    assert_eq!(
+        fs::read_to_string(&store).unwrap(),
+        "[user]\ntheme=dark",
+        "the user's file must survive uninstall"
+    );
+
+    // Re-provision: the upgrade path reuses the persist store the same way, so
+    // the freshly extracted default must NOT overwrite the kept user file.
+    install_local(&manifest, &archive, root).expect("reinstall should succeed");
+    assert_eq!(
+        fs::read_to_string(&link).unwrap(),
+        "[user]\ntheme=dark",
+        "re-provision must keep the persisted file, not the archive default"
+    );
+}
+
 /// A locked/undeletable file must NOT be reported as a successful uninstall.
 /// Dropping the ledger row while files survive strands them: `voli delete` then
 /// says NotInstalled and `cleanup` iterates the ledger, so nothing shipped can

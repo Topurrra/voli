@@ -129,6 +129,8 @@ pub enum RemoteError {
     },
     #[error("package '{package}' depends on '{dep}', which is not in the index")]
     UnknownDep { package: String, dep: String },
+    #[error("no indexed version of '{dep}' satisfies the required '{constraint}'")]
+    Unsatisfiable { dep: String, constraint: String },
     #[error("package '{0}' has no [source.x64] or [source.arm64] block in the index")]
     NoArch(String),
     #[error("skill package '{0}' has no universal source in the index")]
@@ -644,17 +646,38 @@ fn visit(
         Err(e) => return Err(RemoteError::Index(e)),
     };
 
-    // Deps first (post-order). Version constraints are not yet honoured — deps
-    // always resolve to the newest indexed version.
-    // ponytail: constraint strings (`"*"`, `">=1.2"`) are ignored in v1; wire a
-    // real resolver in only when the catalog carries non-`*` constraints.
-    let deps: Vec<String> = manifest.depends.keys().cloned().collect();
-    for dep in deps {
-        visit(root, &dep, None, Some(name), visited, order)?;
+    // Deps first (post-order). Each dep resolves to the newest indexed version
+    // that satisfies its `[depends]` constraint; `*`/empty keeps today's "newest".
+    let deps: Vec<(String, String)> = manifest
+        .depends
+        .iter()
+        .map(|(dep, req)| (dep.clone(), req.clone()))
+        .collect();
+    for (dep, req) in deps {
+        let pinned = pick_dep_version(root, &dep, &req)?;
+        visit(root, &dep, pinned.as_deref(), Some(name), visited, order)?;
     }
 
     order.push(manifest);
     Ok(())
+}
+
+/// The version of `dep` to install for a `[depends]` constraint: the newest
+/// indexed version that satisfies `req`, or `None` meaning "newest" (the
+/// `*`/empty case, which keeps resolving through `index::info` exactly as
+/// before). Errors when `req` is a real constraint no indexed version satisfies.
+fn pick_dep_version(root: &Path, dep: &str, req: &str) -> Result<Option<String>, RemoteError> {
+    let req = req.trim();
+    if req.is_empty() || req == "*" {
+        return Ok(None);
+    }
+    match index::newest_satisfying(root, dep, req)? {
+        Some(v) => Ok(Some(v)),
+        None => Err(RemoteError::Unsatisfiable {
+            dep: dep.to_string(),
+            constraint: req.to_string(),
+        }),
+    }
 }
 
 /// The manifest for `name` at `version` (or the newest version if `None`).

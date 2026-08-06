@@ -137,6 +137,40 @@ sha256 = "{sha}"
     )
 }
 
+/// Like [`manifest_toml`] but each dependency carries its own version
+/// constraint string (`("lib", ">=1.2")`) instead of the implicit `"*"`.
+fn manifest_toml_deps(
+    name: &str,
+    version: &str,
+    url: &str,
+    sha: &str,
+    bin: &str,
+    deps: &[(&str, &str)],
+) -> String {
+    let mut depends = String::new();
+    if !deps.is_empty() {
+        depends.push_str("\n[depends]\n");
+        for (d, c) in deps {
+            depends.push_str(&format!("{d} = \"{c}\"\n"));
+        }
+    }
+    format!(
+        r#"
+name = "{name}"
+version = "{version}"
+description = "{name} package"
+kind = "app"
+extract_dir = "{name}-{version}"
+bin = ["{bin}"]
+
+[source.x64]
+url = "{url}"
+sha256 = "{sha}"
+{depends}
+"#
+    )
+}
+
 // ---- fixture server --------------------------------------------------------
 
 /// Serves a map of path → bytes, counting requests per path.
@@ -424,6 +458,104 @@ fn dep_chain_installs_dependency_first() {
     assert_eq!(report.installed.len(), 2);
     assert!(root.join("apps/lib/1.0.0/lib.exe").is_file());
     assert!(root.join("apps/app/1.0.0/app.exe").is_file());
+}
+
+/// Install `app@1.0.0` (which depends on `lib` at `constraint`) against an index
+/// that publishes `lib` at every version in `lib_versions`. Returns the recorded
+/// install/skip log and the install result (mapped to `()` on success).
+fn run_dep_install(
+    constraint: &str,
+    lib_versions: &[&str],
+) -> (Vec<String>, Result<(), RemoteError>) {
+    ensure_stub();
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path();
+
+    let app = pkg_zip("app", "1.0.0", "app.exe");
+    let mut files = HashMap::new();
+    files.insert("/app.zip".to_string(), app.clone());
+    let mut lib_zips: Vec<(String, Vec<u8>)> = Vec::new();
+    for v in lib_versions {
+        let z = pkg_zip("lib", v, "lib.exe");
+        files.insert(format!("/lib-{v}.zip"), z.clone());
+        lib_zips.push(((*v).to_string(), z));
+    }
+    let srv = Server::start(files);
+
+    let mut manifests = vec![
+        Manifest::from_toml_str(&manifest_toml_deps(
+            "app",
+            "1.0.0",
+            &format!("{}/app.zip", srv.base),
+            &sha256_hex(&app),
+            "app.exe",
+            &[("lib", constraint)],
+        ))
+        .unwrap(),
+    ];
+    for (v, z) in &lib_zips {
+        manifests.push(
+            Manifest::from_toml_str(&manifest_toml_deps(
+                "lib",
+                v,
+                &format!("{}/lib-{v}.zip", srv.base),
+                &sha256_hex(z),
+                "lib.exe",
+                &[],
+            ))
+            .unwrap(),
+        );
+    }
+    build_index(root, &manifests);
+
+    let log = Mutex::new(Vec::new());
+    let result = install_remote("app", None, root, &mut recorder(&log)).map(|_| ());
+    let out = log.lock().unwrap().clone();
+    (out, result)
+}
+
+#[test]
+fn dep_star_picks_newest() {
+    let (log, result) = run_dep_install("*", &["1.0.0", "2.0.0"]);
+    result.unwrap();
+    assert!(
+        log.contains(&"installed lib@2.0.0".to_string()),
+        "`*` must resolve to the newest version, got {log:?}",
+    );
+}
+
+#[test]
+fn dep_exact_pin_resolves_that_version() {
+    let (log, result) = run_dep_install("1.0.0", &["1.0.0", "2.0.0"]);
+    result.unwrap();
+    assert!(
+        log.contains(&"installed lib@1.0.0".to_string()),
+        "exact pin must resolve to 1.0.0 (not the newer 2.0.0), got {log:?}",
+    );
+}
+
+#[test]
+fn dep_range_picks_newest_satisfying() {
+    let (log, result) = run_dep_install(">=1.5", &["1.0.0", "1.5.0", "2.0.0"]);
+    result.unwrap();
+    assert!(
+        log.contains(&"installed lib@2.0.0".to_string()),
+        ">=1.5 must resolve to the newest satisfying version 2.0.0, got {log:?}",
+    );
+}
+
+#[test]
+fn dep_unsatisfiable_constraint_errors() {
+    let (log, result) = run_dep_install(">=9.0", &["1.0.0", "2.0.0"]);
+    assert!(
+        matches!(&result, Err(RemoteError::Unsatisfiable { dep, constraint })
+            if dep == "lib" && constraint == ">=9.0"),
+        "got {result:?}",
+    );
+    assert!(
+        log.is_empty(),
+        "nothing should install when a dependency constraint is unsatisfiable: {log:?}",
+    );
 }
 
 #[test]

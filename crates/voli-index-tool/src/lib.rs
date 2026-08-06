@@ -830,6 +830,10 @@ fn bump_one(
         )?;
         None
     };
+    // A single top-level `extract_dir` was measured against the x64 archive; if
+    // the arm64 archive extracts to a different wrapper, split it per-source so
+    // arm64 does not strip the x64 folder name.
+    place_extract_dir(&mut bumped);
     // The ONE canonical form (voli-core). `toml::to_string_pretty` used to be
     // called here and emitted a shape no other tool produced — empty collections,
     // expanded [autoupdate.checkver] tables — which collided with the registry
@@ -849,6 +853,57 @@ fn bump_one(
         to: update.version,
         note,
     })
+}
+
+/// Put `extract_dir` where a dual-arch bump needs it.
+///
+/// A single top-level `extract_dir` is the x64 archive's wrapper folder. When
+/// the arm64 archive extracts to a *different* folder, one shared value strips
+/// the wrong directory on arm64 - and a wrong `extract_dir` only fails after the
+/// whole archive has downloaded. So if the two archives' wrapper names differ,
+/// move the value per-source (each derived from that arch's own asset); if they
+/// match, one top-level value is correct and stays put.
+///
+/// Conservative on purpose: it only acts when the top-level value actually is
+/// the x64 archive's filename stem. A fixed wrapper unrelated to the filename
+/// (e.g. `Chrome-bin`) tells us nothing about the arm64 archive, so it is left
+/// top-level and [`Manifest::select_source`] keeps handling arm64 safely.
+fn place_extract_dir(m: &mut Manifest) {
+    let Some(top) = m.extract_dir.clone() else {
+        return;
+    };
+    let (Some(x64), Some(arm64)) = (m.source.x64.as_ref(), m.source.arm64.as_ref()) else {
+        return;
+    };
+    // A source that already carries its own extract_dir was authored per-arch,
+    // not guessed from the x64 archive - leave it be (update_source versioned it).
+    if x64.extract_dir.is_some() || arm64.extract_dir.is_some() {
+        return;
+    }
+    let x64_stem = asset_stem(&x64.url).to_string();
+    let arm64_stem = asset_stem(&arm64.url).to_string();
+    if top != x64_stem || arm64_stem == x64_stem {
+        return;
+    }
+    m.extract_dir = None;
+    m.source.x64.as_mut().unwrap().extract_dir = Some(x64_stem);
+    m.source.arm64.as_mut().unwrap().extract_dir = Some(arm64_stem);
+}
+
+/// The wrapper folder an archive URL extracts to by convention: its file name
+/// with the archive extension (and any query/`#fragment`) stripped.
+fn asset_stem(url: &str) -> &str {
+    let name = match url.split_once("#/") {
+        Some((_, fragment)) if !fragment.is_empty() => fragment,
+        _ => url.split(['?', '#']).next().unwrap_or(url),
+    };
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    for ext in [".tar.gz", ".tar.xz", ".tgz", ".zip", ".7z"] {
+        if let Some(stem) = name.strip_suffix(ext) {
+            return stem;
+        }
+    }
+    name
 }
 
 fn validate_resolved_version(version: &str) -> Result<()> {
@@ -885,6 +940,11 @@ fn update_source(
         source.sha512 = Some(hash);
     } else {
         source.sha256 = Some(hash);
+    }
+    // A per-arch source.extract_dir (already split off) is the archive's wrapper
+    // folder, so it carries the version like the top-level one and moves with it.
+    if let Some(dir) = &mut source.extract_dir {
+        *dir = dir.replace(old_version, new_version);
     }
     for extra in &mut source.extra {
         if let Some(url) = derive_url(&extra.url, old_version, new_version) {
@@ -1676,6 +1736,137 @@ sha256 = "{hash}"
 
         assert!(error.to_string().contains("arm64"));
         assert!(!root.path().join("t/tool/1.1.0.toml").exists());
+    }
+
+    /// A dual-arch bump whose x64 and arm64 archives extract to different wrapper
+    /// folders must emit `extract_dir` per-source. Leaving the single top-level
+    /// x64 value strips `..._amd64` from the arm64 tree, and a wrong extract_dir
+    /// fails with `ExtractDirMissing` only after the whole archive downloaded.
+    #[test]
+    fn bump_splits_extract_dir_per_arch_when_wrappers_differ() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            for request in server.incoming_requests().take(2) {
+                let body = if request.url().ends_with("-amd64.zip") {
+                    b"x64".as_slice()
+                } else {
+                    b"arm64".as_slice()
+                };
+                request
+                    .respond(tiny_http::Response::from_data(body))
+                    .unwrap();
+            }
+        });
+        let manifest = Manifest::from_toml_str(&format!(
+            r#"
+name = "acli"
+version = "1.0.0"
+kind = "app"
+extract_dir = "acli-1.0.0-amd64"
+bin = ["acli.exe"]
+
+[source.x64]
+url = "{base}/acli-1.0.0-amd64.zip"
+sha256 = "{hash}"
+
+[source.arm64]
+url = "{base}/acli-1.0.0-arm64.zip"
+sha256 = "{hash}"
+"#,
+            hash = "a".repeat(64)
+        ))
+        .unwrap();
+        let root = TempDir::new().unwrap();
+        let result = bump_one(
+            "acli",
+            &manifest,
+            ResolvedUpdate {
+                version: "1.1.0".into(),
+                x64_url: None,
+                arm64_url: None,
+            },
+            root.path(),
+        )
+        .unwrap();
+        worker.join().unwrap();
+        assert!(matches!(
+            result,
+            BumpResult::Bumped { from, to, note: None }
+                if from == "1.0.0" && to == "1.1.0"
+        ));
+
+        let emitted = fs::read_to_string(root.path().join("a/acli/1.1.0.toml")).unwrap();
+        let bumped = Manifest::from_toml_str(&emitted).unwrap();
+        // No single top-level value survives to be mis-applied to arm64...
+        assert_eq!(
+            bumped.extract_dir, None,
+            "top-level x64 extract_dir must be gone:\n{emitted}"
+        );
+        // ...each source carries its own archive's wrapper folder instead.
+        assert_eq!(
+            bumped.source.x64.unwrap().extract_dir.as_deref(),
+            Some("acli-1.1.0-amd64"),
+        );
+        assert_eq!(
+            bumped.source.arm64.unwrap().extract_dir.as_deref(),
+            Some("acli-1.1.0-arm64"),
+        );
+        // And the top-level scalar block emits no extract_dir line at all.
+        let head = emitted.split("[source.x64]").next().unwrap();
+        assert!(!head.contains("extract_dir"), "{emitted}");
+    }
+
+    /// The preserve-behavior side: matching wrappers stay one top-level value,
+    /// and a fixed folder unrelated to the filename is left alone rather than
+    /// mis-split from the arch tokens in the URLs.
+    #[test]
+    fn place_extract_dir_keeps_top_level_when_safe() {
+        let hash = "a".repeat(64);
+
+        // Fixed wrapper (not a filename stem): untouched, stays top-level.
+        let mut fixed = Manifest::from_toml_str(&format!(
+            r#"name = "browser"
+version = "1.0.0"
+kind = "app"
+extract_dir = "Chrome-bin"
+bin = ["browser.exe"]
+
+[source.x64]
+url = "https://example.com/browser-1.0.0-amd64.zip"
+sha256 = "{hash}"
+
+[source.arm64]
+url = "https://example.com/browser-1.0.0-arm64.zip"
+sha256 = "{hash}"
+"#
+        ))
+        .unwrap();
+        place_extract_dir(&mut fixed);
+        assert_eq!(fixed.extract_dir.as_deref(), Some("Chrome-bin"));
+        assert_eq!(fixed.source.x64.unwrap().extract_dir, None);
+
+        // Both arches share the same wrapper stem: one top-level value is correct.
+        let mut shared = Manifest::from_toml_str(&format!(
+            r#"name = "tool"
+version = "1.0.0"
+kind = "app"
+extract_dir = "tool-1.0.0"
+bin = ["tool.exe"]
+
+[source.x64]
+url = "https://example.com/tool-1.0.0.zip"
+sha256 = "{hash}"
+
+[source.arm64]
+url = "https://cdn.example.com/arm/tool-1.0.0.zip"
+sha256 = "{hash}"
+"#
+        ))
+        .unwrap();
+        place_extract_dir(&mut shared);
+        assert_eq!(shared.extract_dir.as_deref(), Some("tool-1.0.0"));
+        assert_eq!(shared.source.arm64.unwrap().extract_dir, None);
     }
 
     #[test]

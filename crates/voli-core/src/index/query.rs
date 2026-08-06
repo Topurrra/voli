@@ -178,6 +178,34 @@ pub fn manifest_at_ref(
     }
 }
 
+/// All indexed versions of an app `name` (following an alias), newest first.
+fn versions(root: &std::path::Path, name: &str) -> Result<Vec<String>, IndexError> {
+    let conn = open_index(root)?;
+    let name = resolve(
+        &conn,
+        &PackageRef {
+            kind: Kind::App,
+            name: name.to_string(),
+        },
+    )?;
+    let mut vs = super::versions_of(&conn, Kind::App, &name)?;
+    vs.sort_by(|a, b| super::cmp_version(b, a));
+    Ok(vs)
+}
+
+/// The newest indexed app version of `name` that satisfies `constraint`, or
+/// `None` when none do. Ordering and matching reuse `cmp_version`/`satisfies`,
+/// keeping constraint resolution consistent with the rest of version handling.
+pub fn newest_satisfying(
+    root: &std::path::Path,
+    name: &str,
+    constraint: &str,
+) -> Result<Option<String>, IndexError> {
+    Ok(versions(root, name)?
+        .into_iter()
+        .find(|v| super::satisfies(v, constraint)))
+}
+
 /// Suggestions for a name that missed: Jaro-Winkler ≥ 0.75 over package names
 /// AND bin names, best 5 first (spec §5 install-miss path).
 pub fn did_you_mean(root: &std::path::Path, wrong: &str) -> Result<Vec<Suggestion>, IndexError> {

@@ -114,7 +114,21 @@ pub enum Action {
         path: PathBuf,
         role: DirRole,
     },
+    /// A loose-FILE persist entry's copy in the persist store
+    /// (`apps\<name>\persist\<f>`). A directory junction cannot point at a
+    /// single file, so a file persist entry keeps its real copy here and hard
+    /// links it back into the version dir (see `HardLinkCreated`). Survives
+    /// uninstall like a persist dir; removed only on `--purge`.
+    PersistFileCreated {
+        path: PathBuf,
+    },
     JunctionCreated {
+        path: PathBuf,
+    },
+    /// A hard link in the version dir pointing at a `PersistFileCreated` file in
+    /// the persist store - the loose-file counterpart of `JunctionCreated`.
+    /// Removed on uninstall; the persist-store copy keeps the user's data.
+    HardLinkCreated {
         path: PathBuf,
     },
     ShimWritten {
@@ -150,7 +164,9 @@ impl Action {
     pub fn kind_str(&self) -> &'static str {
         match self {
             Action::DirCreated { .. } => "dir_created",
+            Action::PersistFileCreated { .. } => "persist_file_created",
             Action::JunctionCreated { .. } => "junction_created",
+            Action::HardLinkCreated { .. } => "hard_link_created",
             Action::ShimWritten { .. } => "shim_written",
             Action::EnvSet { .. } => "env_set",
             Action::PathAdded { .. } => "path_added",
@@ -539,10 +555,13 @@ fn install_fs_inner(
         role: DirRole::Version,
     });
 
-    // 5. persist dirs: move any extracted data out into apps\<name>\persist\<d>
-    //    and junction it back into the version dir so upgrades don't eat it.
-    // ponytail: persist names are treated as single directory names (the spec's
-    // examples are flat); nested persist paths are out of scope for v1.
+    // 5. persist: move any extracted user data out into apps\<name>\persist\<d>
+    //    and link it back into the version dir so upgrades don't eat it. A
+    //    DIRECTORY is carried by a junction; a loose FILE - which a junction
+    //    cannot point at - by a hard link into the persist store. Both cases
+    //    keep the real data in the persist store and leave the version dir
+    //    holding only a link, so an upgrade (re-links) and an uninstall (drops
+    //    the version-dir link, keeps the store) both preserve the user's data.
     if !manifest.persist.is_empty() {
         let persist_root = paths.persist_root(name);
         if !persist_root.exists() {
@@ -553,25 +572,61 @@ fn install_fs_inner(
             });
         }
         for d in &manifest.persist {
-            let persist_dir = persist_root.join(d);
+            let store = persist_root.join(d);
             let link = version_dir.join(d);
-            if !persist_dir.exists() {
-                if link.exists() {
-                    fs::rename(&link, &persist_dir)?;
-                } else {
-                    fs::create_dir_all(&persist_dir)?;
+            // FILE when the persist-store copy already is one (a prior install
+            // settled the kind) or, on first install, when the freshly
+            // extracted payload is a loose file. Anything else - a directory,
+            // or a name with nothing on disk - stays a directory (historical).
+            let is_file = if store.exists() {
+                store.is_file()
+            } else {
+                link.is_file()
+            };
+            if is_file {
+                if !store.exists() {
+                    // Nested file persist (e.g. `res\app.ini`) needs its store
+                    // parent; rename/hard_link both require it to exist first.
+                    if let Some(parent) = store.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    if link.exists() {
+                        fs::rename(&link, &store)?;
+                    } else {
+                        File::create(&store)?;
+                    }
+                    actions.push(Action::PersistFileCreated {
+                        path: store.clone(),
+                    });
+                } else if link.exists() {
+                    // persist already holds the file from a prior install; drop
+                    // the freshly extracted copy so the hard link can replace it.
+                    fs::remove_file(&link)?;
                 }
-                actions.push(Action::DirCreated {
-                    path: persist_dir.clone(),
-                    role: DirRole::Persist,
-                });
-            } else if link.exists() {
-                // persist already holds data from a prior install; drop the
-                // freshly extracted copy so the junction can take its place.
-                fs::remove_dir_all(&link)?;
+                if let Some(parent) = link.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::hard_link(&store, &link)?;
+                actions.push(Action::HardLinkCreated { path: link });
+            } else {
+                if !store.exists() {
+                    if link.exists() {
+                        fs::rename(&link, &store)?;
+                    } else {
+                        fs::create_dir_all(&store)?;
+                    }
+                    actions.push(Action::DirCreated {
+                        path: store.clone(),
+                        role: DirRole::Persist,
+                    });
+                } else if link.exists() {
+                    // persist already holds data from a prior install; drop the
+                    // freshly extracted copy so the junction can take its place.
+                    fs::remove_dir_all(&link)?;
+                }
+                junction::create(&store, &link)?;
+                actions.push(Action::JunctionCreated { path: link });
             }
-            junction::create(&persist_dir, &link)?;
-            actions.push(Action::JunctionCreated { path: link });
         }
     }
 
@@ -675,10 +730,18 @@ fn rollback(subkey: &str, actions: &[Action]) {
                 let _ = junction::delete(path);
                 let _ = fs::remove_dir(path);
             }
+            // Removing this hard link only drops the version-dir name; the
+            // persist-store file (a separate action below) still holds the data.
+            Action::HardLinkCreated { path } => {
+                let _ = fs::remove_file(path);
+            }
             // A failed install is undone completely, persist included, so the
             // root is byte-identical to before.
             Action::DirCreated { path, .. } => {
                 let _ = fs::remove_dir_all(path);
+            }
+            Action::PersistFileCreated { path } => {
+                let _ = fs::remove_file(path);
             }
             Action::EnvSet { key, prior, .. } => {
                 restore_env(subkey, key, prior.as_deref());
@@ -764,6 +827,22 @@ pub fn uninstall_env(
                 let _ = junction::delete(path);
                 let _ = fs::remove_dir(path);
                 check_gone(path, &mut remaining);
+            }
+            // Drops only the version-dir name of a hard-linked persist file; the
+            // persist-store copy (kept below unless purging) keeps the data.
+            Action::HardLinkCreated { path } => {
+                let _ = fs::remove_file(path);
+                check_gone(path, &mut remaining);
+            }
+            // The persist-store copy of a loose file: kept like a persist dir,
+            // removed only on purge (mirrors DirRole::Persist).
+            Action::PersistFileCreated { path } => {
+                if purge {
+                    let _ = fs::remove_file(path);
+                    check_gone(path, &mut remaining);
+                } else {
+                    kept_persist = true;
+                }
             }
             Action::DirCreated { path, role } => match role {
                 DirRole::Version => {

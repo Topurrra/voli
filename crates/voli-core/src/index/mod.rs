@@ -25,7 +25,7 @@ pub use build::{build, read_epoch, stamp_epoch};
 pub use net::{MAX_EPOCH, UpdateOutcome, update, update_with_pubkey};
 pub use query::{
     SearchHit, Suggestion, did_you_mean, did_you_mean_ref, info, info_ref, manifest_at,
-    manifest_at_ref, resolved_alias, search,
+    manifest_at_ref, newest_satisfying, resolved_alias, search,
 };
 pub use sign::{DEV_PUBKEY, sign, verify};
 
@@ -105,29 +105,36 @@ fn latest_version(
     kind: crate::manifest::Kind,
     name: &str,
 ) -> Result<Option<String>, IndexError> {
-    let table = if kind == crate::manifest::Kind::App {
-        "packages"
-    } else if conn.query_row(
+    Ok(versions_of(conn, kind, name)?
+        .into_iter()
+        .max_by(|a, b| cmp_version(a, b)))
+}
+
+/// Every distinct version string for `(kind, name)`, unordered. Empty when the
+/// package (or the agent-packages table) is absent.
+fn versions_of(
+    conn: &Connection,
+    kind: crate::manifest::Kind,
+    name: &str,
+) -> Result<Vec<String>, IndexError> {
+    if kind == crate::manifest::Kind::App {
+        let mut stmt = conn.prepare("SELECT DISTINCT version FROM packages WHERE name = ?1")?;
+        return Ok(stmt
+            .query_map([name], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?);
+    }
+    if !conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'agent_packages')",
         [],
         |row| row.get::<_, bool>(0),
     )? {
-        "agent_packages"
-    } else {
-        return Ok(None);
-    };
-    let versions: Vec<String> = if kind == crate::manifest::Kind::App {
-        let mut stmt = conn.prepare("SELECT DISTINCT version FROM packages WHERE name = ?1")?;
-        stmt.query_map([name], |row| row.get(0))?
-            .collect::<rusqlite::Result<_>>()?
-    } else {
-        let mut stmt = conn.prepare(&format!(
-            "SELECT DISTINCT version FROM {table} WHERE kind = ?1 AND name = ?2"
-        ))?;
-        stmt.query_map(rusqlite::params![kind.as_str(), name], |row| row.get(0))?
-            .collect::<rusqlite::Result<_>>()?
-    };
-    Ok(versions.into_iter().max_by(|a, b| cmp_version(a, b)))
+        return Ok(Vec::new());
+    }
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT version FROM agent_packages WHERE kind = ?1 AND name = ?2")?;
+    Ok(stmt
+        .query_map(rusqlite::params![kind.as_str(), name], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
 }
 
 /// Compare two version strings, numeric-aware (`1.10.0 > 1.9.0`).
@@ -156,6 +163,95 @@ fn tokenize_version(v: &str) -> Vec<&str> {
         .collect()
 }
 
+/// True if version `v` satisfies a `[depends]` `constraint`.
+///
+/// Grammar (the operators the catalog actually uses): `*` or empty (any); a bare
+/// version for an exact match (`1.2.3`, optionally written `=1.2.3`); the
+/// comparisons `>=`, `>`, `<=`, `<`; and the range shorthands `^` (caret) and
+/// `~` (tilde). Ordering and equality reuse [`cmp_version`], so this inherits its
+/// numeric-aware, dotted/dashed tokenization (and its lack of pre-release
+/// precedence).
+///
+/// ponytail: hand-rolled over single constraints - no unions (`>=1,<2`). Swap in
+/// the `semver` crate if the catalog ever needs unions or real pre-release order.
+fn satisfies(v: &str, constraint: &str) -> bool {
+    let c = constraint.trim();
+    if c.is_empty() || c == "*" {
+        return true;
+    }
+    if let Some(base) = c.strip_prefix(">=") {
+        return cmp_version(v, base.trim()) != Ordering::Less;
+    }
+    if let Some(base) = c.strip_prefix("<=") {
+        return cmp_version(v, base.trim()) != Ordering::Greater;
+    }
+    if let Some(base) = c.strip_prefix('>') {
+        return cmp_version(v, base.trim()) == Ordering::Greater;
+    }
+    if let Some(base) = c.strip_prefix('<') {
+        return cmp_version(v, base.trim()) == Ordering::Less;
+    }
+    if let Some(base) = c.strip_prefix('^') {
+        let base = base.trim();
+        return cmp_version(v, base) != Ordering::Less && below(v, &caret_upper(base));
+    }
+    if let Some(base) = c.strip_prefix('~') {
+        let base = base.trim();
+        return cmp_version(v, base) != Ordering::Less && below(v, &tilde_upper(base));
+    }
+    let base = c.strip_prefix('=').map(str::trim).unwrap_or(c);
+    cmp_version(v, base) == Ordering::Equal
+}
+
+/// Numeric components of a version, stopping at the first non-numeric token
+/// (`1.2.3-rc1` -> `[1, 2, 3]`). Used to build caret/tilde upper bounds.
+fn numeric_parts(v: &str) -> Vec<u64> {
+    let mut parts = Vec::new();
+    for tok in v.split(['.', '-', '+', '_']) {
+        match tok.parse::<u64>() {
+            Ok(n) => parts.push(n),
+            Err(_) => break,
+        }
+    }
+    parts
+}
+
+/// Exclusive upper bound for a caret constraint, as numeric parts. `^1.2.3` ->
+/// `[2]` (<2.0.0); `^0.2.3` -> `[0, 3]` (<0.3.0); `^0.0.3` -> `[0, 0, 4]`. An
+/// all-zero base bumps its last component (`^0.0.0` -> `[0, 0, 1]`).
+fn caret_upper(base: &str) -> Vec<u64> {
+    let mut parts = numeric_parts(base);
+    if parts.is_empty() {
+        return parts;
+    }
+    let idx = parts
+        .iter()
+        .position(|&n| n != 0)
+        .unwrap_or(parts.len() - 1);
+    parts[idx] += 1;
+    parts.truncate(idx + 1);
+    parts
+}
+
+/// Exclusive upper bound for a tilde constraint, as numeric parts. `~1.2.3` and
+/// `~1.2` -> `[1, 3]` (<1.3.0); `~1` -> `[2]` (<2.0.0).
+fn tilde_upper(base: &str) -> Vec<u64> {
+    let mut parts = numeric_parts(base);
+    if parts.is_empty() {
+        return parts;
+    }
+    let idx = if parts.len() >= 2 { 1 } else { 0 };
+    parts[idx] += 1;
+    parts.truncate(idx + 1);
+    parts
+}
+
+/// True if `v`'s numeric parts fall below an exclusive `upper` bound. An empty
+/// bound (unparseable base) imposes no ceiling.
+fn below(v: &str, upper: &[u64]) -> bool {
+    upper.is_empty() || numeric_parts(v).as_slice() < upper
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +262,38 @@ mod tests {
         assert_eq!(cmp_version("2.0.0", "1.99.99"), Ordering::Greater);
         assert_eq!(cmp_version("1.0.0", "1.0.0"), Ordering::Equal);
         assert_eq!(cmp_version("1.0", "1.0.1"), Ordering::Less);
+    }
+
+    #[test]
+    fn satisfies_matches_operators() {
+        // star / empty: anything.
+        assert!(satisfies("1.0.0", "*"));
+        assert!(satisfies("9.9.9", ""));
+        // exact (bare and =).
+        assert!(satisfies("1.2.3", "1.2.3"));
+        assert!(satisfies("1.2.3", "=1.2.3"));
+        assert!(!satisfies("1.2.4", "1.2.3"));
+        // Comparisons (>= before >, <= before < in the parser). Same component
+        // count on both sides so the naive comparator's length tie-break
+        // (`1.2.0` > `1.2`) does not muddy equality.
+        assert!(satisfies("1.2.0", ">=1.2.0"));
+        assert!(satisfies("2.0.0", ">=1.2.0"));
+        assert!(!satisfies("1.1.9", ">=1.2.0"));
+        assert!(satisfies("1.1.0", "<1.2.0"));
+        assert!(!satisfies("1.2.0", "<1.2.0"));
+        assert!(satisfies("1.2.0", "<=1.2.0"));
+        assert!(!satisfies("1.2.1", "<=1.2.0"));
+        assert!(satisfies("1.3.0", ">1.2.0"));
+        assert!(!satisfies("1.2.0", ">1.2.0"));
+        // caret: ^1.2.3 -> >=1.2.3, <2.0.0.
+        assert!(satisfies("1.9.9", "^1.2.3"));
+        assert!(!satisfies("2.0.0", "^1.2.3"));
+        assert!(!satisfies("1.2.2", "^1.2.3"));
+        // caret with a leading zero: ^0.2.3 -> >=0.2.3, <0.3.0.
+        assert!(satisfies("0.2.9", "^0.2.3"));
+        assert!(!satisfies("0.3.0", "^0.2.3"));
+        // tilde: ~1.2 -> >=1.2.0, <1.3.0.
+        assert!(satisfies("1.2.9", "~1.2"));
+        assert!(!satisfies("1.3.0", "~1.2"));
     }
 }
