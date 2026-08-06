@@ -35,3 +35,6 @@ voli-memory-prompt*.md
 # agent-local config and skills voli installs here; the skill's source of
 # truth is skills/voli-memory/, and settings.local.json is personal
 .claude/
+
+# design redesign mockups: local review only, never served or shipped
+redesign/

@@ -1,0 +1,28 @@
+# voli website for self-hosting (Hetzner).
+#
+#   docker compose up -d --build      # build and start
+#   docker compose down               # stop
+#
+# The host port defaults to 47823 (uncommon on purpose, so it will not clash
+# with the other apps already running on the box). Override it per run:
+#
+#   VOLI_WEB_PORT=51900 docker compose up -d --build
+#
+# The site is then reachable at http://<host>:47823 . If you front it with a
+# reverse proxy (Caddy / nginx / Traefik) that terminates TLS for volibear.dev,
+# point the proxy at that port. To keep it private to the box (proxy only, not
+# public), change the mapping to "127.0.0.1:${VOLI_WEB_PORT:-47823}:80".
+services:
+  voli-web:
+    build: .
+    image: voli-web:latest
+    container_name: voli-web
+    restart: unless-stopped
+    ports:
+      - "${VOLI_WEB_PORT:-47823}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
