@@ -510,6 +510,8 @@
     .stat-grid .stat.reveal:nth-child(2)  { transition-delay: .10s; }
     .stat-grid .stat.reveal:nth-child(3)  { transition-delay: .20s; }
     .stat-grid .stat.reveal:nth-child(4)  { transition-delay: .30s; }
+    .stat-grid .stat.reveal:nth-child(5)  { transition-delay: .40s; }
+    .stat-grid .stat.reveal:nth-child(6)  { transition-delay: .50s; }
     .g-grid .g-card.reveal:nth-child(2)   { transition-delay: .08s; }
     .g-grid .g-card.reveal:nth-child(3)   { transition-delay: .16s; }
     .g-grid .g-card.reveal:nth-child(4)   { transition-delay: .24s; }
@@ -1393,6 +1395,14 @@
             <p class="num" id="dl-count">&nbsp;</p>
             <p>Downloads. Every install goes through a release asset, including the one-line installer.</p>
           </div>
+          <div class="stat reveal" id="pkg-stat" hidden>
+            <p class="num" id="pkg-count">&nbsp;</p>
+            <p>Packages in the signed index, each pinned to a sha256 - no bucket to clone, no install script to trust.</p>
+          </div>
+          <div class="stat reveal" id="skill-stat" hidden>
+            <p class="num" id="skill-count">&nbsp;</p>
+            <p>Agent skills, installed like any package - signed, pinned, and versioned the same way.</p>
+          </div>
         </div>
       </div>
     </section>
@@ -2173,6 +2183,68 @@
           /* Rate-limited, offline, or blocked. The card stays hidden and the row
              reads as three -- no error, no zero, no stale placeholder. */
         });
+    })();
+
+    /* Catalog scale, counted from the same signed index the search page reads.
+       Same idea as the downloads card: the number is the registry's and the page
+       just counts it, so it holds by construction rather than by remembering to
+       edit a constant. Lazy -- the catalog is only pulled once these cards scroll
+       near -- cached for the session, and if it cannot be fetched the two cards
+       stay hidden rather than show a guess. */
+    (function () {
+      var pkgStat = document.getElementById('pkg-stat');
+      var skillStat = document.getElementById('skill-stat');
+      var pkgOut = document.getElementById('pkg-count');
+      var skillOut = document.getElementById('skill-count');
+      if (!pkgStat || !skillStat || !window.VoliCatalog) return;
+
+      var CACHE = 'voli-catalog-counts';
+
+      function reveal(stat, out, value) {
+        if (!(value > 0)) return; // nothing worth showing, stay hidden
+        out.textContent = value.toLocaleString();
+        stat.hidden = false;
+        stat.classList.add('in'); // the reveal observer may have passed already
+      }
+      function show(counts) {
+        reveal(pkgStat, pkgOut, counts.apps);
+        reveal(skillStat, skillOut, counts.skills);
+      }
+
+      // A count seen earlier this session paints immediately, no refetch needed.
+      try {
+        var cached = JSON.parse(sessionStorage.getItem(CACHE) || 'null');
+        if (cached) show(cached);
+      } catch (e) { /* private mode: just fetch */ }
+
+      var started = false;
+      function pull() {
+        if (started) return;
+        started = true;
+        window.VoliCatalog.load().then(function (packages) {
+          if (!Array.isArray(packages)) return;
+          var skills = 0;
+          packages.forEach(function (p) {
+            if (window.VoliCatalog.kind(p) === 'skill') skills++;
+          });
+          var counts = { apps: packages.length - skills, skills: skills };
+          try { sessionStorage.setItem(CACHE, JSON.stringify(counts)); } catch (e) { /* ignore */ }
+          show(counts);
+        }).catch(function () { /* offline or blocked: the cards stay hidden */ });
+      }
+
+      // Only pull the full catalog once the numbers are about to be seen.
+      var grid = pkgStat.closest('.stat-grid');
+      if (grid && 'IntersectionObserver' in window) {
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) {
+            if (e.isIntersecting) { io.disconnect(); pull(); }
+          });
+        }, { rootMargin: '300px' });
+        io.observe(grid);
+      } else {
+        pull();
+      }
     })();
   </script>
   <script src="assets/hero-bg.js" defer></script>
