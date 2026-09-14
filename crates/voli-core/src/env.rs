@@ -42,7 +42,12 @@ pub fn env_subkey() -> String {
 /// separator); case-sensitive on unix (where `:` separates and `/` trails).
 #[cfg(windows)]
 fn seg_eq(a: &str, b: &str) -> bool {
-    let norm = |s: &str| s.trim().trim_end_matches(['\\', '/']);
+    // Plain fn (not a closure): elided lifetimes tie the return to the
+    // argument, which a `|s: &str|` closure does not do. Compared with
+    // `eq_ignore_ascii_case` (not two `to_ascii_lowercase()`s) per clippy.
+    fn norm(s: &str) -> &str {
+        s.trim().trim_end_matches(['\\', '/'])
+    }
     norm(a).eq_ignore_ascii_case(norm(b))
 }
 
