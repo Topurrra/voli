@@ -54,7 +54,8 @@ fn shim_target_through_current(first: &str, file: &str) -> bool {
 
 /// Shortcut file path for a link name (`.lnk` on Windows, `.desktop` on Linux;
 /// macOS installs skip shortcuts, but `VOLI_SHORTCUT_DIR` still redirects them
-/// in tests).
+/// in tests). Unused on macOS (both shortcut tests are gated out there).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn shortcut_path(dir: &Path, name: &str) -> PathBuf {
     #[cfg(windows)]
     {
@@ -1080,6 +1081,10 @@ sha256 = "{sha256}"
 /// (The PowerShell-injection guard now lives in `install.rs` as a unit test on
 /// `create_shortcut` itself — the manifest layer rejects `$` and a backtick, so
 /// such a name can no longer reach an install.)
+///
+/// Not run on macOS: shortcuts are skipped there (see
+/// `shortcuts_are_skipped_on_macos`), so there is no subfolder to assert on.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn nested_shortcut_creates_and_prunes_its_subfolder() {
     let td = setup();
@@ -1133,6 +1138,7 @@ sha256 = "{}"
     );
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn shortcut_and_apps_features_lifecycle() {
     use voli_core::uninstall_reg;
@@ -1238,4 +1244,39 @@ sha256 = "{}"
     // Cleanup our own package key; the binary-wide scratch base and env vars
     // stay for the whole process (other tests share them).
     uninstall("rgshort", root, true).unwrap();
+}
+
+/// macOS has no shortcut equivalent: a manifest that declares shortcuts still
+/// installs (binaries, link, shims) with only the launchers skipped — and the
+/// ledger records no `ShortcutCreated`, so uninstall has nothing to prune.
+#[cfg(target_os = "macos")]
+#[test]
+fn shortcuts_are_skipped_on_macos() {
+    let td = setup();
+    let root = td.path();
+
+    let zip = ripgrep_zip();
+    let archive = root.join("rg.zip");
+    fs::write(&archive, &zip).unwrap();
+    let manifest = write_manifest_with_shortcuts(root, &sha256_hex(&zip));
+
+    install_local(&manifest, &archive, root).expect("install should succeed");
+
+    // Binaries + link + shims landed.
+    assert!(root.join("apps/rgshort/current/rg.exe").is_file());
+    assert!(is_link(&root.join("apps/rgshort/current")));
+    assert!(root.join("shims/rg.shim").is_file());
+
+    // No shortcut action recorded.
+    let state = State::open(&root.join("db/state.sqlite")).unwrap();
+    let has_shortcut = state
+        .actions_for("rgshort")
+        .unwrap()
+        .iter()
+        .any(|a| matches!(a, voli_core::Action::ShortcutCreated { .. }));
+    assert!(!has_shortcut, "macOS installs must not record shortcuts");
+    drop(state);
+
+    uninstall("rgshort", root, true).unwrap();
+    assert!(!root.join("apps/rgshort").exists());
 }

@@ -79,7 +79,9 @@ mod backend {
     use winreg::types::FromRegValue;
 
     /// Open (creating if absent) an `HKCU\<subkey>` with read+write access.
-    fn open(subkey: &str) -> io::Result<RegKey> {
+    /// `pub(super)` so the unit tests in the parent module can probe raw
+    /// values (e.g. the PATH registry type) without going through `get`.
+    pub(super) fn open(subkey: &str) -> io::Result<RegKey> {
         RegKey::predef(HKEY_CURRENT_USER)
             .create_subkey(subkey)
             .map(|(key, _)| key)

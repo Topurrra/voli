@@ -804,30 +804,27 @@ fn install_fs_inner(
     }
 
     // 10. Application shortcuts: Start Menu `.lnk` (via the WScript.Shell COM
-    //     object) on Windows, `.desktop` files on Linux, skipped on macOS.
+    //     object) on Windows, `.desktop` files on Linux. macOS has no equivalent
+    //     (a bare exe path cannot become an app bundle), so manifests that
+    //     declare shortcuts still install there — binaries + shims — with only
+    //     the launchers skipped.
     //     `link_name()` is manifest-validated to a single plain file name, so
     //     the join stays inside link_dir and the value never reaches a parser.
-    //     On macOS shortcuts are unsupported: manifests that declare them still
-    //     install (binaries + shims); only the launchers are skipped.
+    #[cfg(not(target_os = "macos"))]
     if !manifest.shortcuts.is_empty() {
-        match shortcut_dir() {
-            Err(e) if e.kind() == io::ErrorKind::Unsupported => {}
-            Err(e) => return Err(e.into()),
-            Ok(link_dir) => {
-                for sc in &manifest.shortcuts {
-                    fs::create_dir_all(&link_dir)?;
-                    let link_path = link_dir.join(shortcut_file_name(sc));
-                    // A shortcut name may nest (`Vendor\App` is a Start Menu subfolder, used
-                    // by several published packages). The name is validated relative, so the
-                    // parent always stays under link_dir.
-                    if let Some(parent) = link_path.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    let target = current.join(sc.target());
-                    create_shortcut(&link_path, &target, &current, &manifest.name)?;
-                    actions.push(Action::ShortcutCreated { path: link_path });
-                }
+        let link_dir = shortcut_dir()?;
+        for sc in &manifest.shortcuts {
+            fs::create_dir_all(&link_dir)?;
+            let link_path = link_dir.join(shortcut_file_name(sc));
+            // A shortcut name may nest (`Vendor\App` is a Start Menu subfolder, used
+            // by several published packages). The name is validated relative, so the
+            // parent always stays under link_dir.
+            if let Some(parent) = link_path.parent() {
+                fs::create_dir_all(parent)?;
             }
+            let target = current.join(sc.target());
+            create_shortcut(&link_path, &target, &current, &manifest.name)?;
+            actions.push(Action::ShortcutCreated { path: link_path });
         }
     }
 
@@ -881,7 +878,9 @@ fn shim_body(target: &Path, args: Option<&str>) -> String {
 
 /// Whether a `.shim` body line is an `KEY=VALUE` env assignment (unix
 /// shim-injected env, lines 3+). Line 2 is always args, even if it contains
-/// `=`, so this is only applied from line 3 on.
+/// `=`, so this is only applied from line 3 on. Unix-only at runtime; the
+/// unit tests exercise it on every platform.
+#[cfg_attr(windows, allow(dead_code))]
 fn parse_shim_env_line(line: &str) -> Option<(String, String)> {
     let line = line.strip_suffix('\r').unwrap_or(line);
     let (key, value) = line.split_once('=')?;
@@ -1530,7 +1529,8 @@ fn shortcut_dir() -> io::Result<PathBuf> {
 }
 
 /// The shortcut file name for a manifest shortcut entry: `<name>.lnk` on
-/// Windows, `<name>.desktop` on Linux.
+/// Windows, `<name>.desktop` on Linux. Unused on macOS (shortcuts skipped).
+#[cfg(not(target_os = "macos"))]
 fn shortcut_file_name(sc: &crate::manifest::Shortcut) -> String {
     #[cfg(windows)]
     {
@@ -1556,26 +1556,22 @@ const SHORTCUT_SCRIPT: &str = "$ws = New-Object -ComObject WScript.Shell\n\
      $sc.WorkingDirectory = $env:VOLI_LNK_WORKDIR\n\
      $sc.Save()";
 
+/// Create the shortcut file. Absent on macOS (see the install step, which
+/// skips shortcuts there entirely).
+#[cfg(not(target_os = "macos"))]
 fn create_shortcut(
     link_path: &Path,
     target: &Path,
     working_dir: &Path,
     app_name: &str,
 ) -> io::Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = (link_path, target, working_dir, app_name);
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "shortcuts are not supported on macOS",
-        ));
-    }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         create_desktop_shortcut(link_path, target, working_dir, app_name)
     }
     #[cfg(windows)]
     {
+        let _ = app_name;
         let output = std::process::Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", SHORTCUT_SCRIPT])
             .env("VOLI_LNK_PATH", link_path)

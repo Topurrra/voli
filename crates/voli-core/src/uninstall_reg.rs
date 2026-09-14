@@ -162,6 +162,8 @@ pub use backend::{delete_base, delete_key, key_exists, list_voli_keys, write_key
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
 
     fn scratch(name: &str) -> String {
         format!("Software\\voli-test-uninstall\\{name}")
