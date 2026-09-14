@@ -3,6 +3,13 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
+## v0.13.2
+
+### Fixed
+
+- Windows build break in `env::seg_eq` (closure lifetime) introduced
+  with the previous clippy fix; v0.13.1 never shipped Windows assets.
+
 ## v0.13.1
 
 ### Fixed

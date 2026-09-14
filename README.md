@@ -25,7 +25,7 @@ The installer downloads the latest release, verifies its SHA-256, and runs
 if you like: [`install.ps1`](install.ps1) (Windows), [`install.sh`](install.sh)
 (Linux/macOS).
 
-> **Status: v0.13.1, still pre-1.0.** The core workflow is released and working,
+> **Status: v0.13.2, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)
