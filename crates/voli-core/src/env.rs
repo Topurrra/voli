@@ -42,8 +42,8 @@ pub fn env_subkey() -> String {
 /// separator); case-sensitive on unix (where `:` separates and `/` trails).
 #[cfg(windows)]
 fn seg_eq(a: &str, b: &str) -> bool {
-    let norm = |s: &str| s.trim().trim_end_matches(['\\', '/']).to_ascii_lowercase();
-    norm(a) == norm(b)
+    let norm = |s: &str| s.trim().trim_end_matches(['\\', '/']);
+    norm(a).eq_ignore_ascii_case(norm(b))
 }
 
 #[cfg(not(windows))]

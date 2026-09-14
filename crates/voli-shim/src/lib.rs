@@ -151,11 +151,9 @@ impl Shim {
                 let already = current.split(SEP).any(|s| {
                     #[cfg(windows)]
                     {
-                        s.trim().trim_end_matches(['\\', '/']).to_ascii_lowercase()
-                            == value
-                                .trim()
-                                .trim_end_matches(['\\', '/'])
-                                .to_ascii_lowercase()
+                        s.trim()
+                            .trim_end_matches(['\\', '/'])
+                            .eq_ignore_ascii_case(value.trim().trim_end_matches(['\\', '/']))
                     }
                     #[cfg(not(windows))]
                     {
