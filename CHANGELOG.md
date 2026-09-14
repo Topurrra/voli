@@ -3,6 +3,14 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
+## v0.13.1
+
+### Fixed
+
+- Windows Clippy denial (`manual_ignore_case_cmp` in shim env PATH
+  comparison and `env::seg_eq`) that failed CI and the v0.13.0 release
+  before any Windows assets were published.
+
 ## v0.13.0
 
 ### Added
