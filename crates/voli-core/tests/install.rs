@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
+#[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -17,20 +18,75 @@ use sha2::{Digest, Sha256};
 use voli_core::{InstallError, State, install_local, uninstall};
 use zip::write::SimpleFileOptions;
 
+/// True if `path` is a directory link: an NTFS junction on Windows, a symlink
+/// on unix. (The `junction` crate is Windows-only, so tests probe directly.)
+fn is_link(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        junction::exists(path).unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        path.symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+}
+
+/// Installed shim executable path for a base name (`shims/rg.exe` on Windows,
+/// extensionless `shims/rg` on unix).
+fn shim_exe_path(root: &Path, base: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        root.join(format!("shims/{base}.exe"))
+    }
+    #[cfg(not(windows))]
+    {
+        root.join(format!("shims/{base}"))
+    }
+}
+
+/// Whether a `.shim` line-1 target points through `current/` at `file`.
+/// Accepts either path separator so one assertion covers both platforms.
+fn shim_target_through_current(first: &str, file: &str) -> bool {
+    first.ends_with(&format!("current/{file}")) || first.ends_with(&format!("current\\{file}"))
+}
+
+/// Shortcut file path for a link name (`.lnk` on Windows, `.desktop` on Linux;
+/// macOS installs skip shortcuts, but `VOLI_SHORTCUT_DIR` still redirects them
+/// in tests).
+fn shortcut_path(dir: &Path, name: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        dir.join(format!("{name}.lnk"))
+    }
+    #[cfg(not(windows))]
+    {
+        dir.join(format!("{name}.desktop"))
+    }
+}
+
 static STUB: Once = Once::new();
 
 /// Ensure a shim stub exists and `VOLI_SHIM_STUB` points at it. Prefer a real
-/// built voli-shim.exe next to the test binary; otherwise drop a dummy file.
+/// built voli-shim next to the test binary; otherwise drop a dummy file.
 fn ensure_stub() {
     STUB.call_once(|| {
-        // target/debug/voli-shim.exe sits next to the test exe's parent.
+        // target/debug/voli-shim[.exe] sits next to the test exe's parent.
+        #[cfg(windows)]
+        let stub_name = "voli-shim.exe";
+        #[cfg(not(windows))]
+        let stub_name = "voli-shim";
         let real = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(Path::to_path_buf))
-            .and_then(|deps| deps.parent().map(|d| d.join("voli-shim.exe")))
+            .and_then(|deps| deps.parent().map(|d| d.join(stub_name)))
             .filter(|p| p.exists());
         let stub = real.unwrap_or_else(|| {
+            #[cfg(windows)]
             let p = std::env::temp_dir().join("voli-test-shim-stub.exe");
+            #[cfg(not(windows))]
+            let p = std::env::temp_dir().join("voli-test-shim-stub");
             fs::write(&p, b"dummy shim stub").unwrap();
             p
         });
@@ -149,15 +205,31 @@ kind = "installer-archive"
 }
 
 fn system_7z_available() -> bool {
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).any(|dir| dir.join("7z.exe").is_file()))
+    #[cfg(windows)]
+    let names: &[&str] = &["7z.exe"];
+    #[cfg(not(windows))]
+    let names: &[&str] = &["7zz", "7z"];
+    if std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path).any(|dir| names.iter().any(|n| dir.join(n).is_file()))
+        })
         .unwrap_or(false)
-        || [
+    {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        [
             r"C:\Program Files\7-Zip\7z.exe",
             r"C:\Program Files (x86)\7-Zip\7z.exe",
         ]
         .iter()
         .any(|path| Path::new(path).is_file())
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 /// Recursively snapshot a tree as relative-path -> Some(bytes) for files or
@@ -269,25 +341,25 @@ fn happy_path_install() {
 
     // current junction resolves to the version dir.
     let current = root.join("apps/ripgrep/current");
-    assert!(junction::exists(&current).unwrap());
+    assert!(is_link(&current));
     assert!(current.join("rg.exe").is_file());
 
     // Shim pair, target points through current\.
     let shim = root.join("shims/rg.shim");
-    let shim_exe = root.join("shims/rg.exe");
+    let shim_exe = shim_exe_path(root, "rg");
     assert!(shim.is_file());
     assert!(shim_exe.is_file());
     let body = fs::read_to_string(&shim).unwrap();
     let first = body.lines().next().unwrap();
     assert!(
-        first.ends_with("current\\rg.exe"),
+        shim_target_through_current(first, "rg.exe"),
         "shim target was {first}"
     );
 
     // persist: data moved out, junctioned back in.
     let persisted = root.join("apps/ripgrep/persist/config/settings.txt");
     assert_eq!(fs::read_to_string(&persisted).unwrap(), "user=neo");
-    assert!(junction::exists(vdir.join("config")).unwrap());
+    assert!(is_link(&vdir.join("config")));
     assert_eq!(
         fs::read_to_string(vdir.join("config/settings.txt")).unwrap(),
         "user=neo"
@@ -415,7 +487,7 @@ fn uninstall_leaves_zero_trace_but_keeps_persist() {
     assert!(!root.join("apps/ripgrep/1.0.0").exists());
     assert!(!root.join("apps/ripgrep/current").exists());
     assert!(!root.join("shims/rg.shim").exists());
-    assert!(!root.join("shims/rg.exe").exists());
+    assert!(!shim_exe_path(root, "rg").exists());
     // persist survives with its data intact.
     assert_eq!(
         fs::read_to_string(root.join("apps/ripgrep/persist/config/settings.txt")).unwrap(),
@@ -481,7 +553,7 @@ sha256 = "{}"
     // junction::exists errors ("not a reparse point") for a hard link, which is
     // itself proof it is not a junction; Ok(false) says the same.
     assert!(
-        !junction::exists(&link).unwrap_or(false),
+        !is_link(&link),
         "the version-dir entry must be a hard link, not a junction"
     );
 
@@ -513,6 +585,12 @@ sha256 = "{}"
 /// Dropping the ledger row while files survive strands them: `voli delete` then
 /// says NotInstalled and `cleanup` iterates the ledger, so nothing shipped can
 /// ever reach them again.
+///
+/// Windows-only: it relies on share-mode locks (open with no sharing makes
+/// every delete fail). Unix has no such locks — an open file unlinks fine —
+/// so the unix counterpart below asserts the opposite: open handles do not
+/// block removal.
+#[cfg(windows)]
 #[test]
 fn uninstall_that_cannot_remove_files_keeps_the_ledger_row() {
     let td = setup();
@@ -554,6 +632,29 @@ fn uninstall_that_cannot_remove_files_keeps_the_ledger_row() {
 
     // Once the file is free, the same command finishes the job.
     drop(handle);
+    uninstall("ripgrep", root, true).unwrap();
+    assert!(!root.join("apps/ripgrep").exists());
+    let state = State::open(&root.join("db/state.sqlite")).unwrap();
+    assert!(state.list().unwrap().is_empty());
+}
+
+/// Unix counterpart: an open file handle does NOT block removal (no share-mode
+/// locks), so uninstalling while the payload is open still reaches zero trace.
+#[cfg(not(windows))]
+#[test]
+fn uninstall_with_open_files_still_reaches_zero_trace() {
+    let td = setup();
+    let root = td.path();
+    let zip = ripgrep_zip();
+    let archive = root.join("rg.zip");
+    fs::write(&archive, &zip).unwrap();
+    let manifest = write_manifest(root, &sha256_hex(&zip));
+
+    install_local(&manifest, &archive, root).unwrap();
+
+    let open_file = root.join("apps/ripgrep/1.0.0/rg.exe");
+    let _handle = std::fs::File::open(&open_file).unwrap();
+
     uninstall("ripgrep", root, true).unwrap();
     assert!(!root.join("apps/ripgrep").exists());
     let state = State::open(&root.join("db/state.sqlite")).unwrap();
@@ -624,23 +725,23 @@ fn happy_path_install_7z() {
     assert_eq!(report.version_dir, vdir);
 
     let current = root.join("apps/ripgrep/current");
-    assert!(junction::exists(&current).unwrap());
+    assert!(is_link(&current));
     assert!(current.join("rg.exe").is_file());
 
     let shim = root.join("shims/rg.shim");
-    let shim_exe = root.join("shims/rg.exe");
+    let shim_exe = shim_exe_path(root, "rg");
     assert!(shim.is_file());
     assert!(shim_exe.is_file());
     let body = fs::read_to_string(&shim).unwrap();
     let first = body.lines().next().unwrap();
     assert!(
-        first.ends_with("current\\rg.exe"),
+        shim_target_through_current(first, "rg.exe"),
         "shim target was {first}"
     );
 
     let persisted = root.join("apps/ripgrep/persist/config/settings.txt");
     assert_eq!(fs::read_to_string(&persisted).unwrap(), "user=neo");
-    assert!(junction::exists(vdir.join("config")).unwrap());
+    assert!(is_link(&vdir.join("config")));
     assert_eq!(
         fs::read_to_string(vdir.join("config/settings.txt")).unwrap(),
         "user=neo"
@@ -760,14 +861,14 @@ fn binary_source_installs_a_bare_exe_and_shims_it() {
 
     // Same transaction as an archive: current junction, shim pair, ledger.
     let current = root.join("apps/jqbin/current");
-    assert!(junction::exists(&current).unwrap());
+    assert!(is_link(&current));
     let shim = root.join("shims/jq.shim");
-    let shim_exe = root.join("shims/jq.exe");
+    let shim_exe = shim_exe_path(root, "jq");
     assert!(shim_exe.is_file());
     let first = fs::read_to_string(&shim).unwrap();
     let first = first.lines().next().unwrap().to_string();
     assert!(
-        first.ends_with("current\\jq.exe"),
+        shim_target_through_current(&first, "jq.exe"),
         "shim target was {first}"
     );
     assert!(Path::new(&first).is_file(), "shim target must resolve");
@@ -803,7 +904,7 @@ fn binary_hash_mismatch_mutates_nothing() {
 
     assert!(!root.join("apps/jqbin").exists());
     assert!(!root.join("shims/jq.shim").exists());
-    assert!(!root.join("shims/jq.exe").exists());
+    assert!(!shim_exe_path(root, "jq").exists());
     let state = State::open(&root.join("db/state.sqlite")).unwrap();
     assert!(state.list().unwrap().is_empty());
 }
@@ -890,7 +991,7 @@ extract_dir = "arch-1.0.0"
         report.arch_note()
     );
     assert!(root.join("apps/archpkg/1.0.0/rg.exe").is_file());
-    assert!(root.join("shims/rg.exe").is_file());
+    assert!(shim_exe_path(root, "rg").is_file());
 
     uninstall("archpkg", root, false).unwrap();
     let mut after = snapshot(root);
@@ -929,9 +1030,13 @@ fn binary_upgrade_flips_the_junction() {
         v1,
         "the old version dir stays until cleanup"
     );
-    // The shim never changed — it points through current\.
+    // The shim never changed — it points through current/.
     let first = fs::read_to_string(root.join("shims/jq.shim")).unwrap();
-    assert!(first.lines().next().unwrap().ends_with("current\\jq.exe"));
+    let first = first.lines().next().unwrap();
+    assert!(
+        shim_target_through_current(first, "jq.exe"),
+        "shim target was {first}"
+    );
 
     // Uninstall still removes every version dir.
     uninstall("jqbin", root, false).unwrap();
@@ -1007,14 +1112,14 @@ sha256 = "{}"
 
     install_local(&manifest, &archive, root).expect("install should succeed");
 
-    let lnk = shortcut_dir.join(format!("{name}.lnk"));
+    let lnk = shortcut_path(&shortcut_dir, name);
     let subfolder = lnk.parent().unwrap().to_path_buf();
     assert!(
         lnk.is_file(),
         "nested shortcut should be created verbatim; {} is missing",
         lnk.display()
     );
-    assert!(subfolder.is_dir(), "the Start Menu subfolder should exist");
+    assert!(subfolder.is_dir(), "the shortcut subfolder should exist");
 
     uninstall("rglnk", root, true).unwrap();
     assert!(!lnk.exists());
@@ -1051,11 +1156,16 @@ fn shortcut_and_apps_features_lifecycle() {
 
     install_local(&manifest, &archive, root).expect("install should succeed");
 
-    let lnk = shortcut_dir.join("rg.lnk");
-    assert!(lnk.is_file(), "shortcut rg.lnk should exist after install");
+    let lnk = shortcut_path(&shortcut_dir, "rg");
+    assert!(lnk.is_file(), "shortcut rg should exist after install");
 
-    // Apps & Features key must exist with v1.0.0.
+    // Apps & Features key must exist with v1.0.0 (Windows; unix keeps no
+    // central key, so the no-op stub reports absent there).
+    #[cfg(windows)]
     assert!(uninstall_reg::key_exists(sk, "rgshort"));
+    #[cfg(not(windows))]
+    assert!(!uninstall_reg::key_exists(sk, "rgshort"));
+    #[cfg(windows)]
     {
         let subkey = uninstall_reg::package_subkey(sk, "rgshort");
         let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
@@ -1068,16 +1178,17 @@ fn shortcut_and_apps_features_lifecycle() {
     uninstall("rgshort", root, false).unwrap();
     assert!(
         !lnk.exists(),
-        "shortcut rg.lnk should be removed after uninstall"
+        "shortcut rg should be removed after uninstall"
     );
     assert!(
         !uninstall_reg::key_exists(sk, "rgshort"),
         "A&F key should be removed"
     );
 
-    // --- Part 2: Apps & Features key updated on upgrade ---
+    // --- Part 2: Apps & Features key updated on upgrade (Windows) ---
     // Re-install v1.0.0.
     install_local(&manifest, &archive, root).unwrap();
+    #[cfg(windows)]
     assert!(uninstall_reg::key_exists(sk, "rgshort"));
 
     // Upgrade to v2.0.0.
@@ -1105,7 +1216,8 @@ sha256 = "{}"
     let m2 = voli_core::Manifest::from_toml_str(&toml2).unwrap();
     voli_core::upgrade_install(&m2, &archive2, &[], root).unwrap();
 
-    // DisplayVersion must now be 2.0.0.
+    // DisplayVersion must now be 2.0.0 (Windows registry; unix keeps no key).
+    #[cfg(windows)]
     {
         let subkey = uninstall_reg::package_subkey(sk, "rgshort");
         let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)

@@ -1,6 +1,8 @@
 //! Filesystem layout resolution (spec §3).
 //!
-//! The voli root defaults to `%LOCALAPPDATA%\voli` and is overridable via the
+//! The voli root defaults to `%LOCALAPPDATA%\voli` on Windows,
+//! `~/.local/share/voli` (or `$XDG_DATA_HOME/voli`) on Linux, and
+//! `~/Library/Application Support/voli` on macOS. It is overridable via the
 //! `VOLI_ROOT` environment variable (which is also how the test suite isolates
 //! each run into a tempdir).
 
@@ -105,16 +107,31 @@ impl SkillTarget {
     }
 
     pub fn is_detected(self, home: &Path) -> bool {
-        let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
-        self.is_detected_in(home, appdata.as_deref())
+        self.is_detected_in(home, appdata_dir().as_deref())
     }
 
     pub fn is_detected_in(self, home: &Path, appdata: Option<&Path>) -> bool {
-        self.marker_path(home).exists()
-            || self
-                .appdata_marker
-                .zip(appdata)
-                .is_some_and(|(marker, base)| base.join(marker).exists())
+        if self.marker_path(home).exists() {
+            return true;
+        }
+        let Some(marker) = self.appdata_marker else {
+            return false;
+        };
+        // Primary hint (APPDATA on Windows, first candidate on unix).
+        if appdata.is_some_and(|base| base.join(marker).exists()) {
+            return true;
+        }
+        // On unix also probe the other well-known config locations, so a
+        // marker in any of them counts as detected.
+        #[cfg(not(windows))]
+        {
+            for base in appdata_candidates(home) {
+                if base.join(marker).exists() {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn all() -> &'static [SkillTarget] {
@@ -159,18 +176,15 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Resolve the root: `VOLI_ROOT` if set, else `%LOCALAPPDATA%\voli`.
+    /// Resolve the root: `VOLI_ROOT` if set, else the platform default
+    /// ([`default_root`]).
     pub fn resolve() -> std::io::Result<Paths> {
         let root = if let Some(r) = std::env::var_os("VOLI_ROOT") {
             PathBuf::from(r)
         } else {
-            let local = std::env::var_os("LOCALAPPDATA").ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "LOCALAPPDATA is not set and VOLI_ROOT was not provided",
-                )
-            })?;
-            PathBuf::from(local).join("voli")
+            default_root().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, default_root_error())
+            })?
         };
         Ok(Paths::at(root))
     }
@@ -217,6 +231,103 @@ impl Paths {
         }
         Ok(())
     }
+}
+
+/// The current user's home directory: `HOME` first on unix (where `USERPROFILE`
+/// does not exist), `USERPROFILE` first on Windows. Returns `None` when neither
+/// is set.
+pub fn user_home() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+    }
+}
+
+/// The platform-default voli root (before `VOLI_ROOT` is considered):
+/// `%LOCALAPPDATA%\voli` on Windows, `$XDG_DATA_HOME/voli` (or
+/// `~/.local/share/voli`) on Linux, `~/Library/Application Support/voli` on
+/// macOS. Returns `None` when the home directory cannot be determined.
+pub fn default_root() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA").map(|l| PathBuf::from(l).join("voli"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        user_home().map(|h| h.join("Library").join("Application Support").join("voli"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from)
+            && xdg.is_absolute()
+        {
+            return Some(xdg.join("voli"));
+        }
+        user_home().map(|h| h.join(".local").join("share").join("voli"))
+    }
+}
+
+fn default_root_error() -> &'static str {
+    #[cfg(windows)]
+    {
+        "LOCALAPPDATA is not set and VOLI_ROOT was not provided"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "HOME is not set and VOLI_ROOT was not provided"
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        "neither XDG_DATA_HOME nor HOME is set and VOLI_ROOT was not provided"
+    }
+}
+
+/// The roaming-app-data directory used for agent-marker detection:
+/// `%APPDATA%` on Windows; on unix the first of the well-known config roots.
+/// See [`appdata_candidates`] for the full probe list.
+fn appdata_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        appdata_candidates_opt().into_iter().next()
+    }
+}
+
+#[cfg(not(windows))]
+fn appdata_candidates_opt() -> Vec<PathBuf> {
+    user_home()
+        .map(|home| appdata_candidates(&home))
+        .unwrap_or_default()
+}
+
+/// Every directory probed for an `appdata_marker` on unix, most specific first:
+/// `$XDG_CONFIG_HOME`, `~/.config`, and (macOS only)
+/// `~/Library/Application Support`.
+#[cfg(not(windows))]
+fn appdata_candidates(home: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
+        && xdg.is_absolute()
+    {
+        out.push(xdg);
+    }
+    out.push(home.join(".config"));
+    #[cfg(target_os = "macos")]
+    {
+        out.push(home.join("Library").join("Application Support"));
+    }
+    out
 }
 
 impl AsRef<Path> for Paths {

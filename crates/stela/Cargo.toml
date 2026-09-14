@@ -27,10 +27,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
-# OS keychain custody is Windows-only here (Credential Manager). Gated so the
-# crate stays green on non-Windows CI; passphrase custody is the portable default.
+# OS keychain custody per platform: Windows Credential Manager, macOS Keychain,
+# Linux kernel keyring (session-scoped — set VOLI_MEMORY_PASSPHRASE for a vault
+# that survives reboots on servers). Passphrase custody is the portable default
+# everywhere and needs none of these.
 [target.'cfg(windows)'.dependencies]
 keyring = { workspace = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+keyring = { workspace = true, features = ["linux-native"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

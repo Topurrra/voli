@@ -4,7 +4,10 @@
 //! - `index_url` — where `voli update` fetches the index snapshot from. Lives in
 //!   `<root>\config.toml`.
 //! - `root` — the voli root override. This is special: it can only take effect
-//!   through the **bootstrap** config at `%LOCALAPPDATA%\voli\config.toml`,
+//!   through the **bootstrap** config at the platform-default root
+//!   (`%LOCALAPPDATA%\voli\config.toml` on Windows,
+//!   `~/.local/share/voli/config.toml` on Linux,
+//!   `~/Library/Application Support/voli/config.toml` on macOS),
 //!   because we have to know the root before we can read a config that lives
 //!   inside it. `root` written to a non-bootstrap config is inert (a warned
 //!   unknown-ish key at read time only if read from the wrong file — we simply
@@ -135,14 +138,17 @@ pub fn set_raw(path: &Path, key: &str, value: &str) -> io::Result<()> {
     fs::write(path, text)
 }
 
-/// The fixed bootstrap config location: `%LOCALAPPDATA%\voli\config.toml`.
+/// The fixed bootstrap config location: `<default-root>\config.toml`.
 /// This is where the `root` override lives, independent of any overridden root.
+/// On Windows that is `%LOCALAPPDATA%\voli\config.toml`; on Linux
+/// `$XDG_DATA_HOME/voli/config.toml` (or `~/.local/share/voli/config.toml`);
+/// on macOS `~/Library/Application Support/voli/config.toml`.
 pub fn bootstrap_config_path() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|l| PathBuf::from(l).join("voli").join("config.toml"))
+    crate::paths::default_root().map(|r| r.join("config.toml"))
 }
 
 /// Resolve the effective voli root:
-/// `VOLI_ROOT` env (test/override) → bootstrap `root` key → `%LOCALAPPDATA%\voli`.
+/// `VOLI_ROOT` env (test/override) → bootstrap `root` key → platform default.
 pub fn resolve_root() -> io::Result<PathBuf> {
     if let Some(r) = std::env::var_os("VOLI_ROOT") {
         return Ok(PathBuf::from(r));
@@ -152,13 +158,17 @@ pub fn resolve_root() -> io::Result<PathBuf> {
     {
         return Ok(r);
     }
-    let local = std::env::var_os("LOCALAPPDATA").ok_or_else(|| {
+    crate::paths::default_root().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
+            #[cfg(windows)]
             "LOCALAPPDATA is not set and VOLI_ROOT was not provided",
+            #[cfg(target_os = "macos")]
+            "HOME is not set and VOLI_ROOT was not provided",
+            #[cfg(all(unix, not(target_os = "macos")))]
+            "neither XDG_DATA_HOME nor HOME is set and VOLI_ROOT was not provided",
         )
-    })?;
-    Ok(PathBuf::from(local).join("voli"))
+    })
 }
 
 /// If `path` looks like it lives under a known cloud-sync folder, return the

@@ -6,8 +6,6 @@
 //! cleanup, shims track the new bin set, cleanup removes only the old dir, and
 //! uninstall-after-upgrade leaves zero trace (all version dirs gone).
 
-#![cfg(windows)]
-
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -24,6 +22,27 @@ use voli_core::{
 use zip::write::SimpleFileOptions;
 
 static STUB: Once = Once::new();
+
+// ---- cross-platform test helpers (mirrors tests/install.rs) ----
+
+/// Installed shim executable path for a base name.
+#[allow(dead_code)]
+fn shim_exe(root: &std::path::Path, base: &str) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        root.join(format!("shims/{base}.exe"))
+    }
+    #[cfg(not(windows))]
+    {
+        root.join(format!("shims/{base}"))
+    }
+}
+
+/// Whether a `.shim` line-1 target points through `current/` at `file`.
+#[allow(dead_code)]
+fn shim_target_through_current(target: &str, file: &str) -> bool {
+    target.ends_with(&format!("current/{file}")) || target.ends_with(&format!("current\\{file}"))
+}
 
 fn ensure_stub() {
     STUB.call_once(|| {
@@ -227,19 +246,16 @@ fn upgrade_flips_junction_keeps_old_and_tracks_bins() {
     drop(state);
 
     // Bin-set change: new shim added, vanished shim removed, kept shim resolves v2.
+    assert!(shim_exe(root, "new").is_file(), "added bin gets a shim");
     assert!(
-        root.join("shims/new.exe").is_file(),
-        "added bin gets a shim"
-    );
-    assert!(
-        !root.join("shims/old.exe").exists(),
+        !shim_exe(root, "old").exists(),
         "dropped bin's shim removed"
     );
     assert!(!root.join("shims/old.shim").exists());
     let app_shim = fs::read_to_string(root.join("shims/app.shim")).unwrap();
     let target = app_shim.lines().next().unwrap().trim();
     assert!(
-        target.ends_with("current\\app.exe"),
+        shim_target_through_current(target, "app.exe"),
         "shim target: {target}"
     );
     assert!(
@@ -308,8 +324,8 @@ fn uninstall_after_upgrade_leaves_zero_trace() {
         !root.join("apps/app").exists(),
         "no trace after upgrade + purge uninstall"
     );
-    assert!(!root.join("shims/app.exe").exists());
-    assert!(!root.join("shims/new.exe").exists());
+    assert!(!shim_exe(root, "app").exists());
+    assert!(!shim_exe(root, "new").exists());
 
     let state = State::open(&root.join("db/state.sqlite")).unwrap();
     assert!(!state.is_installed("app").unwrap());

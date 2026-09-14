@@ -13,7 +13,11 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -32,7 +36,8 @@ jobs:
         run: cargo fmt --check
 
   # docs-site/install is a verbatim copy of install.ps1 (so `volibear.dev/install`
-  # serves the same script). Fails the build if they drift.
+  # serves the same script), and docs-site/install.sh a verbatim copy of
+  # install.sh (for `volibear.dev/install.sh`). Fails the build if they drift.
   installer-sync:
     runs-on: ubuntu-latest
     steps:
@@ -41,6 +46,12 @@ jobs:
         run: |
           if ! diff -q install.ps1 docs-site/install; then
             echo "::error::docs-site/install drifted from install.ps1. Run: cp install.ps1 docs-site/install"
+            exit 1
+          fi
+      - name: Check docs-site/install.sh matches install.sh
+        run: |
+          if ! diff -q install.sh docs-site/install.sh; then
+            echo "::error::docs-site/install.sh drifted from install.sh. Run: cp install.sh docs-site/install.sh"
             exit 1
           fi
 

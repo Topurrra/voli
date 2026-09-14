@@ -13,12 +13,16 @@ use voli_core::{Action, State, env};
 const SUBKEY: &str = "Software\\voli-test-doctor";
 
 /// Lay down a healthy root: bin binaries, shims, one installed package with a
-/// resolvable `current` junction and a shim whose target exists.
+/// resolvable `current` link and a shim whose target exists.
 fn build_healthy_root(root: &Path) {
     for d in ["bin", "shims", "db", "apps"] {
         fs::create_dir_all(root.join(d)).unwrap();
     }
-    for b in ["voli.exe", "voli-shim.exe", "voli-shim-gui.exe"] {
+    #[cfg(windows)]
+    let binaries: &[&str] = &["voli.exe", "voli-shim.exe", "voli-shim-gui.exe"];
+    #[cfg(not(windows))]
+    let binaries: &[&str] = &["voli", "voli-shim"];
+    for b in binaries {
         fs::write(root.join("bin").join(b), b"dummy").unwrap();
     }
 
@@ -28,10 +32,13 @@ fn build_healthy_root(root: &Path) {
     let target = current.join("rg.exe");
     fs::write(&target, b"real").unwrap();
 
-    // shims\rg.shim (line 1 = target) + shims\rg.exe stub.
+    // shims\rg.shim (line 1 = target) + shim executable stub.
     let shim = root.join("shims").join("rg.shim");
     fs::write(&shim, format!("{}\n", target.display())).unwrap();
+    #[cfg(windows)]
     let shim_exe = root.join("shims").join("rg.exe");
+    #[cfg(not(windows))]
+    let shim_exe = root.join("shims").join("rg");
     fs::write(&shim_exe, b"stub").unwrap();
 
     // ledger one package with that shim.

@@ -9,9 +9,11 @@
 //!   sealed under the derived key, so a wrong passphrase is rejected *before any
 //!   record is read* — even on a brand-new empty store. Cleartext is required and
 //!   safe: the salt is not secret and the key itself is never written.
-//! * **Keyring** (Windows only): a random master key stored in the OS Credential
-//!   Manager as a **64-char hex string** (Windows corrupts raw-binary secrets —
-//!   a documented real bug), used when no `custody.json` is present.
+//! * **Keyring** (OS credential store — Windows Credential Manager, macOS
+//!   Keychain, Linux kernel keyring): a random master key stored as a **64-char
+//!   hex string** (Windows corrupts raw-binary secrets — a documented real
+//!   bug), used when no `custody.json` is present. Note the Linux backend is
+//!   session-scoped: prefer passphrase custody on servers.
 //!
 //! A passphrase-wrapped **recovery blob** ([`wrap_master_key`]) can be stored
 //! beside the vault so a wiped keychain is survivable.
@@ -49,17 +51,47 @@ const FAST_M_COST_KIB: u32 = 16;
 const FAST_T_COST: u32 = 1;
 const FAST_P_COST: u32 = 1;
 
-/// Default memory directory: `%LOCALAPPDATA%\voli\memory`, else `~/.stela/memory`.
+/// Default memory directory: `<voli-root>\memory` — `%LOCALAPPDATA%\voli\memory`
+/// on Windows, `$XDG_DATA_HOME/voli/memory` (or `~/.local/share/voli/memory`)
+/// on Linux, `~/Library/Application Support/voli/memory` on macOS.
 /// Overridable by `$STELA_DIR` or `$VOLI_MEMORY_DIR` (checked by the CLI).
+/// `VOLI_ROOT` is honoured too, so tests and custom roots stay in one tree.
 pub fn default_memory_dir() -> PathBuf {
-    if let Some(p) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(p).join("voli").join("memory");
+    if let Some(r) = std::env::var_os("VOLI_ROOT").map(PathBuf::from) {
+        return r.join("memory");
+    }
+    #[cfg(windows)]
+    {
+        if let Some(p) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(p).join("voli").join("memory");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            return home
+                .join("Library")
+                .join("Application Support")
+                .join("voli")
+                .join("memory");
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from)
+            && xdg.is_absolute()
+        {
+            return xdg.join("voli").join("memory");
+        }
     }
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".stela").join("memory")
+        .map(PathBuf::from);
+    match home {
+        // Historical fallback for machines without any known root.
+        Some(h) => h.join(".stela").join("memory"),
+        None => PathBuf::from(".").join(".stela").join("memory"),
+    }
 }
 
 /// The directory a project-local store lives in, relative to the project root.
@@ -339,20 +371,19 @@ pub fn recover_master(vault_dir: &Path, passphrase: &str) -> Result<[u8; 32]> {
     unwrap_master_key(&blob, passphrase)
 }
 
-// ── OS keychain custody (Windows only) ──────────────────────────────────────
+// ── OS keychain custody (all platforms) ─────────────────────────────────────
 //
-// Gated to Windows: the crate stays green on non-Windows CI, where passphrase
-// custody is the portable default. macOS/Linux keychain support is a later pass.
+// Windows Credential Manager, macOS Keychain, Linux kernel keyring
+// (`linux-native`: session-scoped — a reboot wipes it, so servers should use
+// passphrase custody plus a recovery blob). Passphrase custody is the portable
+// default everywhere and needs no keychain at all.
 
-#[cfg(windows)]
 const KEYCHAIN_SERVICE: &str = "com.voli.memory";
-#[cfg(windows)]
 const KEYCHAIN_USER: &str = "master-key";
 
 /// Load the master key from the OS keychain, generating + storing one on first
 /// run. Stored as a **hex string** (Windows Credential Manager corrupts raw
-/// binary — a documented real bug).
-#[cfg(windows)]
+/// binary — a documented real bug; hex is harmless everywhere else too).
 pub fn load_or_create_master_key() -> Result<[u8; 32]> {
     let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
         .map_err(|e| Error::KeyDerivation(e.to_string()))?;
@@ -372,7 +403,6 @@ pub fn load_or_create_master_key() -> Result<[u8; 32]> {
 
 /// Read the master key from the keychain WITHOUT creating one. `Ok(None)` =
 /// keychain reachable but no entry; `Err` = keychain unavailable or malformed.
-#[cfg(windows)]
 pub fn load_master_key() -> Result<Option<[u8; 32]>> {
     let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
         .map_err(|e| Error::KeyDerivation(e.to_string()))?;
@@ -392,7 +422,6 @@ pub fn load_master_key() -> Result<Option<[u8; 32]>> {
 
 /// Store (overwrite) the master key in the keychain — re-establishes custody
 /// after a recovery or rotation.
-#[cfg(windows)]
 pub fn store_master_key(key: &[u8; 32]) -> Result<()> {
     let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
         .map_err(|e| Error::KeyDerivation(e.to_string()))?;

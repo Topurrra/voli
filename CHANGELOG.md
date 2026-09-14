@@ -3,6 +3,34 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
+## Unreleased
+
+### Added
+
+- **Linux and macOS support.** Voli now builds, installs, and passes the full
+  test suite on all three desktop platforms; CI runs build + test + clippy +
+  fmt on Windows, Linux, and macOS, and releases ship `voli-<arch>-<os>.tar.gz`
+  assets that `self-update` and `install.sh` understand.
+  - Root follows the platform: `%LOCALAPPDATA%\voli` (Windows),
+    `$XDG_DATA_HOME/voli` or `~/.local/share/voli` (Linux),
+    `~/Library/Application Support/voli` (macOS); `VOLI_ROOT` still overrides
+    everywhere. Memory and skill-agent detection follow the same roots.
+  - `current` and persist-dir links are symlinks on unix (junctions on
+    Windows); the ledger format is unchanged, so existing state databases keep
+    reading. Shims are extensionless and `chmod +x`, and on Linux the console
+    shim `exec`s the target instead of spawning.
+  - Package `[env]` is shim-injected on unix: consented values are embedded as
+    `KEY=VALUE` lines in each `.shim` file and applied at exec time (`PATH`
+    prepended), so nothing leaks into the shell. `voli env` and `doctor` keep
+    reporting the recorded values.
+  - Shortcuts become freedesktop `.desktop` launchers on Linux and are skipped
+    on macOS; `voli web` opens via `xdg-open` / `open`; memory keychain uses
+    the macOS Keychain and the Linux kernel keyring (session-scoped — servers
+    should use `VOLI_MEMORY_PASSPHRASE` plus `recover --save`).
+  - New `install.sh` (mirroring `install.ps1`, synced to `docs-site/install.sh`
+    by CI) with per-OS/arch asset selection, SHA-256 verification, and
+    one-time shell-PATH wiring.
+
 ## v0.12.3
 
 ### Added

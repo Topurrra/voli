@@ -2,25 +2,35 @@
 //! dir onto the user PATH (spec §6, §11 step 5).
 //!
 //! Idempotent by design: binaries are updated in place (write to a `.new` file
-//! then rename, moving a locked running exe aside as `.old` when needed), and
+//! then rename, moving a locked running exe aside as `.old` when needed — the
+//! `.old` dance only matters on Windows, where a running image is locked), and
 //! the PATH entry is added exactly once. The PATH addition is ledgered in
 //! `state.sqlite` under the synthetic package `@voli` so it participates in the
 //! same uninstall-by-replay machinery as everything else.
+//!
+//! On Windows PATH means `HKCU\Environment`; on unix the entry is recorded in
+//! the env store (see `env`) and the user is told to ensure the shims dir is
+//! on PATH (`install.sh` wires it into the shell profile). Env vars are never
+//! written to shell rc files by voli itself.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::env;
-use crate::install::Action;
+use crate::install::{Action, exe_suffix};
 use crate::paths::Paths;
 use crate::state::State;
 
 /// The synthetic package name under which voli's own PATH entry is ledgered.
 pub const SELF_PACKAGE: &str = "@voli";
 
-/// The three binaries a full install lays down under `bin\`.
+/// The binaries a full install lays down under `bin\` (Windows) or `bin/`
+/// (unix, extensionless).
+#[cfg(windows)]
 const BINARIES: &[&str] = &["voli.exe", "voli-shim.exe", "voli-shim-gui.exe"];
+#[cfg(not(windows))]
+const BINARIES: &[&str] = &["voli", "voli-shim"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum SelfInstallError {
@@ -28,7 +38,7 @@ pub enum SelfInstallError {
     Io(#[from] io::Error),
     #[error("state db error: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("voli.exe not found in source dir {0}")]
+    #[error("voli binary not found in source dir {0}")]
     SourceMissing(PathBuf),
 }
 
@@ -85,21 +95,27 @@ pub fn self_install_with_steps(
             .ok_or_else(|| io::Error::other("cannot locate current exe directory"))?,
     };
 
-    // Copy whichever binaries exist; voli.exe is mandatory.
+    // Copy whichever binaries exist; the voli binary itself is mandatory.
     on_step(SelfInstallStep::Binaries);
     let mut copied = Vec::new();
     for name in BINARIES {
         let from = src.join(name);
         if from.is_file() {
-            replace_file(&from, &bin_dir.join(name))?;
+            let dst = bin_dir.join(name);
+            replace_file(&from, &dst)?;
+            #[cfg(not(windows))]
+            mark_executable(&dst)?;
             copied.push((*name).to_string());
         }
     }
-    if !copied.iter().any(|n| n == "voli.exe") {
+    let voli_bin = format!("voli{}", exe_suffix());
+    if !copied.contains(&voli_bin) {
         return Err(SelfInstallError::SourceMissing(src));
     }
 
-    // Put shims\ on the user PATH (prepend, idempotent).
+    // Put shims on the user PATH (prepend, idempotent). On Windows this edits
+    // HKCU\Environment; on unix it records the entry in the env store and
+    // install.sh / the shell profile makes it effective.
     on_step(SelfInstallStep::Path);
     let shims_dir = paths.shims();
     let shims_str = shims_dir.to_string_lossy().into_owned();
@@ -109,16 +125,20 @@ pub fn self_install_with_steps(
         .map(|p| env::path_has_segment(p, &shims_str))
         .unwrap_or(false);
 
-    // Shim voli itself: only shims\ is on PATH, and voli.exe lives in bin\ —
-    // without this, `voli` is not resolvable in any shell (launch-day bug).
+    // Shim voli itself: only the shims dir is on PATH, and the voli binary
+    // lives in bin — without this, `voli` is not resolvable in any shell
+    // (launch-day bug).
     on_step(SelfInstallStep::Finalizing);
-    let stub = bin_dir.join("voli-shim.exe");
+    let stub = bin_dir.join(format!("voli-shim{}", exe_suffix()));
     if stub.is_file() {
         fs::write(
             shims_dir.join("voli.shim"),
-            format!("{}\r\n", bin_dir.join("voli.exe").display()),
+            shim_body_for(&bin_dir.join(&voli_bin)),
         )?;
-        replace_file(&stub, &shims_dir.join("voli.exe"))?;
+        let shim_exe = shims_dir.join(format!("voli{}", exe_suffix()));
+        replace_file(&stub, &shim_exe)?;
+        #[cfg(not(windows))]
+        mark_executable(&shim_exe)?;
     }
 
     // Ledger the PATH entry + self-shim under @voli, once.
@@ -130,7 +150,7 @@ pub fn self_install_with_steps(
             },
             Action::ShimWritten {
                 shim: shims_dir.join("voli.shim"),
-                exe: shims_dir.join("voli.exe"),
+                exe: shims_dir.join(format!("voli{}", exe_suffix())),
             },
         ];
         let manifest_json = format!("{{\"name\":\"{SELF_PACKAGE}\"}}");
@@ -155,10 +175,11 @@ pub fn self_install_with_steps(
 /// Copy `src` over `dst`, coping with `dst` being a running (locked) exe.
 ///
 /// Strategy: stage to `dst`+`.new`, try a direct atomic replace, and if that
-/// fails (sharing violation on a running exe) move the running `dst` aside to
-/// `.old` first. The `.old` file may itself be locked (it's the running
-/// process) so it is left for `voli cleanup` — same pattern as stale version
-/// dirs (spec §3).
+/// fails (sharing violation on a running exe — Windows only) move the running
+/// `dst` aside to `.old` first. The `.old` file may itself be locked (it's the
+/// running process) so it is left for `voli cleanup` — same pattern as stale
+/// version dirs (spec §3). On unix the rename always succeeds; the `.old`
+/// path is dead code kept for symmetry.
 fn replace_file(src: &Path, dst: &Path) -> io::Result<()> {
     // ponytail: skip work when source and destination are the same file
     // (self-install re-run from bin\voli.exe).
@@ -191,6 +212,28 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     s.push(".");
     s.push(suffix);
     PathBuf::from(s)
+}
+
+/// Render the `voli.shim` body pointing at the installed voli binary.
+/// `\r\n` on Windows, `\n` on unix (the shim parser accepts both).
+fn shim_body_for(target: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!("{}\r\n", target.display())
+    }
+    #[cfg(not(windows))]
+    {
+        format!("{}\n", target.display())
+    }
+}
+
+/// `chmod +x` on unix; no-op on Windows.
+#[cfg(not(windows))]
+fn mark_executable(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(path)?.permissions();
+    perms.set_mode(perms.mode() | 0o111);
+    fs::set_permissions(path, perms)
 }
 
 /// True if both paths resolve to the same existing file.

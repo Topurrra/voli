@@ -8,8 +8,6 @@
 //!     absent key deleted, a PATH segment removed precisely);
 //!   - `--no-env` (consent returns false) applies nothing.
 
-#![cfg(windows)]
-
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -172,8 +170,14 @@ fn uninstall_restores_preexisting_value() {
     let _ = env::delete_subkey(&sk);
 
     // Seed a pre-existing JAVA_HOME and a PATH with an unrelated segment.
-    env::set(&sk, "JAVA_HOME", "C:\\old\\jdk").unwrap();
-    env::set(&sk, "Path", "C:\\keep\\me").unwrap();
+    // (Platform-native literals: a `C:\...` seed would contain a `:` and stop
+    // being one unix PATH segment.)
+    #[cfg(windows)]
+    let (old_jdk, keep_me) = ("C:\\old\\jdk", "C:\\keep\\me");
+    #[cfg(not(windows))]
+    let (old_jdk, keep_me) = ("/old/jdk", "/keep/me");
+    env::set(&sk, "JAVA_HOME", old_jdk).unwrap();
+    env::set(&sk, "Path", keep_me).unwrap();
 
     let zip = app_zip();
     let archive = root.join("app.zip");
@@ -184,7 +188,7 @@ fn uninstall_restores_preexisting_value() {
     // Our value now, prior recorded.
     assert_ne!(
         env::get(&sk, "JAVA_HOME").unwrap().as_deref(),
-        Some("C:\\old\\jdk")
+        Some(old_jdk)
     );
 
     uninstall_env("app", root, false, &sk).unwrap();
@@ -193,11 +197,11 @@ fn uninstall_restores_preexisting_value() {
     // ours removed.
     assert_eq!(
         env::get(&sk, "JAVA_HOME").unwrap().as_deref(),
-        Some("C:\\old\\jdk")
+        Some(old_jdk)
     );
     let path_after = env::get(&sk, "Path").unwrap().unwrap();
     assert!(
-        env::path_has_segment(&path_after, "C:\\keep\\me"),
+        env::path_has_segment(&path_after, keep_me),
         "got {path_after}"
     );
     let seg = format!("{}\\bin", root.join("apps/app/current").to_string_lossy());

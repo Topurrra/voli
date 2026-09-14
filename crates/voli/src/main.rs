@@ -27,7 +27,7 @@ const EXIT_ERROR: i32 = 1;
     name = "voli",
     bin_name = "voli",
     version,
-    about = "A fast, no-admin package manager for Windows",
+    about = "A fast, no-admin package manager for Windows, Linux, and macOS",
     arg_required_else_help = true
 )]
 struct Cli {
@@ -314,13 +314,10 @@ fn root() -> PathBuf {
 }
 
 pub(crate) fn user_home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .or_else(|| {
-            eprintln!("error: cannot resolve user home for the agent skills directory");
-            None
-        })
+    voli_core::paths::user_home().or_else(|| {
+        eprintln!("error: cannot resolve user home for the agent skills directory");
+        None
+    })
 }
 
 fn cmd_delete(
@@ -1349,8 +1346,10 @@ fn cmd_self_update() -> i32 {
     }
     println!("updating {current} -> {latest}");
 
-    // 2. Find the zip asset (stable name uploaded by release.yml).
-    let asset_name = "voli-x64.zip";
+    // 2. Find the release asset (stable names uploaded by release.yml):
+    // `voli-x64.zip` (Windows), `voli-x86_64-linux.tar.gz`,
+    // `voli-aarch64-linux.tar.gz`, `voli-aarch64-macos.tar.gz`, ...
+    let asset_name = self_update_asset();
     let sha_name = format!("{asset_name}.sha256");
     let mut zip_url = None;
     let mut sha_url = None;
@@ -1485,12 +1484,13 @@ fn cmd_self_update() -> i32 {
     extracting.finish_and_clear();
     println!("{} extracted voli {latest}", success_mark());
 
-    // 6. Replace binaries in bin\ using the .new/.old rename dance.
+    // 6. Replace binaries in bin/ using the .new/.old rename dance
+    // (the .old side only ever triggers on Windows file locking).
     let root = root();
     let bin_dir = root.join("bin");
     let mut updated = Vec::new();
     let installing = stage_spinner(format!("installing voli {latest}"));
-    for name in ["voli.exe", "voli-shim.exe", "voli-shim-gui.exe"] {
+    for name in self_update_binaries() {
         let src = extract_dir.join(name);
         if src.is_file() {
             let dst = bin_dir.join(name);
@@ -1498,6 +1498,15 @@ fn cmd_self_update() -> i32 {
                 installing.finish_and_clear();
                 eprintln!("error: replacing {name}: {e}");
                 return EXIT_ERROR;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(&dst) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(perms.mode() | 0o111);
+                    let _ = std::fs::set_permissions(&dst, perms);
+                }
             }
             updated.push(name.to_string());
         }
@@ -1517,7 +1526,72 @@ fn cmd_self_update() -> i32 {
     0
 }
 
-/// Copy `src` over `dst`, coping with a locked running exe (.new/.old dance).
+/// Release asset name for `voli self-update` on this platform.
+/// Must match the names uploaded by release.yml.
+fn self_update_asset() -> &'static str {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        "voli-x64.zip"
+    }
+    #[cfg(all(windows, target_arch = "aarch64"))]
+    {
+        "voli-arm64.zip"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        "voli-x86_64-linux.tar.gz"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        "voli-aarch64-linux.tar.gz"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "voli-aarch64-macos.tar.gz"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "voli-x86_64-macos.tar.gz"
+    }
+    #[cfg(not(any(
+        windows,
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+    )))]
+    {
+        "voli-x64.zip"
+    }
+}
+
+/// Binaries a self-update swaps inside `bin/`.
+fn self_update_binaries() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &["voli.exe", "voli-shim.exe", "voli-shim-gui.exe"]
+    }
+    #[cfg(not(windows))]
+    {
+        &["voli", "voli-shim"]
+    }
+}
+
+/// The voli binary file name on this platform (`voli.exe` / `voli`).
+fn voli_bin_name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "voli.exe"
+    }
+    #[cfg(not(windows))]
+    {
+        "voli"
+    }
+}
 fn replace_binary(src: &Path, dst: &Path) -> std::io::Result<()> {
     let staged = {
         let mut s = dst.as_os_str().to_os_string();
@@ -1548,11 +1622,14 @@ fn cmd_self_delete(auto_yes: bool) -> i32 {
     let paths = Paths::at(&root);
 
     // Safety rail: refuse if root doesn't look like a voli installation.
-    if !root.join("bin").join("voli.exe").exists() || !root.join("db").join("state.sqlite").exists()
+    if !root.join("bin").join(voli_bin_name()).exists()
+        || !root.join("db").join("state.sqlite").exists()
     {
         eprintln!(
-            "error: {} does not look like a voli root (missing bin\\voli.exe or db\\state.sqlite)",
-            root.display()
+            "error: {} does not look like a voli root (missing bin{} or db{}state.sqlite)",
+            root.display(),
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR,
         );
         eprintln!("refusing to delete a directory that is not a voli installation.");
         return EXIT_ERROR;
@@ -1610,9 +1687,12 @@ fn cmd_self_delete(auto_yes: bool) -> i32 {
                 names.join(", ")
             );
         }
+        #[cfg(windows)]
         println!(
             "  - all persist data, env vars, PATH entries, shortcuts, and Apps & Features keys"
         );
+        #[cfg(not(windows))]
+        println!("  - all persist data, env vars, PATH entries, and shortcuts");
         println!("  - the voli root: {}", root.display());
         println!();
         print!("This cannot be undone. Proceed? [y/N] ");
@@ -1691,27 +1771,36 @@ fn cmd_self_delete(auto_yes: bool) -> i32 {
         env::broadcast_change();
     }
 
-    // 3. Delete everything under root except bin\voli.exe (which is running).
+    // 3. Delete everything under root except the running voli binary.
     cleanup_root(&root)
 }
 
 /// Remove the entire voli root, deterministically, while we are still running.
 ///
 /// Windows will not DELETE a running exe, but it will happily MOVE one — so we
-/// move our own binary out to %TEMP% first, at which point nothing in the root
-/// is locked and a plain remove_dir_all wipes it synchronously (no detached
+/// move our own binary out to the temp dir first, at which point nothing in the
+/// root is locked and a plain remove_dir_all wipes it synchronously (no detached
 /// helper races, works even under process-tree-killing Job Objects). The moved
-/// exe in %TEMP% gets a best-effort background delete; if that dies, a single
+/// binary in temp gets a best-effort background delete; if that dies, a single
 /// orphan file in the temp dir is the worst case and the OS cleans temp anyway.
+///
+/// On unix a running binary can be unlinked outright, so the move is just
+/// belt-and-braces before the same synchronous removal.
 fn cleanup_root(root: &Path) -> i32 {
     // 3a. Move the running exe out of the tree.
+    #[cfg(windows)]
     let parked = std::env::temp_dir().join(format!("voli-selfdelete-{}.exe", std::process::id()));
+    #[cfg(not(windows))]
+    let parked = std::env::temp_dir().join(format!("voli-selfdelete-{}", std::process::id()));
     if let Ok(me) = std::env::current_exe() {
         let _ = std::fs::remove_file(&parked);
         if std::fs::rename(&me, &parked).is_err() {
             // Cross-volume temp (rename can't move a running exe between
             // volumes) — park it inside root's parent instead.
+            #[cfg(windows)]
             let fallback = root.with_extension("voli-selfdelete.exe");
+            #[cfg(not(windows))]
+            let fallback = root.with_extension("voli-selfdelete");
             if std::fs::rename(&me, &fallback).is_ok() {
                 let _ = std::fs::remove_dir_all(root);
                 schedule_temp_delete(root, &fallback);
@@ -1719,7 +1808,7 @@ fn cleanup_root(root: &Path) -> i32 {
                 println!("voli removed itself. The bear waves goodbye. \u{1F43B}");
                 return 0;
             }
-            // Can't move at all — extremely unusual; leave bin\voli.exe and
+            // Can't move at all — extremely unusual; leave the voli binary and
             // tell the user rather than pretending.
             let _ = std::fs::remove_dir_all(root.join("apps"));
             let _ = std::fs::remove_dir_all(root.join("shims"));
@@ -1727,7 +1816,8 @@ fn cleanup_root(root: &Path) -> i32 {
             let _ = std::fs::remove_dir_all(root.join("cache"));
             let _ = std::fs::remove_file(root.join("config.toml"));
             eprintln!(
-                "warning: could not relocate the running voli.exe; delete {} manually.",
+                "warning: could not relocate the running {}; delete {} manually.",
+                voli_bin_name(),
                 root.display()
             );
             return 0;
@@ -1750,7 +1840,7 @@ fn cleanup_root(root: &Path) -> i32 {
 
 /// Best-effort detached delete of the root and parked executable.
 /// Breakaway first so tree-killing Job Objects don't reap the helper; if even
-/// that dies, one orphan file in %TEMP% is the accepted worst case.
+/// that dies, one orphan file in temp is the accepted worst case.
 fn schedule_temp_delete(root: &Path, parked: &Path) {
     #[cfg(windows)]
     {
@@ -1899,35 +1989,48 @@ fn cmd_doctor(json: bool) -> i32 {
     };
 
     // 1. shims dir on user PATH?
+    //
+    // Windows reads the recorded registry PATH; on unix the shell PATH is the
+    // truth (the env store only records what setup wrote), so check the live
+    // process PATH first and the store second.
     let shims = paths.shims();
     let shims_str = shims.to_string_lossy().into_owned();
-    match env::get(&env_subkey, "Path") {
-        Ok(path) => {
-            let present = path
-                .as_deref()
-                .map(|p| env::path_has_segment(p, &shims_str))
-                .unwrap_or(false);
-            if present {
-                add(Status::Pass, "shims on PATH", shims_str.clone());
-            } else {
-                add(
-                    Status::Fail,
-                    "shims on PATH",
-                    format!("{shims_str} is not on your user PATH (run `voli setup`)"),
-                );
-            }
-        }
-        Err(e) => add(
+    #[cfg(windows)]
+    let path_candidates: Vec<Option<String>> = vec![env::get(&env_subkey, "Path").ok().flatten()];
+    #[cfg(not(windows))]
+    let path_candidates: Vec<Option<String>> = vec![
+        std::env::var_os("PATH").map(|p| p.to_string_lossy().into_owned()),
+        env::get(&env_subkey, "PATH").ok().flatten(),
+    ];
+    if path_candidates
+        .iter()
+        .flatten()
+        .any(|p| env::path_has_segment(p, &shims_str))
+    {
+        add(Status::Pass, "shims on PATH", shims_str.clone());
+    } else {
+        #[cfg(windows)]
+        add(
             Status::Fail,
             "shims on PATH",
-            format!("cannot read PATH: {e}"),
-        ),
+            format!("{shims_str} is not on your user PATH (run `voli setup`)"),
+        );
+        #[cfg(not(windows))]
+        add(
+            Status::Fail,
+            "shims on PATH",
+            format!(
+                "{shims_str} is not on your shell PATH (run `voli setup`, then \
+                 restart your shell or `export PATH=\"{shims_str}:$PATH\"`)"
+            ),
+        );
     }
 
     // 2. bin dir + binaries present?
     let bin = root.join("bin");
-    let missing: Vec<&str> = ["voli.exe", "voli-shim.exe", "voli-shim-gui.exe"]
-        .into_iter()
+    let missing: Vec<&str> = self_update_binaries()
+        .iter()
+        .copied()
         .filter(|b| !bin.join(b).is_file())
         .collect();
     if !bin.is_dir() {
@@ -1991,7 +2094,9 @@ fn cmd_doctor(json: bool) -> i32 {
         }
     }
 
-    // 7. Orphaned Apps & Features keys (key exists but package not in state db).
+    // 7. Orphaned Apps & Features keys (Windows only: key exists but package
+    // not in state db). Unix has no uninstall registry — nothing to orphan.
+    #[cfg(windows)]
     {
         let base = voli_core::uninstall_reg::uninstall_base();
         match voli_core::uninstall_reg::list_voli_keys(&base) {
@@ -2086,7 +2191,8 @@ fn cmd_doctor(json: bool) -> i32 {
 }
 
 /// Check one installed package's shims (present + target exists) and its
-/// `current` junction (resolves).
+/// `current` link (resolves to a real directory: junction on Windows,
+/// symlink on unix).
 fn check_package(
     paths: &Paths,
     state: &State,
@@ -2096,18 +2202,22 @@ fn check_package(
 ) {
     use voli_core::Action;
 
-    // current junction must resolve to a real directory.
+    // current link must resolve to a real directory.
     let current = paths.current(&pkg.name);
+    #[cfg(windows)]
+    let link_check = "junction";
+    #[cfg(not(windows))]
+    let link_check = "link";
     if current.exists() {
         add(
             Status::Pass,
-            "junction",
+            link_check,
             format!("{} -> ok", current.display()),
         );
     } else {
         add(
             Status::Fail,
-            "junction",
+            link_check,
             format!("{} is broken or missing", current.display()),
         );
     }
@@ -2155,8 +2265,10 @@ fn check_package(
         }
     }
 
-    // Env drift (spec §8): if the live registry value differs from what we set,
+    // Env drift (spec §8): if the live value differs from what we set,
     // WARN — never auto-fix (the user may have edited it deliberately).
+    // On unix the shim files carry the execution-time env; this compares the
+    // recorded store, which `voli env` also reports.
     for a in &actions {
         if let Action::EnvSet { key, value, .. } = a {
             let current = env::get(env_subkey, key).ok().flatten();
@@ -2182,6 +2294,8 @@ fn check_package(
 }
 
 fn cmd_which(bin: &str) -> i32 {
+    // Tolerate a `.exe` suffix on every platform: manifests name `rg.exe`
+    // even where the installed shim is extensionless.
     let base = bin.strip_suffix(".exe").unwrap_or(bin);
     let shim = Paths::at(root()).shims().join(format!("{base}.shim"));
     match std::fs::read_to_string(&shim) {

@@ -30,14 +30,15 @@ use crate::manifest::{Arch, ArchFallback, Manifest, ManifestError, SelectedSourc
 use crate::paths::Paths;
 use crate::state::State;
 
-/// The machine's NATIVE architecture, asked at runtime.
+/// The machine's NATIVE architecture, asked at runtime on Windows and taken
+/// from the build target on unix.
 ///
-/// `cfg!(target_arch)` is the wrong question here. The released `voli.exe` is
-/// x86_64-only, so on an ARM64 Windows box it runs under the x64 emulator and the
-/// compile-time arch reports x86_64 — which is exactly the case this exists to
-/// detect. `IsWow64Process2` hands back the HOST machine regardless of what the
-/// calling process is emulated as; `pProcessMachine` (which we ignore) is the
-/// emulated one.
+/// `cfg!(target_arch)` is the wrong question on Windows. The released
+/// `voli.exe` is x86_64-only, so on an ARM64 Windows box it runs under the x64
+/// emulator and the compile-time arch reports x86_64 — which is exactly the
+/// case this exists to detect. `IsWow64Process2` hands back the HOST machine
+/// regardless of what the calling process is emulated as; `pProcessMachine`
+/// (which we ignore) is the emulated one.
 /// Resolved at RUNTIME rather than imported, deliberately. A static import puts
 /// the name in the PE import table, and the Windows loader resolves every entry
 /// there before `main` runs — so on a system without the symbol the process does
@@ -47,6 +48,10 @@ use crate::state::State;
 /// `GetProcAddress` and keeps the binary loadable everywhere; on a system that
 /// lacks it, arm64 detection is simply unavailable and we answer x64, which is
 /// correct for every Windows that old.
+///
+/// On Linux/macOS voli ships native binaries per arch (no emulation layer to
+/// see through), so the compile-time arch IS the host arch.
+#[cfg(windows)]
 pub fn host_arch() -> Arch {
     use windows_sys::Win32::Foundation::{BOOL, HANDLE};
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
@@ -89,6 +94,110 @@ pub fn host_arch() -> Arch {
     } else {
         Arch::X64
     }
+}
+
+/// Native host architecture on unix: voli ships one binary per arch, so the
+/// compile-time arch is the answer (no emulator to see through).
+#[cfg(not(windows))]
+pub fn host_arch() -> Arch {
+    match std::env::consts::ARCH {
+        "aarch64" => Arch::Arm64,
+        _ => Arch::X64,
+    }
+}
+
+// ---- cross-platform link / executable helpers -------------------------------
+//
+// `current` and persist-dir links are NTFS junctions on Windows (no privilege
+// needed, unlike symlinks) and symlinks on unix. The ledger variant stays
+// `JunctionCreated` on both so existing `state.sqlite` files keep reading.
+
+/// Create a directory link `link` pointing at `target`.
+#[cfg(windows)]
+fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
+    junction::create(target, link)
+}
+
+/// Create a directory link `link` pointing at `target` (unix: symlink).
+#[cfg(not(windows))]
+fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+/// Remove a directory link created by [`link_dir`] (not its target).
+#[cfg(windows)]
+fn unlink_dir(link: &Path) -> io::Result<()> {
+    junction::delete(link)
+}
+
+/// Remove a directory link created by [`link_dir`] (not its target).
+#[cfg(not(windows))]
+fn unlink_dir(link: &Path) -> io::Result<()> {
+    std::fs::remove_file(link)
+}
+
+/// True if `path` is a directory link (junction on Windows, symlink on unix).
+#[cfg(windows)]
+fn is_link(path: &Path) -> bool {
+    junction::exists(path).unwrap_or(false)
+}
+
+/// True if `path` is a symlink (unix implementation of the junction check).
+#[cfg(not(windows))]
+fn is_link(path: &Path) -> bool {
+    path.symlink_metadata()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Executable suffix for installed shims and self binaries: `.exe` on
+/// Windows, empty on unix.
+#[cfg(windows)]
+pub(crate) fn exe_suffix() -> &'static str {
+    ".exe"
+}
+
+#[cfg(not(windows))]
+pub(crate) fn exe_suffix() -> &'static str {
+    ""
+}
+
+/// Shim executable file name for a `base` name (`rg` → `rg.exe` on Windows,
+/// `rg` on unix).
+pub(crate) fn shim_exe_name(base: &str) -> String {
+    format!("{base}{}", exe_suffix())
+}
+
+/// Stub binary names, in preference order: GUI stub first when `gui`.
+pub(crate) fn stub_names(gui: bool) -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        if gui {
+            &["voli-shim-gui.exe", "voli-shim.exe"]
+        } else {
+            &["voli-shim.exe", "voli-shim-gui.exe"]
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = gui;
+        &["voli-shim"]
+    }
+}
+
+/// Mark `path` executable (unix: `chmod +x`; no-op on Windows where the
+/// execute bit does not exist).
+#[cfg(not(windows))]
+fn mark_executable(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(perms.mode() | 0o111);
+    std::fs::set_permissions(path, perms)
+}
+
+#[cfg(windows)]
+fn mark_executable(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// Role of a created directory, so uninstall knows whether it survives (persist)
@@ -267,7 +376,7 @@ pub enum InstallError {
     #[error("unsupported archive type: {0} (expected .zip, .tar.gz, or .7z)")]
     UnsupportedArchive(String),
     #[error(
-        "7-Zip not found — required to extract installer archives (.exe/.msi). Install 7-Zip or add it to PATH."
+        "7-Zip not found — required to extract installer archives (.exe/.msi). Install 7-Zip (Windows) or p7zip/7zz (Linux/macOS), or add it to PATH."
     )]
     SevenZipNotFound,
     #[error("extract_dir '{0}' not found in archive after extraction")]
@@ -366,6 +475,10 @@ pub fn install_manifest(
     // (via `consent`), and — if applied — append EnvSet/PathAdded to the SAME
     // action list so it lands in the install transaction and uninstall replays
     // it. A failure here rolls back both env and filesystem.
+    //
+    // On unix the values are additionally injected into the package's `.shim`
+    // files so shimmed processes see them at exec time (shim-injected env);
+    // the ledger + env store keep the recorded view for `voli env` / doctor.
     let resolved = resolve_env(manifest, &paths);
     report.env_requested = resolved.clone();
     if !resolved.is_empty() && consent(&manifest.name, &resolved) {
@@ -373,12 +486,18 @@ pub fn install_manifest(
             rollback(env_subkey, &actions);
             return Err(e.into());
         }
+        #[cfg(not(windows))]
+        if let Err(e) = inject_env_into_shims(&actions, &resolved) {
+            rollback(env_subkey, &actions);
+            return Err(e.into());
+        }
         crate::env::broadcast_change();
         report.env_applied = resolved;
     }
 
-    // Apps & Features registration: write the Uninstall key so the package
-    // appears in Windows Settings → Apps.
+    // Apps & Features registration (Windows): write the Uninstall key so the
+    // package appears in Windows Settings → Apps. No-op on unix, but the
+    // ledger entry is still recorded so the log schema stays portable.
     {
         let base = crate::uninstall_reg::uninstall_base();
         let current = paths.current(&manifest.name);
@@ -387,7 +506,10 @@ pub fn install_manifest(
             .first()
             .map(|b| current.join(b.path()).to_string_lossy().into_owned())
             .unwrap_or_else(|| current.to_string_lossy().into_owned());
+        #[cfg(windows)]
         let voli_exe = paths.root.join("bin").join("voli.exe");
+        #[cfg(not(windows))]
+        let voli_exe = paths.root.join("bin").join("voli");
         let size_kb = dir_size(&report.version_dir) / 1024;
         if let Err(e) = crate::uninstall_reg::write_key(
             &base,
@@ -557,8 +679,9 @@ fn install_fs_inner(
 
     // 5. persist: move any extracted user data out into apps\<name>\persist\<d>
     //    and link it back into the version dir so upgrades don't eat it. A
-    //    DIRECTORY is carried by a junction; a loose FILE - which a junction
-    //    cannot point at - by a hard link into the persist store. Both cases
+    //    DIRECTORY is carried by a link (junction on Windows, symlink on unix);
+    //    a loose FILE - which a directory link cannot point at - by a hard link
+    //    into the persist store. Both cases
     //    keep the real data in the persist store and leave the version dir
     //    holding only a link, so an upgrade (re-links) and an uninstall (drops
     //    the version-dir link, keeps the store) both preserve the user's data.
@@ -621,40 +744,38 @@ fn install_fs_inner(
                     });
                 } else if link.exists() {
                     // persist already holds data from a prior install; drop the
-                    // freshly extracted copy so the junction can take its place.
+                    // freshly extracted copy so the link can take its place.
                     fs::remove_dir_all(&link)?;
                 }
-                junction::create(&store, &link)?;
+                link_dir(&store, &link)?;
                 actions.push(Action::JunctionCreated { path: link });
             }
         }
     }
 
-    // 6. current junction -> the version dir.
+    // 6. current link -> the version dir (junction on Windows, symlink on unix).
     let current = paths.current(name);
-    junction::create(&version_dir, &current)?;
+    link_dir(&version_dir, &current)?;
     actions.push(Action::JunctionCreated {
         path: current.clone(),
     });
 
-    // 7. shims: one <base>.shim + <base>.exe per bin entry. GUI apps get the
-    // windows-subsystem stub so launching them never flashes a console window.
+    // 7. shims: one <base>.shim + <base>[.exe] per bin entry. On Windows GUI
+    // apps get the windows-subsystem stub so launching them never flashes a
+    // console window; on unix there is a single stub (no extension, +x).
+    // Env vars consented later are injected into the .shim files on unix
+    // (see inject_env_into_shims); on Windows they live in the registry.
     let stub = resolve_stub(manifest.gui.unwrap_or(false))?;
     let mut shims = Vec::new();
     for b in &manifest.bin {
         let base = b.shim_name();
         let shim_file = paths.shims().join(format!("{base}.shim"));
-        let shim_exe = paths.shims().join(format!("{base}.exe"));
-        // Target points through `current` so upgrades only flip the junction.
+        let shim_exe = paths.shims().join(shim_exe_name(&base));
+        // Target points through `current` so upgrades only flip the link.
         let target = current.join(b.path());
-        let mut body = target.to_string_lossy().into_owned();
-        body.push('\n');
-        if let Some(args) = b.args() {
-            body.push_str(args);
-            body.push('\n');
-        }
-        fs::write(&shim_file, body)?;
+        fs::write(&shim_file, shim_body(&target, b.args()))?;
         fs::copy(&stub, &shim_exe)?;
+        mark_executable(&shim_exe)?;
         // Give the shim the target app's own icon instead of voli's bear stub
         // icon (spec §6). Best-effort and never fatal: on any error, or when the
         // target carries no icon, the working stub-icon shim is left in place.
@@ -682,22 +803,40 @@ fn install_fs_inner(
         fs::write(&target, &wf.content)?;
     }
 
-    // 10. Start Menu shortcuts (.lnk via the WScript.Shell COM object).
+    // 10. Application shortcuts: Start Menu `.lnk` (via the WScript.Shell COM
+    //     object) on Windows, `.desktop` files on Linux, skipped on macOS.
     //     `link_name()` is manifest-validated to a single plain file name, so
     //     the join stays inside link_dir and the value never reaches a parser.
-    for sc in &manifest.shortcuts {
-        let link_dir = shortcut_dir()?;
-        fs::create_dir_all(&link_dir)?;
-        let link_path = link_dir.join(format!("{}.lnk", sc.link_name()));
-        // A shortcut name may nest (`Vendor\App` is a Start Menu subfolder, used
-        // by several published packages). The name is validated relative, so the
-        // parent always stays under link_dir.
-        if let Some(parent) = link_path.parent() {
-            fs::create_dir_all(parent)?;
+    //     On macOS shortcuts are unsupported: manifests that declare them still
+    //     install (binaries + shims); only the launchers are skipped.
+    if !manifest.shortcuts.is_empty() {
+        match shortcut_dir() {
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {}
+            Err(e) => return Err(e.into()),
+            Ok(link_dir) => {
+                for sc in &manifest.shortcuts {
+                    fs::create_dir_all(&link_dir)?;
+                    let link_path = link_dir.join(shortcut_file_name(sc));
+                    // A shortcut name may nest (`Vendor\App` is a Start Menu subfolder, used
+                    // by several published packages). The name is validated relative, so the
+                    // parent always stays under link_dir.
+                    if let Some(parent) = link_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let target = current.join(sc.target());
+                    create_shortcut(&link_path, &target, &current, &manifest.name)?;
+                    actions.push(Action::ShortcutCreated { path: link_path });
+                }
+            }
         }
-        let target = current.join(sc.target());
-        create_shortcut(&link_path, &target, &current)?;
-        actions.push(Action::ShortcutCreated { path: link_path });
+    }
+
+    // 11. On unix the payload's bin targets need the execute bit: archives
+    // built for Windows carry no unix mode. Best-effort per file — a missing
+    // target fails loudly at shim-resolution time, not here.
+    #[cfg(not(windows))]
+    for b in &manifest.bin {
+        let _ = mark_executable(&current.join(b.path()));
     }
 
     Ok(InstallReport {
@@ -713,11 +852,102 @@ fn install_fs_inner(
     })
 }
 
-/// Undo a partial install, best-effort. Replayed in reverse so junctions are
+/// Render a `.shim` file body: line 1 is the target path, line 2 (optional)
+/// the prepended args. Line endings are `\n` on unix, `\r\n` on Windows (the
+/// parser tolerates both either way).
+fn shim_body(target: &Path, args: Option<&str>) -> String {
+    let mut body = target.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    {
+        body.push_str("\r\n");
+    }
+    #[cfg(not(windows))]
+    {
+        body.push('\n');
+    }
+    if let Some(args) = args {
+        body.push_str(args);
+        #[cfg(windows)]
+        {
+            body.push_str("\r\n");
+        }
+        #[cfg(not(windows))]
+        {
+            body.push('\n');
+        }
+    }
+    body
+}
+
+/// Whether a `.shim` body line is an `KEY=VALUE` env assignment (unix
+/// shim-injected env, lines 3+). Line 2 is always args, even if it contains
+/// `=`, so this is only applied from line 3 on.
+fn parse_shim_env_line(line: &str) -> Option<(String, String)> {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let (key, value) = line.split_once('=')?;
+    let mut kc = key.chars();
+    match kc.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return None,
+    }
+    if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some((key.to_string(), value.to_string()))
+}
+
+/// Embed consented env vars into an installed package's `.shim` files (unix
+/// shim-injected env). Each `PATH`-type value is prepended to the child's
+/// `PATH`; every other var is set when non-empty. Rewrites the action's
+/// `.shim` in place, preserving target + args lines. Windows is a no-op (env
+/// lives in the registry there).
+#[cfg(not(windows))]
+fn inject_env_into_shims(actions: &[Action], resolved: &[(String, String)]) -> io::Result<()> {
+    if resolved.is_empty() {
+        return Ok(());
+    }
+    for a in actions {
+        let Action::ShimWritten { shim, .. } = a else {
+            continue;
+        };
+        let contents = std::fs::read_to_string(shim)?;
+        let mut lines: Vec<String> = contents.lines().map(str::to_string).collect();
+        if lines.is_empty() {
+            continue;
+        }
+        // Drop any previously injected env (upgrade re-injects onto rewritten
+        // shims; this keeps the operation idempotent).
+        let mut head = vec![lines.remove(0)];
+        if !lines.is_empty() {
+            let second = lines.remove(0);
+            // Line 2 is args unless it parses as env AND there was no args
+            // line... it is always args by construction, so keep it unless it
+            // is empty (a shim with no args has no line 2 at all).
+            if !second.trim().is_empty() && parse_shim_env_line(&second).is_none() {
+                head.push(second);
+            } else if parse_shim_env_line(&second).is_none() {
+                // empty line: no args, nothing to keep
+            } else {
+                // Defensive: a line-2 that looks like env (an args line such
+                // as `--opt=val` never parses as env — it starts with `-` —
+                // so treat it as a stale env line and drop it).
+            }
+        }
+        for (k, v) in resolved {
+            head.push(format!("{k}={v}"));
+        }
+        head.push(String::new());
+        std::fs::write(shim, head.join("\n"))?;
+    }
+    Ok(())
+}
+
+/// Undo a partial install, best-effort. Replayed in reverse so links are
 /// deleted before the version dir that contains them (otherwise a recursive
-/// delete could follow a junction into real persist data) and env vars are
-/// restored to their prior state. `subkey` is the registry env subkey the env
-/// actions were applied to (unused when there are no env actions).
+/// delete could follow a link into real persist data) and env vars are
+/// restored to their prior state. `subkey` is the env subkey (Windows
+/// registry, unix file store) the env actions were applied to (unused when
+/// there are no env actions).
 fn rollback(subkey: &str, actions: &[Action]) {
     let mut touched_env = false;
     for a in actions.iter().rev() {
@@ -727,7 +957,7 @@ fn rollback(subkey: &str, actions: &[Action]) {
                 let _ = fs::remove_file(exe);
             }
             Action::JunctionCreated { path } => {
-                let _ = junction::delete(path);
+                let _ = unlink_dir(path);
                 let _ = fs::remove_dir(path);
             }
             // Removing this hard link only drops the version-dir name; the
@@ -824,7 +1054,7 @@ pub fn uninstall_env(
                 check_gone(exe, &mut remaining);
             }
             Action::JunctionCreated { path } => {
-                let _ = junction::delete(path);
+                let _ = unlink_dir(path);
                 let _ = fs::remove_dir(path);
                 check_gone(path, &mut remaining);
             }
@@ -948,9 +1178,9 @@ fn check_gone(path: &Path, remaining: &mut Vec<PathBuf>) {
     }
 }
 
-/// Upgrade an installed package to `manifest_new` via the §3 junction-flip model.
+/// Upgrade an installed package to `manifest_new` via the §3 link-flip model.
 ///
-/// The new version dir is installed alongside the old, the `current` junction is
+/// The new version dir is installed alongside the old, the `current` link is
 /// flipped to it, shims are rewritten (added/removed as the bin set changed), and
 /// env values (which reference `{dir}` = the stable `current` path) are carried
 /// forward with their ORIGINAL priors.
@@ -1010,14 +1240,14 @@ pub fn upgrade_install(
     let old_current = paths.current(name);
     let old_version_dir = paths.version_dir(name, &old_version);
 
-    // Flip prep: drop the old `current` junction so the new install can recreate
-    // it. (Brief window where `current` is absent; the new junction is recreated
+    // Flip prep: drop the old `current` link so the new install can recreate
+    // it. (Brief window where `current` is absent; the new link is recreated
     // within the same call. On failure we restore it, below.)
-    let _ = junction::delete(&old_current);
+    let _ = unlink_dir(&old_current);
     let _ = fs::remove_dir(&old_current);
 
     // Install the new version's filesystem payload (version dir, persist
-    // junctions, current junction -> new, shims). Reuses the install engine.
+    // links, current link -> new, shims). Reuses the install engine.
     let mut new_actions: Vec<Action> = Vec::new();
     let new_report = match install_fs_inner(
         &paths,
@@ -1032,7 +1262,7 @@ pub fn upgrade_install(
             // Undo the partial new install and put `current` back on the old
             // version so running tools (and shims) keep resolving.
             rollback("", &new_actions);
-            let _ = junction::create(&old_version_dir, &old_current);
+            let _ = link_dir(&old_version_dir, &old_current);
             return Err(e);
         }
     };
@@ -1042,8 +1272,13 @@ pub fn upgrade_install(
         manifest_new.bin.iter().map(|b| b.shim_name()).collect();
     for a in &old_actions {
         if let Action::ShimWritten { exe, .. } = a
-            && let Some(base) = exe.file_stem().and_then(|s| s.to_str())
-            && !new_bases.contains(base)
+            && let Some(base) = exe
+                .file_stem()
+                .and_then(|s| s.to_str())
+                // On Windows the exe is `<base>.exe` so file_stem is the base;
+                // on unix the exe IS the base (no extension).
+                .map(str::to_string)
+            && !new_bases.contains(&base)
         {
             let _ = fs::remove_file(paths.shims().join(format!("{base}.shim")));
             let _ = fs::remove_file(exe);
@@ -1063,7 +1298,8 @@ pub fn upgrade_install(
         }
     }
 
-    // Rewrite the Apps & Features key with the new version + size.
+    // Rewrite the Apps & Features key with the new version + size (Windows;
+    // no-op elsewhere, ledger entry still recorded for schema parity).
     {
         let base = crate::uninstall_reg::uninstall_base();
         let current = paths.current(name);
@@ -1072,7 +1308,10 @@ pub fn upgrade_install(
             .first()
             .map(|b| current.join(b.path()).to_string_lossy().into_owned())
             .unwrap_or_else(|| current.to_string_lossy().into_owned());
+        #[cfg(windows)]
         let voli_exe = paths.root.join("bin").join("voli.exe");
+        #[cfg(not(windows))]
+        let voli_exe = paths.root.join("bin").join("voli");
         let size_kb = dir_size(&new_report.version_dir) / 1024;
         let _ = crate::uninstall_reg::write_key(
             &base,
@@ -1097,7 +1336,7 @@ pub fn upgrade_install(
         // Best-effort: undo the new install and restore `current` to old. The old
         // ledger row is intact (replace_install failed before committing).
         rollback("", &new_actions);
-        let _ = junction::create(&old_version_dir, &old_current);
+        let _ = link_dir(&old_version_dir, &old_current);
         return Err(e.into());
     }
 
@@ -1112,11 +1351,11 @@ pub fn upgrade_install(
 }
 
 /// Remove every version dir of `name` that is not `keep_version` (spec §11
-/// cleanup). Junctions inside a version dir (persist links) are deleted before
+/// cleanup). Links inside a version dir (persist links) are deleted before
 /// the dir so a recursive delete never follows one into real persist data.
 /// Returns the paths removed and total bytes freed. `dry_run` reports only.
 ///
-/// `persist` and the `current` junction are never touched.
+/// `persist` and the `current` link are never touched.
 pub fn cleanup_versions(
     root: &Path,
     name: &str,
@@ -1139,7 +1378,7 @@ pub fn cleanup_versions(
         if base == keep_version || base == "current" || base == "persist" {
             continue;
         }
-        if !path.is_dir() || junction::exists(&path).unwrap_or(false) {
+        if !path.is_dir() || is_link(&path) {
             continue; // only real version dirs
         }
         freed += dir_size(&path);
@@ -1151,16 +1390,16 @@ pub fn cleanup_versions(
     Ok((removed, freed))
 }
 
-/// Remove a version dir after deleting any junctions it directly contains
-/// (persist links), so the recursive delete can't follow a junction into
-/// persist. ponytail: persist junctions are top-level in the version dir (the
+/// Remove a version dir after deleting any links it directly contains
+/// (persist links), so the recursive delete can't follow a link into
+/// persist. ponytail: persist links are top-level in the version dir (the
 /// schema is flat), so immediate children suffice.
 fn remove_version_dir_safe(dir: &Path) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let p = entry.path();
-            if junction::exists(&p).unwrap_or(false) {
-                let _ = junction::delete(&p);
+            if is_link(&p) {
+                let _ = unlink_dir(&p);
                 let _ = fs::remove_dir(&p);
             }
         }
@@ -1176,8 +1415,13 @@ pub fn dir_size(path: &Path) -> u64 {
         return 0;
     };
     for entry in entries.flatten() {
+        // Never follow directory links (persist links, `current`): their
+        // target's bytes belong to the store, not to this tree.
+        if is_link(&entry.path()) {
+            continue;
+        }
         let Ok(ft) = entry.file_type() else { continue };
-        if ft.is_dir() && !junction::exists(entry.path()).unwrap_or(false) {
+        if ft.is_dir() {
             total += dir_size(&entry.path());
         } else if let Ok(meta) = entry.metadata() {
             total += meta.len();
@@ -1186,9 +1430,10 @@ pub fn dir_size(path: &Path) -> u64 {
     total
 }
 
-/// Locate the shim stub exe: `VOLI_SHIM_STUB` override, else the stub matching
+/// Locate the shim stub: `VOLI_SHIM_STUB` override, else the stub matching
 /// the app kind next to the running binary — `voli-shim-gui.exe` (windows
-/// subsystem, no console) for GUI apps, `voli-shim.exe` (console) otherwise.
+/// subsystem, no console) for GUI apps, `voli-shim.exe` (console) otherwise;
+/// on unix a single `voli-shim` (extensionless) either way.
 fn resolve_stub(gui: bool) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("VOLI_SHIM_STUB") {
         let p = PathBuf::from(p);
@@ -1199,17 +1444,17 @@ fn resolve_stub(gui: bool) -> Result<PathBuf> {
         };
     }
     let exe = std::env::current_exe()?;
-    let stub = if gui {
-        "voli-shim-gui.exe"
-    } else {
-        "voli-shim.exe"
-    };
-    let cand = exe.with_file_name(stub);
-    if cand.exists() {
-        Ok(cand)
-    } else {
-        Err(InstallError::StubMissing(cand))
+    let mut last_missing = None;
+    for stub in stub_names(gui) {
+        let cand = exe.with_file_name(stub);
+        if cand.exists() {
+            return Ok(cand);
+        }
+        last_missing = Some(cand);
     }
+    Err(InstallError::StubMissing(
+        last_missing.unwrap_or_else(|| exe.with_file_name(stub_names(gui)[0])),
+    ))
 }
 
 fn hash_file(path: &Path, sha512: bool) -> Result<String> {
@@ -1233,22 +1478,68 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-// ---- Start Menu shortcuts (WScript.Shell COM, driven from PowerShell) -----
+// ---- application shortcuts -----------------------------------------------
+//
+// Windows: Start Menu `.lnk` via the WScript.Shell COM object (real .lnk).
+// Linux: freedesktop `.desktop` files under `~/.local/share/applications`.
+// macOS: skipped — app bundles cannot be synthesized from a bare exe path;
+// the shims on PATH are the launch story there.
 
-/// `%APPDATA%\Microsoft\Windows\Start Menu\Programs\voli\`
-/// Override with `VOLI_SHORTCUT_DIR` for tests.
+/// The shortcut directory: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\voli\`
+/// on Windows, `$XDG_DATA_HOME/applications/voli` (or
+/// `~/.local/share/applications/voli`) on Linux. Override with
+/// `VOLI_SHORTCUT_DIR` for tests. On macOS returns an error unless overridden
+/// (shortcuts are unsupported there).
 fn shortcut_dir() -> io::Result<PathBuf> {
     if let Some(dir) = std::env::var_os("VOLI_SHORTCUT_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    let appdata = std::env::var_os("APPDATA")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "APPDATA is not set"))?;
-    Ok(PathBuf::from(appdata)
-        .join("Microsoft")
-        .join("Windows")
-        .join("Start Menu")
-        .join("Programs")
-        .join("voli"))
+    #[cfg(windows)]
+    {
+        let appdata = std::env::var_os("APPDATA")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "APPDATA is not set"))?;
+        Ok(PathBuf::from(appdata)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("voli"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from)
+            && xdg.is_absolute()
+        {
+            return Ok(xdg.join("applications").join("voli"));
+        }
+        let home = crate::paths::user_home()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
+        Ok(home
+            .join(".local")
+            .join("share")
+            .join("applications")
+            .join("voli"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "shortcuts are not supported on macOS (shims on PATH are the launch story)",
+        ))
+    }
+}
+
+/// The shortcut file name for a manifest shortcut entry: `<name>.lnk` on
+/// Windows, `<name>.desktop` on Linux.
+fn shortcut_file_name(sc: &crate::manifest::Shortcut) -> String {
+    #[cfg(windows)]
+    {
+        format!("{}.lnk", sc.link_name())
+    }
+    #[cfg(not(windows))]
+    {
+        format!("{}.desktop", sc.link_name())
+    }
 }
 
 /// Create a `.lnk` shortcut via the WScript.Shell COM object (real .lnk, not .url).
@@ -1258,26 +1549,74 @@ fn shortcut_dir() -> io::Result<PathBuf> {
 /// package-controlled is ever spliced into PowerShell source, so a manifest
 /// cannot smuggle `$(...)`, a backtick, or a quote into an install — voli's
 /// "no scripts, ever" guarantee holds by construction rather than by escaping.
+#[cfg(windows)]
 const SHORTCUT_SCRIPT: &str = "$ws = New-Object -ComObject WScript.Shell\n\
      $sc = $ws.CreateShortcut($env:VOLI_LNK_PATH)\n\
      $sc.TargetPath = $env:VOLI_LNK_TARGET\n\
      $sc.WorkingDirectory = $env:VOLI_LNK_WORKDIR\n\
      $sc.Save()";
 
-fn create_shortcut(link_path: &Path, target: &Path, working_dir: &Path) -> io::Result<()> {
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", SHORTCUT_SCRIPT])
-        .env("VOLI_LNK_PATH", link_path)
-        .env("VOLI_LNK_TARGET", target)
-        .env("VOLI_LNK_WORKDIR", working_dir)
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(io::Error::other(format!(
-            "shortcut creation failed: {stderr}"
-        )));
+fn create_shortcut(
+    link_path: &Path,
+    target: &Path,
+    working_dir: &Path,
+    app_name: &str,
+) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (link_path, target, working_dir, app_name);
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "shortcuts are not supported on macOS",
+        ));
     }
-    Ok(())
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        create_desktop_shortcut(link_path, target, working_dir, app_name)
+    }
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", SHORTCUT_SCRIPT])
+            .env("VOLI_LNK_PATH", link_path)
+            .env("VOLI_LNK_TARGET", target)
+            .env("VOLI_LNK_WORKDIR", working_dir)
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(io::Error::other(format!(
+                "shortcut creation failed: {stderr}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Write a freedesktop `.desktop` launcher (Linux). All values are written as
+/// single fields — no shell, no quoting games: `Exec` takes the absolute
+/// target path plus `%F` (file args), and backslashes are not special in
+/// `Path=`/`Exec=` absolute paths. A hostile manifest can at worst point the
+/// launcher at its own payload, which is what installing it means anyway.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn create_desktop_shortcut(
+    link_path: &Path,
+    target: &Path,
+    working_dir: &Path,
+    app_name: &str,
+) -> io::Result<()> {
+    // Defensive: refuse newlines (the only character that could break out of a
+    // .desktop field) rather than escaping them into something surprising.
+    for v in [target.as_os_str(), working_dir.as_os_str()] {
+        if v.to_string_lossy().contains(['\n', '\r']) {
+            return Err(io::Error::other("shortcut path contains a newline"));
+        }
+    }
+    let body = format!(
+        "[Desktop Entry]\nType=Application\nName={app_name}\nExec={} %F\nPath={}\nTerminal=false\nCategories=Utility;\n",
+        target.display(),
+        working_dir.display(),
+    );
+    std::fs::write(link_path, body)
 }
 
 // ---- archive extraction (zip-slip safe) ----------------------------------
@@ -1291,18 +1630,26 @@ fn searchable_path_dir(dir: &Path) -> bool {
     dir.is_absolute()
 }
 
-/// Find 7z.exe: PATH, then common install locations.
+/// Find a 7-Zip binary: PATH, then common install locations (Windows only).
+/// On unix the `p7zip`/`7zip` packages provide `7z` or `7zz`.
 fn find_7z() -> Option<PathBuf> {
-    // PATH lookup.
+    // PATH lookup (absolute dirs only — see `searchable_path_dir`).
     if let Ok(path) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path).filter(|d| searchable_path_dir(d)) {
-            let candidate = dir.join("7z.exe");
-            if candidate.is_file() {
-                return Some(candidate);
+            #[cfg(windows)]
+            let candidates: &[&str] = &["7z.exe"];
+            #[cfg(not(windows))]
+            let candidates: &[&str] = &["7zz", "7z"];
+            for name in candidates {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
     }
-    // Common install locations.
+    // Common install locations (Windows only; unix relies on PATH).
+    #[cfg(windows)]
     for dir in [r"C:\Program Files\7-Zip", r"C:\Program Files (x86)\7-Zip"] {
         let candidate = Path::new(dir).join("7z.exe");
         if candidate.is_file() {
@@ -1707,7 +2054,10 @@ mod tests {
         assert!(!searchable_path_dir(Path::new("")));
         assert!(!searchable_path_dir(Path::new("tools")));
         assert!(!searchable_path_dir(Path::new(".")));
+        #[cfg(windows)]
         assert!(searchable_path_dir(Path::new(r"C:\Program Files\7-Zip")));
+        #[cfg(not(windows))]
+        assert!(searchable_path_dir(Path::new("/usr/bin")));
     }
 
     /// `Entry::unpack` recreates symlinks and hard links, whose targets are not
@@ -1814,7 +2164,8 @@ mod tests {
         std::fs::write(&target, b"MZ").unwrap();
         let link = td.path().join("App$x`y$(New-Item evil.txt).lnk");
 
-        create_shortcut(&link, &target, td.path()).expect("shortcut creation should succeed");
+        create_shortcut(&link, &target, td.path(), "app")
+            .expect("shortcut creation should succeed");
 
         assert!(
             link.is_file(),
@@ -1825,5 +2176,58 @@ mod tests {
             !td.path().join("evil.txt").exists(),
             "the subexpression must never have been evaluated"
         );
+    }
+
+    /// Linux writes freedesktop `.desktop` launchers with no shell involved:
+    /// the target path lands verbatim in `Exec=` and a hostile name cannot
+    /// break out of its field (newlines are refused, not escaped).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn desktop_shortcut_writes_verbatim_exec_no_shell() {
+        let td = tempfile::tempdir().unwrap();
+        let target = td.path().join("app");
+        std::fs::write(&target, b"ELF").unwrap();
+        let link = td.path().join("weird$name.desktop");
+
+        create_shortcut(&link, &target, td.path(), "weird-app")
+            .expect("desktop shortcut creation should succeed");
+
+        let body = std::fs::read_to_string(&link).unwrap();
+        assert!(body.contains("[Desktop Entry]"), "missing header:\n{body}");
+        assert!(
+            body.contains(&format!("Exec={} %F", target.display())),
+            "Exec must carry the verbatim target:\n{body}"
+        );
+        assert!(body.contains("Name=weird-app"), "missing Name:\n{body}");
+
+        let bad_target = Path::new("/tmp/has\nnewline");
+        assert!(create_shortcut(&link, bad_target, td.path(), "x").is_err());
+    }
+
+    /// Shim bodies use the platform line ending and carry target + args.
+    #[test]
+    fn shim_body_carries_target_and_args() {
+        let body = shim_body(Path::new("/apps/rg/rg"), Some("--color always"));
+        let mut lines = body.lines();
+        assert_eq!(lines.next(), Some("/apps/rg/rg"));
+        assert_eq!(lines.next(), Some("--color always"));
+        let body = shim_body(Path::new("/apps/rg/rg"), None);
+        assert_eq!(body.lines().count(), 1);
+    }
+
+    /// Only `KEY=VALUE` lines with identifier keys parse as shim env.
+    #[test]
+    fn shim_env_line_parsing() {
+        assert_eq!(
+            parse_shim_env_line("JAVA_HOME=/x"),
+            Some(("JAVA_HOME".to_string(), "/x".to_string()))
+        );
+        assert_eq!(
+            parse_shim_env_line("A_B9=v=w"),
+            Some(("A_B9".to_string(), "v=w".to_string()))
+        );
+        assert_eq!(parse_shim_env_line("--opt=val"), None);
+        assert_eq!(parse_shim_env_line("9LIVES=x"), None);
+        assert_eq!(parse_shim_env_line("no-equals"), None);
     }
 }

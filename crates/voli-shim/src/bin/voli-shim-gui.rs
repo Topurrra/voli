@@ -1,6 +1,8 @@
 //! GUI shim variant (spec §6): compiled into the "windows" subsystem so it has
 //! no console (no flash), launches the target DETACHED and exits immediately
-//! without waiting — GUI apps own their own lifetime.
+//! without waiting — GUI apps own their own lifetime. On unix there is no
+//! console subsystem to detach from, so this behaves like the console shim
+//! (env injected, then spawn) and the attribute below is inert.
 #![windows_subsystem = "windows"]
 
 use std::process::Command;
@@ -14,6 +16,8 @@ fn main() {
         // corrupt install (shim written, target/.shim missing).
         Err(_) => std::process::exit(EXIT_SHIM_ERROR),
     };
+
+    shim.apply_env();
 
     // spawn (not status): fire-and-forget. Dropping the child handle does not
     // kill it — the target keeps running after this process exits.

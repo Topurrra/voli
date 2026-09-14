@@ -4,19 +4,26 @@
 
 <h1 align="center">Voli · The Bear That Delivers</h1>
 
-<p align="center">⚡ A fast, no-admin package manager for Windows. One binary, clean uninstalls, zero scripts.</p>
+<p align="center">⚡ A fast, no-admin package manager for Windows, Linux, and macOS. One binary, clean uninstalls, zero scripts.</p>
 
 ## Install
 
-One line in PowerShell (no admin):
+**Windows** — one line in PowerShell (no admin):
 
 ```powershell
 iwr -useb volibear.dev/install | iex
 ```
 
+**Linux / macOS** — one line in your shell (no sudo):
+
+```sh
+curl -fsSL volibear.dev/install.sh | sh
+```
+
 The installer downloads the latest release, verifies its SHA-256, and runs
 `voli setup` (user-level PATH, no admin). It does nothing else - read it first
-if you like: [`install.ps1`](install.ps1).
+if you like: [`install.ps1`](install.ps1) (Windows), [`install.sh`](install.sh)
+(Linux/macOS).
 
 > **Status: v0.12.3, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
@@ -353,10 +360,27 @@ may use a locally installed 7-Zip to extract an EXE/MSI as a container; the
 installer is never executed. Vendor scripts and installers that must run remain
 unsupported. Apps live in versioned directories under your user profile; tiny
 shims on a single user-PATH entry point at the current version through a
-junction, so upgrades are an atomic flip and never break a running program.
-Every mutation (files, shims, env vars) is recorded in a local ledger, and
-`delete` replays it backwards - that's the zero-trace guarantee, by
-construction rather than by promise.
+link (junction on Windows, symlink on Linux/macOS), so upgrades are an atomic
+flip and never break a running program. Every mutation (files, shims, env vars)
+is recorded in a local ledger, and `delete` replays it backwards - that's the
+zero-trace guarantee, by construction rather than by promise.
+
+Platform notes:
+
+- **Root:** `%LOCALAPPDATA%\voli` on Windows, `~/.local/share/voli` (or
+  `$XDG_DATA_HOME/voli`) on Linux, `~/Library/Application Support/voli` on
+  macOS. Override with `VOLI_ROOT` or `voli config set root`.
+- **Env vars:** on Windows package `[env]` goes to `HKCU\Environment`; on
+  Linux/macOS it is injected into each shim at exec time (the `.shim` file
+  carries `KEY=VALUE` lines), so shimmed programs see it and nothing leaks
+  into your shell. `voli env` and `doctor` report the recorded values either
+  way.
+- **Shortcuts:** Start Menu `.lnk` on Windows, `.desktop` launchers in
+  `~/.local/share/applications/voli` on Linux, skipped on macOS (shims on
+  PATH are the launch story there).
+- **Memory keychain:** Windows Credential Manager, macOS Keychain, Linux
+  kernel keyring (session-scoped - use `VOLI_MEMORY_PASSPHRASE` plus
+  `voli memory recover --save` for a vault that survives reboots on servers).
 
 The package index is a signed sqlite snapshot fetched over HTTP - updating it
 is one small download, not a git clone. Registry:

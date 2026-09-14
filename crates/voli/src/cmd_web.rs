@@ -10,7 +10,8 @@
 //! Injection safety: the query never becomes part of a command line. It is
 //! percent-encoded down to the RFC 3986 unreserved set (so `&`, `|`, `"`, `^`,
 //! `%`, `$`, a backtick or a newline can only survive as `%XX`), and the
-//! resulting URL is passed as a single `lpFile` argument to `ShellExecuteW`.
+//! resulting URL is passed as a single argument to the OS opener
+//! (`ShellExecuteW` on Windows, `open` on macOS, `xdg-open` on Linux).
 //! There is no shell, no `cmd /c start`, and no argv splitting anywhere in the
 //! path -- see `no_shell_interpreter_in_this_module` in the tests below, which
 //! fails if anyone ever reintroduces one.
@@ -242,9 +243,37 @@ fn open_url(url: &str) -> std::io::Result<()> {
     }
 }
 
-/// Non-Windows builds print the URL rather than guessing at a browser. voli is
-/// a Windows tool; this exists so the crate still compiles elsewhere.
-#[cfg(not(windows))]
+/// Non-Windows: hand `url` to the desktop opener as a single argv element.
+///
+/// macOS `open` and Linux `xdg-open` both take the URL as one argument with no
+/// shell involved — the same closed-alphabet property as the `ShellExecuteW`
+/// path: the query contributed only `%XX` escapes, and the URL never passes
+/// through `sh -c`, `cmd /c`, or PowerShell.
+#[cfg(target_os = "macos")]
+fn open_url(url: &str) -> std::io::Result<()> {
+    let status = std::process::Command::new("open").arg(url).status()?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| std::io::Error::other(format!("`open` failed for {url} (exit {status})")))
+}
+
+/// Non-Windows: hand `url` to the desktop opener as a single argv element.
+///
+/// macOS `open` and Linux `xdg-open` both take the URL as one argument with no
+/// shell involved — the same closed-alphabet property as the `ShellExecuteW`
+/// path: the query contributed only `%XX` escapes, and the URL never passes
+/// through `sh -c`, `cmd /c`, or PowerShell.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_url(url: &str) -> std::io::Result<()> {
+    let status = std::process::Command::new("xdg-open").arg(url).status()?;
+    status.success().then_some(()).ok_or_else(|| {
+        std::io::Error::other(format!("`xdg-open` failed for {url} (exit {status})"))
+    })
+}
+
+/// Fallback for non-desktop targets: print the URL rather than guessing.
+#[cfg(not(any(windows, unix)))]
 fn open_url(url: &str) -> std::io::Result<()> {
     println!("{url}");
     Ok(())
@@ -290,10 +319,11 @@ mod tests {
         }
     }
 
-    /// Guard against a future "simplification" to `cmd /c start <url>`, which
-    /// would hand the query to a shell interpreter. This module must contain no
-    /// process spawn at all: the URL reaches the OS as one `ShellExecuteW`
-    /// argument or not at all.
+    /// Guard against a future "simplification" to `cmd /c start <url>` (or
+    /// `sh -c "xdg-open <url>"`), which would hand the query to a shell
+    /// interpreter. The URL must reach the OS as one argument: a single
+    /// `ShellExecuteW` lpFile on Windows, a single argv element to
+    /// `open`/`xdg-open` on unix — never through a shell.
     #[test]
     fn no_shell_interpreter_in_this_module() {
         let src = include_str!("cmd_web.rs");
@@ -307,14 +337,26 @@ mod tests {
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
-        for banned in ["Command", "process", "cmd.exe", "start ", "powershell"] {
+        for banned in [
+            "cmd.exe",
+            "powershell",
+            "PowerShell",
+            "sh -c",
+            "\"sh\"",
+            "\"cmd\"",
+        ] {
             assert!(
                 !code.contains(banned),
                 "{banned:?} appeared in cmd_web.rs code -- the browser must be \
-                 opened through ShellExecuteW, never a shell"
+                 opened without a shell"
             );
         }
+        #[cfg(windows)]
         assert!(code.contains("ShellExecuteW"), "the Win32 call vanished");
+        #[cfg(target_os = "macos")]
+        assert!(code.contains("\"open\""), "the macOS opener vanished");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert!(code.contains("xdg-open"), "the Linux opener vanished");
     }
 
     #[test]

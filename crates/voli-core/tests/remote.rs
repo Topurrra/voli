@@ -4,8 +4,6 @@
 //! index manifests; `install_remote` resolves against a locally-built index,
 //! downloads from that server, and runs the real local install engine.
 
-#![cfg(windows)]
-
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -369,7 +367,10 @@ fn install_by_name_resolves_latest() {
     assert_eq!(report.installed.len(), 1);
     assert_eq!(report.installed[0].version, "2.0.0");
     assert!(root.join("apps/ripgrep/2.0.0/rg.exe").is_file());
+    #[cfg(windows)]
     assert!(root.join("shims/rg.exe").is_file());
+    #[cfg(not(windows))]
+    assert!(root.join("shims/rg").is_file());
 }
 
 #[test]

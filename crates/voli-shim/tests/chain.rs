@@ -36,12 +36,15 @@ fn run() {
     let shim_bin = PathBuf::from(env!("CARGO_BIN_EXE_voli-shim"));
     let self_exe = std::env::current_exe().expect("current_exe");
 
-    // Unique temp dir next to the target dir; copy the shim in as "tool.exe" so
-    // its sibling ".shim" is "tool.shim".
+    // Unique temp dir next to the target dir; copy the shim in as
+    // "tool[.exe]" so its sibling ".shim" is "tool.shim".
     let dir = std::env::temp_dir().join(format!("voli-shim-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create temp dir");
+    #[cfg(windows)]
     let shim_copy = dir.join("tool.exe");
+    #[cfg(not(windows))]
+    let shim_copy = dir.join("tool");
     fs::copy(&shim_bin, &shim_copy).expect("copy shim");
 
     // Point the shim at this test binary, running in echo mode.
@@ -63,25 +66,38 @@ fn run() {
     // --- exit code 7 propagates ---
     assert_eq!(out.status.code(), Some(7), "exit code 7 not propagated");
 
-    // --- exit code 3010 (>255) propagates unchanged ---
+    // --- exit code 3010 (>255) propagates unchanged (Windows; unix exit
+    // codes are 8-bit, so the child is reaped with 3010 & 0xFF there) ---
     let out2 = Command::new(&shim_copy)
         .arg("x")
         .env("VOLI_ECHO_EXIT", "3010")
         .output()
         .expect("run shim (3010)");
+    #[cfg(windows)]
+    let expected_3010 = Some(3010);
+    #[cfg(not(windows))]
+    let expected_3010 = Some(3010 & 0xFF);
     assert_eq!(
         out2.status.code(),
-        Some(3010),
+        expected_3010,
         "exit code 3010 not propagated"
     );
 
     // --- missing .shim -> clear failure, EXIT_SHIM_ERROR (9009) ---
+    #[cfg(windows)]
     let orphan = dir.join("orphan.exe");
+    #[cfg(not(windows))]
+    let orphan = dir.join("orphan");
     fs::copy(&shim_bin, &orphan).expect("copy orphan shim");
     let out3 = Command::new(&orphan).output().expect("run orphan shim");
+    // Unix exit codes are 8-bit: 9009 arrives as 9009 & 0xFF.
+    #[cfg(windows)]
+    let expected_shim_error = Some(voli_shim::EXIT_SHIM_ERROR);
+    #[cfg(not(windows))]
+    let expected_shim_error = Some(voli_shim::EXIT_SHIM_ERROR & 0xFF);
     assert_eq!(
         out3.status.code(),
-        Some(voli_shim::EXIT_SHIM_ERROR),
+        expected_shim_error,
         "missing .shim should exit 9009"
     );
     assert!(

@@ -2,7 +2,7 @@
 //! that name is never surfaced to users).
 //!
 //! The engine is embeddable and keychain-free; this layer resolves the master
-//! key (passphrase custody, or the Windows keychain) and formats output.
+//! key (passphrase custody, or the OS keychain) and formats output.
 //!
 //! The memory directory is `$VOLI_MEMORY_DIR` / `$STELA_DIR`, else the nearest
 //! `.voli\memory` in the current directory or an ancestor (unless `--global`),
@@ -518,7 +518,6 @@ fn init_key(dir: &std::path::Path) -> Result<([u8; 32], &'static str), String> {
     }
 }
 
-#[cfg(windows)]
 fn keyring_open() -> Result<[u8; 32], String> {
     match stela::key::load_master_key().map_err(|e| e.to_string())? {
         Some(k) => Ok(k),
@@ -528,22 +527,8 @@ fn keyring_open() -> Result<[u8; 32], String> {
     }
 }
 
-#[cfg(not(windows))]
-fn keyring_open() -> Result<[u8; 32], String> {
-    Err("this platform has no keychain; set VOLI_MEMORY_PASSPHRASE for a passphrase memory".into())
-}
-
-#[cfg(windows)]
 fn keyring_init() -> Result<[u8; 32], String> {
     stela::key::load_or_create_master_key().map_err(|e| e.to_string())
-}
-
-#[cfg(not(windows))]
-fn keyring_init() -> Result<[u8; 32], String> {
-    Err(
-        "this platform has no keychain; set VOLI_MEMORY_PASSPHRASE to create a passphrase memory"
-            .into(),
-    )
 }
 
 /// Open the machine-wide store explicitly, whatever directory we are in.
@@ -921,7 +906,6 @@ fn cmd_recover(pass_flag: Option<&str>, save: bool) -> i32 {
 }
 
 /// Put the recovered master key back into the OS keychain so `read` works again.
-#[cfg(windows)]
 fn reestablish_custody(dir: &std::path::Path, key: &[u8; 32]) -> i32 {
     if custody_mode(dir) == CustodyMode::Passphrase {
         return fail(
@@ -936,24 +920,13 @@ fn reestablish_custody(dir: &std::path::Path, key: &[u8; 32]) -> i32 {
     match Store::open_with_key(dir.to_path_buf(), *key) {
         Ok(_) => {
             println!(
-                "Access restored: the master key is back in the Windows keychain. \
+                "Access restored: the master key is back in the OS keychain. \
                  Run `{TOOL} read` to confirm."
             );
             0
         }
         Err(e) => fail(&e.to_string()),
     }
-}
-
-/// Off Windows there is no OS keychain to re-seed; passphrase custody needs no
-/// recovery blob. The passphrase was still validated (the unwrap succeeded).
-#[cfg(not(windows))]
-fn reestablish_custody(_dir: &std::path::Path, _key: &[u8; 32]) -> i32 {
-    eprintln!(
-        "error: keychain restore is Windows-only. The recovery passphrase is correct, but on \
-         this platform use passphrase custody (VOLI_MEMORY_PASSPHRASE) instead of a recovery blob."
-    );
-    1
 }
 
 /// What a verify run says. Shared with the MCP tool so "intact" reads the same
