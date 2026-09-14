@@ -71,7 +71,30 @@ fn app_zip() -> Vec<u8> {
 }
 
 /// Manifest for `app` with a JAVA_HOME (plain set) and a PATH (prepend) env.
+/// Carries a source block for every platform (same fixture archive+hash), so
+/// the engine selects the host's block on any CI OS.
 fn app_manifest(sha: &str) -> Manifest {
+    let mut sources = String::new();
+    for key in [
+        "x64",
+        "arm64",
+        "linux-x64",
+        "linux-arm64",
+        "macos-x64",
+        "macos-arm64",
+    ] {
+        // Unix blocks carry their own extract_dir: the top-level value belongs
+        // to the Windows archive and is never inherited (flat unless
+        // overridden per source).
+        let extra = if key.starts_with("linux") || key.starts_with("macos") {
+            "extract_dir = \"app-1.0.0\"\n"
+        } else {
+            ""
+        };
+        sources.push_str(&format!(
+            "[source.{key}]\nurl = \"https://example.com/app.zip\"\nsha256 = \"{sha}\"\n{extra}\n"
+        ));
+    }
     let toml = format!(
         r#"
 name = "app"
@@ -80,10 +103,7 @@ kind = "app"
 extract_dir = "app-1.0.0"
 bin = ["app.exe"]
 
-[source.x64]
-url = "https://example.com/app.zip"
-sha256 = "{sha}"
-
+{sources}
 [env]
 JAVA_HOME = "{{dir}}"
 PATH = "{{dir}}\\bin"

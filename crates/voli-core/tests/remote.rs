@@ -103,6 +103,20 @@ fn skill_zip(name: &str) -> Vec<u8> {
     buf
 }
 
+/// Source blocks for every unix platform, mirroring the fixture's x64 block.
+/// The engine selects the host's block, so one fixture serves the whole CI matrix.
+fn unix_blocks(url: &str, sha: &str, extract_dir: &str) -> String {
+    ["linux-x64", "linux-arm64", "macos-x64", "macos-arm64"]
+        .into_iter()
+        .map(|key| {
+            format!(
+                "[source.{key}]\nurl = \"{url}\"\nsha256 = \"{sha}\"\nextract_dir = \"{extract_dir}\"\n"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn manifest_toml(
     name: &str,
     version: &str,
@@ -130,8 +144,11 @@ bin = ["{bin}"]
 [source.x64]
 url = "{url}"
 sha256 = "{sha}"
+
+{unix}
 {depends}
-"#
+"#,
+        unix = unix_blocks(url, sha, &format!("{name}-{version}")),
     )
 }
 
@@ -164,8 +181,11 @@ bin = ["{bin}"]
 [source.x64]
 url = "{url}"
 sha256 = "{sha}"
+
+{unix}
 {depends}
-"#
+"#,
+        unix = unix_blocks(url, sha, &format!("{name}-{version}")),
     )
 }
 

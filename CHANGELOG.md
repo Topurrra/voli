@@ -3,9 +3,25 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
-## Unreleased
+## v0.13.0
 
 ### Added
+
+- **Per-platform sources: `[source.linux-x64]`, `[source.linux-arm64]`,
+  `[source.macos-x64]`, `[source.macos-arm64]`.** `x64`/`arm64` keep meaning
+  Windows. Selection never crosses OS lines — a Windows-only manifest on Linux
+  now fails with `package has no source for this platform (linux-x64)` instead
+  of installing foreign binaries. New `Os`/`Platform` types, `NoPlatformSource`
+  error, and unix rows in the index build; `bump` preserves blocks it does not
+  manage via the canonical round-trip.
+- **Top-level `extract_dir` belongs to Windows archives.** Unix blocks inherit
+  it no longer (flat unless they carry their own override), and the arm64
+  conservative-fallback applies on Windows only. Same-OS arch fallback is
+  unchanged.
+- **`.exe`-tolerant bin resolution on unix.** A Windows-first `bin = ["rg.exe"]`
+  resolves to an extensionless `rg` when that is what the unix payload carries
+  (exact matches always win); also applied to shortcut targets, `chmod` marking,
+  and exported as `voli_core::resolve_bin_target` for registry tooling.
 
 - **Linux and macOS support.** Voli now builds, installs, and passes the full
   test suite on all three desktop platforms; CI runs build + test + clippy +

@@ -107,6 +107,15 @@ fn manifest_toml(version: &str, url: &str, sha: &str, bins: &[&str]) -> String {
         .map(|b| format!("\"{b}\""))
         .collect::<Vec<_>>()
         .join(", ");
+    let unix = ["linux-x64", "linux-arm64", "macos-x64", "macos-arm64"]
+        .into_iter()
+        .map(|key| {
+            format!(
+                "[source.{key}]\nurl = \"{url}\"\nsha256 = \"{sha}\"\nextract_dir = \"app-{version}\"\n"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         r#"
 name = "app"
@@ -120,6 +129,8 @@ persist = ["data"]
 [source.x64]
 url = "{url}"
 sha256 = "{sha}"
+
+{unix}
 "#
     )
 }

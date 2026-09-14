@@ -52,6 +52,19 @@ fn shim_target_through_current(first: &str, file: &str) -> bool {
     first.ends_with(&format!("current/{file}")) || first.ends_with(&format!("current\\{file}"))
 }
 
+/// Source blocks for every unix platform, pointing at the same fixture
+/// archive+hash as the Windows block. The engine selects the host's block,
+/// so one fixture serves the whole CI matrix. `extra` lines (e.g.
+/// `kind = "binary"`, per-source `extract_dir`) are repeated verbatim in
+/// each unix block.
+fn unix_blocks(url: &str, sha: &str, extra: &str) -> String {
+    ["linux-x64", "linux-arm64", "macos-x64", "macos-arm64"]
+        .into_iter()
+        .map(|key| format!("[source.{key}]\nurl = \"{url}\"\nsha256 = \"{sha}\"\n{extra}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Shortcut file path for a link name (`.lnk` on Windows, `.desktop` on Linux;
 /// macOS installs skip shortcuts, but `VOLI_SHORTCUT_DIR` still redirects them
 /// in tests). Unused on macOS (both shortcut tests are gated out there).
@@ -178,7 +191,14 @@ persist = ["config"]
 [source.x64]
 url = "https://example.com/rg.zip"
 sha256 = "{sha256}"
-"#
+
+{unix}
+"#,
+        unix = unix_blocks(
+            "https://example.com/rg.zip",
+            sha256,
+            "extract_dir = \"ripgrep-1.0.0\"\n"
+        ),
     );
     let p = dir.join("ripgrep.toml");
     fs::write(&p, toml).unwrap();
@@ -198,7 +218,14 @@ bin = ["rg.exe"]
 url = "https://example.com/setup.exe"
 sha256 = "{sha256}"
 kind = "installer-archive"
-"#
+
+{unix}
+"#,
+        unix = unix_blocks(
+            "https://example.com/setup.exe",
+            sha256,
+            "kind = \"installer-archive\"\nextract_dir = \"ripgrep-1.0.0\"\n",
+        ),
     );
     let p = dir.join("installer.toml");
     fs::write(&p, toml).unwrap();
@@ -530,9 +557,16 @@ persist = ["config.ini"]
 
 [source.x64]
 url = "https://example.com/np.zip"
-sha256 = "{}"
+sha256 = "{sha}"
+
+{unix}
 "#,
-            sha256_hex(&zip)
+            sha = sha256_hex(&zip),
+            unix = unix_blocks(
+                "https://example.com/np.zip",
+                &sha256_hex(&zip),
+                "extract_dir = \"np-1.0.0\"\n"
+            ),
         ),
     )
     .unwrap();
@@ -830,7 +864,14 @@ bin = ["jq.exe"]
 url = "https://example.com/download/jq-windows-amd64.exe"
 sha256 = "{sha256}"
 kind = "binary"
-"#
+
+{unix}
+"#,
+        unix = unix_blocks(
+            "https://example.com/download/jq-windows-amd64.exe",
+            sha256,
+            "kind = \"binary\"\n",
+        ),
     );
     let p = dir.join(format!("jqbin-{version}.toml"));
     fs::write(&p, toml).unwrap();
@@ -941,14 +982,14 @@ fn binary_uninstall_leaves_zero_trace() {
 /// path, plus the zero-trace uninstall on top of it.
 ///
 /// The top-level `extract_dir` is deliberately WRONG (that wrapper is not in the
-/// archive) and `[source.x64]` carries the right one. Before per-arch
-/// `extract_dir` existed, this install died with `ExtractDirMissing` after the
-/// archive was already extracted.
+/// archive) and every source block carries the right per-source one. Before
+/// per-arch `extract_dir` existed, this install died with `ExtractDirMissing`
+/// after the archive was already extracted.
 ///
-/// Host-independent by construction: the manifest is x64-only, so an arm64 dev
-/// box selects the same source (reporting a `Missing` fallback) and resolves the
-/// same override. Selecting arm64 itself is covered by the pure policy tests in
-/// `manifest.rs`, which take the host arch as an argument.
+/// Host-independent by construction: each platform selects its own block (all
+/// carry the same override), so every CI OS resolves the same override.
+/// Selecting a *different* arch's block is covered by the pure policy tests in
+/// `manifest.rs`, which take the host platform as an argument.
 #[test]
 fn per_arch_extract_dir_installs_and_uninstalls_cleanly() {
     let td = setup();
@@ -959,6 +1000,7 @@ fn per_arch_extract_dir_installs_and_uninstalls_cleanly() {
     ]);
     let archive = root.join("arch.zip");
     fs::write(&archive, &zip).unwrap();
+    let sha = sha256_hex(&zip);
     let manifest_path = root.join("archpkg.toml");
     fs::write(
         &manifest_path,
@@ -972,10 +1014,18 @@ bin = ["rg.exe"]
 
 [source.x64]
 url = "https://example.com/arch.zip"
-sha256 = "{}"
+sha256 = "{sha}"
 extract_dir = "arch-1.0.0"
+
+{unix}
 "#,
-            sha256_hex(&zip)
+            unix = ["linux-x64", "linux-arm64", "macos-x64", "macos-arm64"]
+                .into_iter()
+                .map(|key| format!(
+                    "[source.{key}]\nurl = \"https://example.com/arch.zip\"\nsha256 = \"{sha}\"\nextract_dir = \"arch-1.0.0\"\n"
+                ))
+                .collect::<Vec<_>>()
+                .join("\n"),
         ),
     )
     .unwrap();
@@ -985,9 +1035,10 @@ extract_dir = "arch-1.0.0"
     let mut before = snapshot(root);
 
     let report = install_local(&manifest_path, &archive, root).expect("per-arch install");
-    assert_eq!(report.arch, voli_core::Arch::X64);
+    let host_arch = voli_core::Platform::host().arch;
+    assert_eq!(report.arch, host_arch);
     assert!(
-        report.arch_note().starts_with("x64"),
+        report.arch_note().starts_with(host_arch.as_str()),
         "the arch decision must be reported: {}",
         report.arch_note()
     );
@@ -1065,7 +1116,14 @@ shortcuts = ["rg.exe"]
 [source.x64]
 url = "https://example.com/rg.zip"
 sha256 = "{sha256}"
-"#
+
+{unix}
+"#,
+        unix = unix_blocks(
+            "https://example.com/rg.zip",
+            sha256,
+            "extract_dir = \"ripgrep-1.0.0\"\n"
+        ),
     );
     let p = dir.join("rgshort.toml");
     fs::write(&p, toml).unwrap();
@@ -1108,9 +1166,16 @@ shortcuts = [{{ target = "rg.exe", name = "{name}" }}]
 
 [source.x64]
 url = "https://example.com/rg.zip"
-sha256 = "{}"
+sha256 = "{sha}"
+
+{unix}
 "#,
-        sha256_hex(&zip)
+        sha = sha256_hex(&zip),
+        unix = unix_blocks(
+            "https://example.com/rg.zip",
+            &sha256_hex(&zip),
+            "extract_dir = \"ripgrep-1.0.0\"\n"
+        ),
     );
     let manifest = root.join("rglnk.toml");
     fs::write(&manifest, toml).unwrap();
@@ -1215,9 +1280,16 @@ shortcuts = ["rg.exe"]
 
 [source.x64]
 url = "https://example.com/rg-2.0.0.zip"
-sha256 = "{}"
+sha256 = "{sha}"
+
+{unix}
 "#,
-        sha256_hex(&zip2)
+        sha = sha256_hex(&zip2),
+        unix = unix_blocks(
+            "https://example.com/rg-2.0.0.zip",
+            &sha256_hex(&zip2),
+            "extract_dir = \"ripgrep-2.0.0\"\n"
+        ),
     );
     let m2 = voli_core::Manifest::from_toml_str(&toml2).unwrap();
     voli_core::upgrade_install(&m2, &archive2, &[], root).unwrap();

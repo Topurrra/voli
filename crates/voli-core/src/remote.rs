@@ -131,8 +131,10 @@ pub enum RemoteError {
     UnknownDep { package: String, dep: String },
     #[error("no indexed version of '{dep}' satisfies the required '{constraint}'")]
     Unsatisfiable { dep: String, constraint: String },
-    #[error("package '{0}' has no [source.x64] or [source.arm64] block in the index")]
-    NoArch(String),
+    #[error(
+        "package '{name}' has no usable source in the index for this platform (no [source.{platform}] block)"
+    )]
+    NoArch { name: String, platform: String },
     #[error("skill package '{0}' has no universal source in the index")]
     NoUniversalSource(String),
 }
@@ -276,9 +278,9 @@ pub fn prefetch_remote(
         hash: String,
     }
 
-    // One arch decision for the whole run: what we download must be what
+    // One platform decision for the whole run: what we download must be what
     // `install_manifest` later selects, or the hash gate would reject it.
-    let host = install::host_arch();
+    let host = crate::manifest::Platform::host();
     let state = State::open(&Paths::at(root).state_db())
         .map_err(|error| RemoteError::Install(InstallError::Sqlite(error)))?;
     let mut seen_packages = HashSet::new();
@@ -301,7 +303,10 @@ pub fn prefetch_remote(
             }
             let source = manifest
                 .select_source(host)
-                .ok_or_else(|| RemoteError::NoArch(manifest.name.clone()))?
+                .ok_or_else(|| RemoteError::NoArch {
+                    name: manifest.name.clone(),
+                    platform: crate::manifest::Platform::host().to_string(),
+                })?
                 .source;
             let hash = source.hash().to_string();
             if seen_hashes.insert(hash.clone()) {
@@ -442,9 +447,9 @@ pub fn install_remote_env(
     // (NotFound + suggestions) or an unknown dep before anything is downloaded.
     let plan = resolve_chain(root, name, version)?;
 
-    // Same arch for every package in the chain, and the same one
+    // Same platform for every package in the chain, and the same one
     // `install_manifest` will pick — the hash gate depends on it.
-    let host = install::host_arch();
+    let host = crate::manifest::Platform::host();
     let state = State::open(&Paths::at(root).state_db())
         .map_err(|e| RemoteError::Install(InstallError::Sqlite(e)))?;
     let cache = Paths::at(root).cache();
@@ -467,7 +472,10 @@ pub fn install_remote_env(
 
         let source = manifest
             .select_source(host)
-            .ok_or_else(|| RemoteError::NoArch(manifest.name.clone()))?
+            .ok_or_else(|| RemoteError::NoArch {
+                name: manifest.name.clone(),
+                platform: crate::manifest::Platform::host().to_string(),
+            })?
             .source;
 
         on_step(Step::Downloading {
@@ -562,8 +570,11 @@ pub fn upgrade(
     }
 
     let source = latest
-        .select_source(install::host_arch())
-        .ok_or_else(|| RemoteError::NoArch(name.to_string()))?
+        .select_source(crate::manifest::Platform::host())
+        .ok_or_else(|| RemoteError::NoArch {
+            name: name.to_string(),
+            platform: crate::manifest::Platform::host().to_string(),
+        })?
         .source;
 
     on_step(Step::Downloading {

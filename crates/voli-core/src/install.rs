@@ -365,6 +365,10 @@ pub enum InstallError {
     HashMismatch { expected: String, actual: String },
     #[error("the manifest has no [source.x64] or [source.arm64] block")]
     NoArchSource,
+    #[error(
+        "package has no source for this platform ({platform}): add a [source.{platform}] block"
+    )]
+    NoPlatformSource { platform: String },
     #[error("unsafe archive entry (absolute path or '..'): {0}")]
     ZipSlip(String),
     #[error("archive contains more than {MAX_ARCHIVE_ENTRIES} entries")]
@@ -399,6 +403,21 @@ pub enum InstallError {
 }
 
 type Result<T> = std::result::Result<T, InstallError>;
+
+/// The selection error for a manifest with no usable source on this machine:
+/// [`InstallError::NoArchSource`] when it carries no app blocks at all (should
+/// not happen for validated manifests), [`InstallError::NoPlatformSource`]
+/// when it has sources — just none for this OS+arch. The second case is the
+/// normal "not available for linux/macOS yet" signal, not a corrupt manifest.
+fn no_source_error(manifest: &Manifest) -> InstallError {
+    if manifest.source.has_app_source() {
+        InstallError::NoPlatformSource {
+            platform: crate::manifest::Platform::host().to_string(),
+        }
+    } else {
+        InstallError::NoArchSource
+    }
+}
 
 /// Extraction limits (zip bombs, §10). Generous enough for real desktop apps
 /// (a full JDK is ~20k files / 1 GiB) while still bounding a hostile archive.
@@ -456,8 +475,8 @@ pub fn install_manifest(
 
     // Hash check first — hard fail before touching anything.
     let selected = manifest
-        .select_source(host_arch())
-        .ok_or(InstallError::NoArchSource)?;
+        .select_source(crate::manifest::Platform::host())
+        .ok_or_else(|| no_source_error(manifest))?;
     let source = selected.source;
     let actual = hash_file(archive_path, source.is_sha512())?;
     if !actual.eq_ignore_ascii_case(source.hash()) {
@@ -647,8 +666,9 @@ fn install_fs_inner(
     }
 
     // 2. Apply extract_dir stripping — the SELECTED source's own value when it
-    //    has one, else the top-level field.
-    let extract_dir = manifest.extract_dir_for(source);
+    //    has one, else the top-level field (Windows blocks only; unix blocks
+    //    without their own value are flat).
+    let extract_dir = manifest.extract_dir_for(source, selected.platform);
     let move_src = match extract_dir {
         Some(d) => extract_root.join(d),
         None => extract_root.clone(),
@@ -772,7 +792,9 @@ fn install_fs_inner(
         let shim_file = paths.shims().join(format!("{base}.shim"));
         let shim_exe = paths.shims().join(shim_exe_name(&base));
         // Target points through `current` so upgrades only flip the link.
-        let target = current.join(b.path());
+        // Resolved (not joined): unix payloads are extensionless where
+        // Windows-first manifests name `.exe`.
+        let target = resolve_payload_target(&current, b.path());
         fs::write(&shim_file, shim_body(&target, b.args()))?;
         fs::copy(&stub, &shim_exe)?;
         mark_executable(&shim_exe)?;
@@ -822,7 +844,7 @@ fn install_fs_inner(
             if let Some(parent) = link_path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            let target = current.join(sc.target());
+            let target = resolve_payload_target(&current, sc.target());
             create_shortcut(&link_path, &target, &current, &manifest.name)?;
             actions.push(Action::ShortcutCreated { path: link_path });
         }
@@ -833,7 +855,7 @@ fn install_fs_inner(
     // target fails loudly at shim-resolution time, not here.
     #[cfg(not(windows))]
     for b in &manifest.bin {
-        let _ = mark_executable(&current.join(b.path()));
+        let _ = mark_executable(&resolve_payload_target(&current, b.path()));
     }
 
     Ok(InstallReport {
@@ -849,6 +871,43 @@ fn install_fs_inner(
     })
 }
 
+/// Resolve a manifest bin/shortcut path against the installed `current` dir.
+///
+/// Two normalizations, both no-ops when the payload already matches Windows
+/// conventions:
+/// - Separators are resolved the way extraction did ([`safe_rel]` splits both
+///   `/` and `\` on every platform), so `bin\rg.exe` finds `bin/rg.exe` on
+///   unix. Manifest validation guarantees this succeeds; the raw join is kept
+///   as a fallback so a failure here can never break an install that
+///   extraction already completed.
+/// - On unix, Windows-first manifests name `rg.exe` while unix payloads carry
+///   extensionless `rg`. When the literal path is absent and the name ends in
+///   `.exe`, fall back to the stripped stem if that exists. Exact matches
+///   always win, and when neither exists the literal is kept so the failure
+///   surfaces at shim-resolution time exactly as before.
+///
+/// Resolve a manifest bin/shortcut path against an installed payload dir.
+///
+/// Public so external tooling (registry importers, `--verify-only`) resolves
+/// targets exactly the way an install would.
+pub fn resolve_bin_target(current: &Path, rel: &str) -> PathBuf {
+    resolve_payload_target(current, rel)
+}
+
+fn resolve_payload_target(current: &Path, rel: &str) -> PathBuf {
+    let normalized = safe_rel(rel).unwrap_or_else(|| PathBuf::from(rel));
+    let literal = current.join(&normalized);
+    #[cfg(not(windows))]
+    {
+        if !literal.exists() && normalized.extension().and_then(|e| e.to_str()) == Some("exe") {
+            let candidate = current.join(normalized.with_extension(""));
+            if candidate.file_name().is_some_and(|n| !n.is_empty()) && candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    literal
+}
 /// Render a `.shim` file body: line 1 is the target path, line 2 (optional)
 /// the prepended args. Line endings are `\n` on unix, `\r\n` on Windows (the
 /// parser tolerates both either way).
@@ -1224,8 +1283,8 @@ pub fn upgrade_install(
 
     // Hash gate first (same as install) — no mutation before it passes.
     let selected = manifest_new
-        .select_source(host_arch())
-        .ok_or(InstallError::NoArchSource)?;
+        .select_source(crate::manifest::Platform::host())
+        .ok_or_else(|| no_source_error(manifest_new))?;
     let source = selected.source;
     let actual = hash_file(archive_path, source.is_sha512())?;
     if !actual.eq_ignore_ascii_case(source.hash()) {
@@ -2225,5 +2284,49 @@ mod tests {
         assert_eq!(parse_shim_env_line("--opt=val"), None);
         assert_eq!(parse_shim_env_line("9LIVES=x"), None);
         assert_eq!(parse_shim_env_line("no-equals"), None);
+    }
+
+    /// Bin target resolution: separators normalize like extraction, and on
+    /// unix a Windows-first `rg.exe` resolves to an extensionless `rg` when
+    /// that is what the payload carries. Exact matches always win.
+    #[test]
+    fn payload_target_prefers_existing_over_literal() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path();
+        fs::create_dir_all(current.join("bin")).unwrap();
+        fs::write(current.join("bin/tool"), b"x").unwrap();
+        fs::write(current.join("other.exe"), b"x").unwrap();
+
+        // Backslash separators resolve on every platform.
+        assert_eq!(
+            resolve_payload_target(current, "bin\\tool"),
+            current.join("bin/tool")
+        );
+        // Exact match wins even where a stripped variant exists.
+        assert_eq!(
+            resolve_payload_target(current, "other.exe"),
+            current.join("other.exe")
+        );
+        // Missing entirely: the literal is kept for runtime failure.
+        assert_eq!(
+            resolve_payload_target(current, "nope.exe"),
+            current.join("nope.exe")
+        );
+        #[cfg(not(windows))]
+        {
+            fs::write(current.join("rg"), b"x").unwrap();
+            assert_eq!(
+                resolve_payload_target(current, "rg.exe"),
+                current.join("rg")
+            );
+        }
+        #[cfg(windows)]
+        {
+            // Windows has no fallback: the literal stands.
+            assert_eq!(
+                resolve_payload_target(current, "rg.exe"),
+                current.join("rg.exe")
+            );
+        }
     }
 }

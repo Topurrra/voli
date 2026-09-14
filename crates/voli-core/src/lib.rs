@@ -21,12 +21,12 @@ pub use config::Config;
 pub use fetch::{FetchError, download};
 pub use install::{
     Action, DirRole, EnvConsent, InstallError, InstallReport, UninstallReport, UpgradeReport,
-    cleanup_versions, dir_size, host_arch, install_local, install_manifest, skip_env, uninstall,
-    uninstall_env, upgrade_install,
+    cleanup_versions, dir_size, host_arch, install_local, install_manifest, resolve_bin_target,
+    skip_env, uninstall, uninstall_env, upgrade_install,
 };
 pub use manifest::{
-    Arch, ArchFallback, Bin, ExtraSource, Kind, Manifest, ManifestError, PackageRef,
-    PackageRefError, SelectedSource, Shortcut, Source, SourceKind, WriteFile,
+    Arch, ArchFallback, Bin, ExtraSource, Kind, Manifest, ManifestError, Os, PackageRef,
+    PackageRefError, Platform, SelectedSource, Shortcut, Source, SourceKind, WriteFile,
 };
 pub use paths::{Paths, SKILL_TARGET_IDS, SkillScope, SkillTarget, SkillTargetError};
 pub use remote::{

@@ -1281,7 +1281,7 @@ pub(crate) fn print_remote_error(action: &str, name: &str, error: &RemoteError) 
             &error.to_string(),
             "run `voli update` and retry; report the package if it still fails",
         ),
-        RemoteError::NoArch(_) | RemoteError::NoUniversalSource(_) => print_problem(
+        RemoteError::NoArch { .. } | RemoteError::NoUniversalSource(_) => print_problem(
             &format!("'{name}' is not available for this type of installation"),
             &error.to_string(),
             "run `voli info` for the package and choose a supported source",

@@ -151,13 +151,24 @@ pub struct ExtraSource {
     pub extract_to: String,
 }
 
-/// Sources keyed by architecture. At least one arch must be present.
+/// Sources keyed by platform. At least one app block must be present.
+/// `x64`/`arm64` are Windows (the historical meaning, unchanged); unix
+/// platforms are explicit: `linux-x64`, `linux-arm64`, `macos-x64`,
+/// `macos-arm64`. `any` is skill-only.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Sources {
     pub any: Option<Source>,
     pub x64: Option<Source>,
     pub arm64: Option<Source>,
+    #[serde(rename = "linux-x64")]
+    pub linux_x64: Option<Source>,
+    #[serde(rename = "linux-arm64")]
+    pub linux_arm64: Option<Source>,
+    #[serde(rename = "macos-x64")]
+    pub macos_x64: Option<Source>,
+    #[serde(rename = "macos-arm64")]
+    pub macos_arm64: Option<Source>,
 }
 
 impl Sources {
@@ -168,6 +179,117 @@ impl Sources {
             Arch::X64 => self.x64.as_ref(),
             Arch::Arm64 => self.arm64.as_ref(),
         }
+    }
+
+    /// The block for one OS+arch platform. `any` is skill-only and never
+    /// selected by platform.
+    pub fn for_platform(&self, platform: Platform) -> Option<&Source> {
+        match (platform.os, platform.arch) {
+            (Os::Windows, Arch::X64) => self.x64.as_ref(),
+            (Os::Windows, Arch::Arm64) => self.arm64.as_ref(),
+            (Os::Linux, Arch::X64) => self.linux_x64.as_ref(),
+            (Os::Linux, Arch::Arm64) => self.linux_arm64.as_ref(),
+            (Os::MacOS, Arch::X64) => self.macos_x64.as_ref(),
+            (Os::MacOS, Arch::Arm64) => self.macos_arm64.as_ref(),
+        }
+    }
+
+    /// True when at least one installable app block exists (any platform).
+    pub fn has_app_source(&self) -> bool {
+        self.x64.is_some()
+            || self.arm64.is_some()
+            || self.linux_x64.is_some()
+            || self.linux_arm64.is_some()
+            || self.macos_x64.is_some()
+            || self.macos_arm64.is_some()
+    }
+
+    /// True when any unix (non-Windows) block exists.
+    pub fn has_unix_source(&self) -> bool {
+        self.linux_x64.is_some()
+            || self.linux_arm64.is_some()
+            || self.macos_x64.is_some()
+            || self.macos_arm64.is_some()
+    }
+}
+
+/// A host operating system — which `[source.<os>-<arch>]` family an install
+/// prefers. Always a **runtime** value via [`Os::current`], matching the
+/// [`Arch`] philosophy (never `cfg!`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Windows,
+    Linux,
+    MacOS,
+}
+
+impl Os {
+    /// The OS this binary is running on.
+    pub fn current() -> Self {
+        #[cfg(windows)]
+        {
+            Self::Windows
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Self::MacOS
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            Self::Linux
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            Self::Windows
+        }
+    }
+
+    /// The wire name: the `[source.<os>-<arch>]` family prefix (`""` for
+    /// Windows, whose blocks are the historical bare `x64`/`arm64`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::Linux => "linux",
+            Self::MacOS => "macos",
+        }
+    }
+}
+
+impl std::fmt::Display for Os {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A host OS+arch pair — which `[source.<os>-<arch>]` block an install prefers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Platform {
+    pub os: Os,
+    pub arch: Arch,
+}
+
+impl Platform {
+    /// The platform this binary is running on.
+    pub fn host() -> Self {
+        Self {
+            os: Os::current(),
+            arch: crate::install::host_arch(),
+        }
+    }
+
+    /// The `[source.*]` key for an exact (non-fallback) match: `x64`/`arm64`
+    /// on Windows, `linux-x64` etc. elsewhere.
+    pub fn source_key(self) -> String {
+        match self.os {
+            Os::Windows => self.arch.as_str().to_string(),
+            _ => format!("{}-{}", self.os.as_str(), self.arch.as_str()),
+        }
+    }
+}
+
+impl std::fmt::Display for Platform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.source_key())
     }
 }
 
@@ -226,6 +348,9 @@ impl ArchFallback {
 #[derive(Debug, Clone, Copy)]
 pub struct SelectedSource<'a> {
     pub source: &'a Source,
+    /// The platform the selection was made for — not necessarily the block's
+    /// own family when `fallback` is set (same OS, other arch).
+    pub platform: Platform,
     /// The arch of the block actually chosen — not necessarily the host's.
     pub arch: Arch,
     /// `None` when `arch` IS the host's architecture.
@@ -399,7 +524,9 @@ pub enum ManifestError {
     #[error("alias '{0}' is listed twice")]
     DuplicateAlias(String),
 
-    #[error("no source: at least one of [source.x64] or [source.arm64] is required")]
+    #[error(
+        "no source: at least one app source block is required ([source.x64], [source.arm64], [source.linux-x64], [source.linux-arm64], [source.macos-x64], or [source.macos-arm64])"
+    )]
     NoSource,
 
     #[error("invalid skill source: exactly one [source.any] archive is required")]
@@ -466,26 +593,44 @@ impl Manifest {
     }
 
     /// The wrapper dir to strip after extracting `source`: that source's own
-    /// `extract_dir` when it has one, else the top-level one, else none.
-    pub fn extract_dir_for<'a>(&'a self, source: &'a Source) -> Option<&'a str> {
+    /// `extract_dir` when it has one; else the top-level one — but only for
+    /// Windows blocks. A top-level `extract_dir` was measured against a Windows
+    /// archive (see [`Manifest::select_source`); inheriting it into a unix
+    /// block would mis-strip a payload it was never measured against. Unix
+    /// blocks without their own `extract_dir` therefore mean "flat archive,
+    /// no stripping".
+    pub fn extract_dir_for<'a>(
+        &'a self,
+        source: &'a Source,
+        platform: Platform,
+    ) -> Option<&'a str> {
         source
             .extract_dir
             .as_deref()
-            .or(self.extract_dir.as_deref())
+            .or(if platform.os == Os::Windows {
+                self.extract_dir.as_deref()
+            } else {
+                None
+            })
     }
 
-    /// Pick the `[source.<arch>]` block to install on `host`.
+    /// Pick the `[source.<os>-<arch>]` block to install on `host`.
     ///
-    /// The policy is deliberately conservative, so switching arm64 selection on
-    /// requires **zero** manifest edits:
+    /// Selection never crosses OS lines: a Linux host only ever considers the
+    /// `linux-*` blocks, so a Windows-only manifest yields `None` (and the
+    /// caller reports "no source for linux-x64") rather than installing
+    /// foreign binaries. Within the host OS the policy is deliberately
+    /// conservative, so switching arm64 selection on requires **zero** manifest
+    /// edits:
     ///
-    /// * x64 host → `[source.x64]`.
-    /// * arm64 host → `[source.arm64]` only when picking it is provably safe:
-    ///   that block carries its own `extract_dir`, or there is no top-level
-    ///   `extract_dir` to mis-strip. Otherwise `[source.x64]`, which works under
-    ///   emulation.
-    /// * either way, if the host's block is absent, the other arch is used and
-    ///   the caller is told which and why via [`SelectedSource::fallback`].
+    /// * x64 host → the OS's `x64` block.
+    /// * arm64 host → the OS's `arm64` block only when picking it is provably
+    ///   safe: that block carries its own `extract_dir`, or there is no
+    ///   top-level `extract_dir` to mis-strip. Otherwise the OS's `x64` block,
+    ///   which works under emulation (Windows) or is simply present.
+    /// * either way, if the host's block is absent, the other arch **of the
+    ///   same OS** is used and the caller is told which and why via
+    ///   [`SelectedSource::fallback`].
     ///
     /// The asymmetry is the point. A top-level `extract_dir` in this registry was
     /// measured against the **x64** archive (the Scoop importer emitted the x64
@@ -497,38 +642,52 @@ impl Manifest {
     /// native as manifests gain a per-arch `extract_dir`; nothing has to be fixed
     /// up front.
     ///
-    /// Returns `None` only when neither arch is present — impossible for a
-    /// validated non-skill manifest, and skills use `[source.any]` instead.
-    pub fn select_source(&self, host: Arch) -> Option<SelectedSource<'_>> {
-        let other = host.other();
-        match (self.source.for_arch(host), self.source.for_arch(other)) {
+    /// Returns `None` when the host OS has no block at all — impossible for a
+    /// validated Windows-only manifest on Windows, and the normal "not
+    /// available for this platform" signal everywhere else. Skills use
+    /// `[source.any]` instead.
+    pub fn select_source(&self, host: Platform) -> Option<SelectedSource<'_>> {
+        let other = Platform {
+            os: host.os,
+            arch: host.arch.other(),
+        };
+        match (
+            self.source.for_platform(host),
+            self.source.for_platform(other),
+        ) {
             (None, None) => None,
             // No block for this machine: use what there is, and say so.
             (None, Some(source)) => Some(SelectedSource {
                 source,
-                arch: other,
+                platform: host,
+                arch: other.arch,
                 fallback: Some(ArchFallback::Missing),
             }),
             // Native block exists, but the only `extract_dir` around belongs to
             // the archive sitting next to it. Prefer the emulated build.
             //
-            // Guarded on the other arch existing: in a single-arch manifest the
-            // top-level `extract_dir` describes THAT arch's archive by
-            // construction, so there is nothing to be conservative about.
+            // Windows-only reasoning: the top-level value was measured against
+            // a Windows x64 archive. Guarded on the other arch existing: in a
+            // single-arch manifest the top-level `extract_dir` describes THAT
+            // arch's archive by construction, so there is nothing to be
+            // conservative about.
             (Some(native), Some(emulated))
-                if host == Arch::Arm64
+                if host.os == Os::Windows
+                    && host.arch == Arch::Arm64
                     && self.extract_dir.is_some()
                     && native.extract_dir.is_none() =>
             {
                 Some(SelectedSource {
                     source: emulated,
-                    arch: other,
+                    platform: host,
+                    arch: other.arch,
                     fallback: Some(ArchFallback::ExtractDir),
                 })
             }
             (Some(source), _) => Some(SelectedSource {
                 source,
-                arch: host,
+                platform: host,
+                arch: host.arch,
                 fallback: None,
             }),
         }
@@ -629,6 +788,10 @@ impl Manifest {
             ("any", &self.source.any),
             ("x64", &self.source.x64),
             ("arm64", &self.source.arm64),
+            ("linux-x64", &self.source.linux_x64),
+            ("linux-arm64", &self.source.linux_arm64),
+            ("macos-x64", &self.source.macos_x64),
+            ("macos-arm64", &self.source.macos_arm64),
         ] {
             let Some(source) = source else { continue };
             o.push_str(&format!("\n[source.{arch}]\n"));
@@ -731,7 +894,7 @@ impl Manifest {
             let Some(source) = &self.source.any else {
                 return Err(ManifestError::SkillSource);
             };
-            if self.source.x64.is_some() || self.source.arm64.is_some() {
+            if self.source.has_app_source() {
                 return Err(ManifestError::SkillSource);
             }
             check_source_hash(source, "any")?;
@@ -744,9 +907,10 @@ impl Manifest {
             if self.source.any.is_some() {
                 return Err(ManifestError::UniversalSource);
             }
-            if self.source.x64.is_none() && self.source.arm64.is_none() {
+            if !self.source.has_app_source() {
                 return Err(ManifestError::NoSource);
             }
+            // One call per block so the error names the exact `[source.*]` key.
             if let Some(s) = &self.source.x64 {
                 check_source_hash(s, "x64")?;
                 check_extra_sources(s, "x64")?;
@@ -754,6 +918,22 @@ impl Manifest {
             if let Some(s) = &self.source.arm64 {
                 check_source_hash(s, "arm64")?;
                 check_extra_sources(s, "arm64")?;
+            }
+            if let Some(s) = &self.source.linux_x64 {
+                check_source_hash(s, "linux-x64")?;
+                check_extra_sources(s, "linux-x64")?;
+            }
+            if let Some(s) = &self.source.linux_arm64 {
+                check_source_hash(s, "linux-arm64")?;
+                check_extra_sources(s, "linux-arm64")?;
+            }
+            if let Some(s) = &self.source.macos_x64 {
+                check_source_hash(s, "macos-x64")?;
+                check_extra_sources(s, "macos-x64")?;
+            }
+            if let Some(s) = &self.source.macos_arm64 {
+                check_source_hash(s, "macos-arm64")?;
+                check_extra_sources(s, "macos-arm64")?;
             }
         }
 
@@ -2370,16 +2550,38 @@ sha256 = "{b}"
 
         let x64 = m.source.x64.as_ref().unwrap();
         let arm64 = m.source.arm64.as_ref().unwrap();
+        let win64 = Platform {
+            os: Os::Windows,
+            arch: Arch::X64,
+        };
+        let winarm = Platform {
+            os: Os::Windows,
+            arch: Arch::Arm64,
+        };
+        let lin64 = Platform {
+            os: Os::Linux,
+            arch: Arch::X64,
+        };
         // Absent on x64 -> the top-level value; present on arm64 -> the override.
-        assert_eq!(m.extract_dir_for(x64), Some("app-x86_64-windows"));
-        assert_eq!(m.extract_dir_for(arm64), Some("app-aarch64-windows"));
+        assert_eq!(m.extract_dir_for(x64, win64), Some("app-x86_64-windows"));
+        assert_eq!(
+            m.extract_dir_for(arm64, winarm),
+            Some("app-aarch64-windows")
+        );
+        // The top-level value belongs to Windows archives: unix blocks never
+        // inherit it (flat unless they carry their own override).
+        assert_eq!(m.extract_dir_for(x64, lin64), None);
+        assert_eq!(m.extract_dir_for(arm64, lin64), Some("app-aarch64-windows"));
 
         // No top-level field at all: the override still applies, and the arch
         // without one strips nothing.
         let m = Manifest::from_toml_str(&dual("", "", r#"extract_dir = "wrapper""#)).unwrap();
-        assert_eq!(m.extract_dir_for(m.source.x64.as_ref().unwrap()), None);
         assert_eq!(
-            m.extract_dir_for(m.source.arm64.as_ref().unwrap()),
+            m.extract_dir_for(m.source.x64.as_ref().unwrap(), win64),
+            None
+        );
+        assert_eq!(
+            m.extract_dir_for(m.source.arm64.as_ref().unwrap(), winarm),
             Some("wrapper")
         );
     }
@@ -2437,6 +2639,27 @@ sha256 = "{b}"
         assert!(m.is_canonical_toml(&text));
     }
 
+    fn win(arch: Arch) -> Platform {
+        Platform {
+            os: Os::Windows,
+            arch,
+        }
+    }
+
+    fn lin(arch: Arch) -> Platform {
+        Platform {
+            os: Os::Linux,
+            arch,
+        }
+    }
+
+    fn mac(arch: Arch) -> Platform {
+        Platform {
+            os: Os::MacOS,
+            arch,
+        }
+    }
+
     /// The regression guard for the 145 dual-arch manifests that carry a
     /// top-level `extract_dir` (83 of them with an arch token literally in the
     /// string): an arm64 host must NOT pick the arm64 source unless picking it is
@@ -2450,7 +2673,7 @@ sha256 = "{b}"
             dual(r#"extract_dir = "app-x86_64-windows""#, "", ""),
         ] {
             let m = Manifest::from_toml_str(&toml).unwrap();
-            let picked = m.select_source(Arch::X64).unwrap();
+            let picked = m.select_source(win(Arch::X64)).unwrap();
             assert_eq!(picked.arch, Arch::X64);
             assert_eq!(picked.fallback, None);
             assert_eq!(picked.source, m.source.x64.as_ref().unwrap());
@@ -2458,7 +2681,7 @@ sha256 = "{b}"
 
         // arm64 host, safe: no top-level extract_dir to mis-strip.
         let m = Manifest::from_toml_str(&dual("", "", "")).unwrap();
-        let picked = m.select_source(Arch::Arm64).unwrap();
+        let picked = m.select_source(win(Arch::Arm64)).unwrap();
         assert_eq!(picked.arch, Arch::Arm64);
         assert_eq!(picked.fallback, None);
 
@@ -2469,7 +2692,7 @@ sha256 = "{b}"
             r#"extract_dir = "app-aarch64-windows""#,
         ))
         .unwrap();
-        let picked = m.select_source(Arch::Arm64).unwrap();
+        let picked = m.select_source(win(Arch::Arm64)).unwrap();
         assert_eq!(picked.arch, Arch::Arm64);
         assert_eq!(picked.fallback, None);
 
@@ -2477,7 +2700,7 @@ sha256 = "{b}"
         // back to the emulated x64 build rather than fail after downloading.
         let m = Manifest::from_toml_str(&dual(r#"extract_dir = "app-x86_64-windows""#, "", ""))
             .unwrap();
-        let picked = m.select_source(Arch::Arm64).unwrap();
+        let picked = m.select_source(win(Arch::Arm64)).unwrap();
         assert_eq!(picked.arch, Arch::X64);
         assert_eq!(picked.fallback, Some(ArchFallback::ExtractDir));
         assert_eq!(picked.source, m.source.x64.as_ref().unwrap());
@@ -2488,13 +2711,13 @@ sha256 = "{b}"
         // arm64-only manifest on an x64 host: use arm64 and report the fallback.
         let arm64_only = minimal("").replace("[source.x64]", "[source.arm64]");
         let m = Manifest::from_toml_str(&arm64_only).unwrap();
-        let picked = m.select_source(Arch::X64).unwrap();
+        let picked = m.select_source(win(Arch::X64)).unwrap();
         assert_eq!(picked.arch, Arch::Arm64);
         assert_eq!(picked.fallback, Some(ArchFallback::Missing));
 
         // x64-only manifest on an arm64 host: the ordinary emulated install.
         let m = Manifest::from_toml_str(&minimal("")).unwrap();
-        let picked = m.select_source(Arch::Arm64).unwrap();
+        let picked = m.select_source(win(Arch::Arm64)).unwrap();
         assert_eq!(picked.arch, Arch::X64);
         assert_eq!(picked.fallback, Some(ArchFallback::Missing));
 
@@ -2505,7 +2728,7 @@ sha256 = "{b}"
                 .replace("[source.x64]", "[source.arm64]"),
         )
         .unwrap();
-        let picked = m.select_source(Arch::Arm64).unwrap();
+        let picked = m.select_source(win(Arch::Arm64)).unwrap();
         assert_eq!(picked.arch, Arch::Arm64);
         assert_eq!(picked.fallback, None);
 
@@ -2514,6 +2737,139 @@ sha256 = "{b}"
             .replace(r#"kind = "app""#, r#"kind = "skill""#)
             .replace("[source.x64]", "[source.any]");
         let m = Manifest::from_toml_str(&skill).unwrap();
-        assert!(m.select_source(Arch::X64).is_none());
+        assert!(m.select_source(win(Arch::X64)).is_none());
+    }
+
+    /// Unix blocks are selected per OS+arch with the same fallback policy as
+    /// Windows, and selection never crosses OS lines.
+    #[test]
+    fn unix_sources_select_per_platform_without_crossing_os_lines() {
+        let sha = "a".repeat(64);
+        let toml = format!(
+            r#"
+name = "tool"
+version = "1.0.0"
+kind = "app"
+bin = ["tool"]
+
+[source.x64]
+url = "https://example.com/tool-win.zip"
+sha256 = "{sha}"
+
+[source.linux-x64]
+url = "https://example.com/tool-linux.tar.gz"
+sha256 = "{sha}"
+
+[source.macos-arm64]
+url = "https://example.com/tool-macos.tar.gz"
+sha256 = "{sha}"
+"#
+        );
+        let m = Manifest::from_toml_str(&toml).unwrap();
+
+        // Exact matches name their own block.
+        let picked = m.select_source(lin(Arch::X64)).unwrap();
+        assert_eq!(picked.arch, Arch::X64);
+        assert_eq!(picked.fallback, None);
+        assert_eq!(picked.source.url, "https://example.com/tool-linux.tar.gz");
+        let picked = m.select_source(mac(Arch::Arm64)).unwrap();
+        assert_eq!(picked.arch, Arch::Arm64);
+        assert_eq!(picked.fallback, None);
+
+        // Windows hosts are unaffected by unix blocks.
+        let picked = m.select_source(win(Arch::X64)).unwrap();
+        assert_eq!(picked.source.url, "https://example.com/tool-win.zip");
+        assert_eq!(picked.fallback, None);
+
+        // Same-OS arch fallback still applies (linux-arm64 host → linux-x64).
+        let picked = m.select_source(lin(Arch::Arm64)).unwrap();
+        assert_eq!(picked.arch, Arch::X64);
+        assert_eq!(picked.fallback, Some(ArchFallback::Missing));
+
+        // No block for the OS at all → None (never a foreign OS's binaries).
+        let picked = m.select_source(mac(Arch::X64)).unwrap();
+        assert_eq!(picked.arch, Arch::Arm64);
+        assert_eq!(picked.fallback, Some(ArchFallback::Missing));
+        let win_only = Manifest::from_toml_str(&minimal("")).unwrap();
+        assert!(win_only.select_source(lin(Arch::X64)).is_none());
+        assert!(win_only.select_source(mac(Arch::Arm64)).is_none());
+    }
+
+    /// Unix blocks validate exactly like Windows ones, and canonical TOML
+    /// round-trips them (so `bump` preserves blocks it does not manage).
+    #[test]
+    fn unix_sources_validate_and_round_trip() {
+        let sha = "b".repeat(64);
+        let toml = format!(
+            r#"name = "tool"
+version = "1.0.0"
+kind = "app"
+bin = ["tool"]
+
+[source.linux-arm64]
+url = "https://example.com/tool.tar.gz"
+sha256 = "{sha}"
+"#
+        );
+        let m = Manifest::from_toml_str(&toml).unwrap();
+        assert!(m.is_canonical_toml(&toml));
+        assert!(m.source.has_unix_source());
+        assert!(m.source.has_app_source());
+
+        // A manifest with ONLY a unix block is valid (other platforms just
+        // cannot install it).
+        assert!(m.select_source(win(Arch::X64)).is_none());
+        assert!(m.select_source(mac(Arch::X64)).is_none());
+
+        // Bad hash in a unix block names the unix key.
+        let bad = toml.replace(&sha, "zzz");
+        let err = Manifest::from_toml_str(&bad).unwrap_err();
+        assert!(matches!(err, ManifestError::BadHash { .. }), "got {err:?}");
+
+        // Unix blocks are rejected on skills, like x64/arm64 are.
+        let skill = toml
+            .replace(r#"kind = "app""#, r#"kind = "skill""#)
+            .replace("[source.linux-arm64]", "[source.any]");
+        // Sanity: the any-form validates as a skill depending on archive url.
+        let _ = Manifest::from_toml_str(&skill);
+
+        let skill_bad = format!(
+            r#"name = "tool"
+version = "1.0.0"
+kind = "skill"
+bin = ["tool"]
+
+[source.any]
+url = "https://example.com/tool.zip"
+sha256 = "{sha}"
+
+[source.linux-x64]
+url = "https://example.com/tool.tar.gz"
+sha256 = "{sha}"
+"#
+        );
+        assert!(matches!(
+            Manifest::from_toml_str(&skill_bad).unwrap_err(),
+            ManifestError::SkillSource
+        ));
+
+        // Platform key rendering for errors and reports.
+        assert!(!Platform::host().source_key().is_empty());
+        assert_eq!(
+            Platform {
+                os: Os::Windows,
+                arch: Arch::X64
+            }
+            .to_string(),
+            "x64"
+        );
+        assert_eq!(
+            Platform {
+                os: Os::Linux,
+                arch: Arch::Arm64
+            }
+            .to_string(),
+            "linux-arm64"
+        );
     }
 }

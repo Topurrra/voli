@@ -72,6 +72,10 @@ pub fn build(manifests: &[Manifest], out: &Path) -> Result<(), IndexError> {
             ("any", m.source.any.is_some()),
             ("x64", m.source.x64.is_some()),
             ("arm64", m.source.arm64.is_some()),
+            ("linux-x64", m.source.linux_x64.is_some()),
+            ("linux-arm64", m.source.linux_arm64.is_some()),
+            ("macos-x64", m.source.macos_x64.is_some()),
+            ("macos-arm64", m.source.macos_arm64.is_some()),
         ] {
             if !present {
                 continue;

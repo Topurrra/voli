@@ -17,20 +17,27 @@ use zip::write::SimpleFileOptions;
 
 static STUB: Once = Once::new();
 
-/// Point `VOLI_SHIM_STUB` at the built voli-shim.exe (in target/debug, the
+/// Point `VOLI_SHIM_STUB` at the built voli-shim (in target/debug, the
 /// parent of the test binary's deps/ dir) so in-process installs can copy it.
 fn ensure_stub() {
     STUB.call_once(|| {
+        #[cfg(windows)]
+        let stub_name = "voli-shim.exe";
+        #[cfg(not(windows))]
+        let stub_name = "voli-shim";
         let stub = std::env::current_exe()
             .ok()
             .and_then(|p| {
                 p.parent()
                     .and_then(|d| d.parent())
-                    .map(|d| d.join("voli-shim.exe"))
+                    .map(|d| d.join(stub_name))
             })
             .filter(|p| p.exists())
             .unwrap_or_else(|| {
+                #[cfg(windows)]
                 let p = std::env::temp_dir().join("voli-test-shim-stub.exe");
+                #[cfg(not(windows))]
+                let p = std::env::temp_dir().join("voli-test-shim-stub");
                 fs::write(&p, b"dummy shim stub").unwrap();
                 p
             });
@@ -86,17 +93,47 @@ kind = "app"
 extract_dir = "app-1.0.0"
 bin = ["app.exe"]
 
-[source.x64]
-url = "https://example.com/app.zip"
-sha256 = "{sha}"
-
+{}
 [env]
 JAVA_HOME = "{{dir}}"
-"#
+"#,
+        all_platform_sources("https://example.com/app.zip", sha, Some("app-1.0.0"))
     );
     let p = dir.join("app.toml");
     fs::write(&p, toml).unwrap();
     p
+}
+
+/// Source blocks for every platform, all pointing at the same fixture archive
+/// (same bytes, same hash). The engine selects the host's block, so one
+/// fixture serves the whole CI matrix — and the "no source for this platform"
+/// path is exercised by the schema tests, not here.
+///
+/// Unix blocks carry their own `extract_dir`: the top-level value belongs to
+/// the Windows archive and is never inherited. `unix_extract` is that value
+/// (`None` = the unix payload is flat).
+fn all_platform_sources(url: &str, sha: &str, unix_extract: Option<&str>) -> String {
+    [
+        "x64",
+        "arm64",
+        "linux-x64",
+        "linux-arm64",
+        "macos-x64",
+        "macos-arm64",
+    ]
+    .into_iter()
+    .map(|key| {
+        let extra = match (
+            key.starts_with("linux") || key.starts_with("macos"),
+            unix_extract,
+        ) {
+            (true, Some(dir)) => format!("extract_dir = \"{dir}\"\n"),
+            _ => String::new(),
+        };
+        format!("[source.{key}]\nurl = \"{url}\"\nsha256 = \"{sha}\"\n{extra}")
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
 }
 
 fn voli(root: &Path, subkey: &str, args: &[&str]) -> std::process::Output {
@@ -405,25 +442,33 @@ fn upgrade_all_skips_pinned() {
     let manifest = write_env_manifest(root, &sha256_hex(&zip));
     install_local(&manifest, &archive, root).unwrap();
 
-    let m1 = Manifest::from_toml_str(
+    let m1 = Manifest::from_toml_str(&format!(
         r#"name="app"
 version="1.0.0"
 kind="app"
 bin=["app.exe"]
-[source.x64]
-url="https://example.com/app-1.0.0.zip"
-sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa""#,
-    )
+{}
+"#,
+        all_platform_sources(
+            "https://example.com/app-1.0.0.zip",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+        )
+    ))
     .unwrap();
-    let m2 = Manifest::from_toml_str(
+    let m2 = Manifest::from_toml_str(&format!(
         r#"name="app"
 version="2.0.0"
 kind="app"
 bin=["app.exe"]
-[source.x64]
-url="https://example.com/app-2.0.0.zip"
-sha256="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb""#,
-    )
+{}
+"#,
+        all_platform_sources(
+            "https://example.com/app-2.0.0.zip",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            None,
+        )
+    ))
     .unwrap();
     voli_core::index::build(&[m1, m2], &voli_core::index::index_db_path(root)).unwrap();
 
