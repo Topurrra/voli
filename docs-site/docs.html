@@ -16,7 +16,7 @@
   <meta property="og:image" content="https://volibear.dev/assets/volibear-og-1200x630.jpg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Voli, the bear that delivers - a fast, no-admin Windows package manager.">
+  <meta property="og:image:alt" content="Voli, the bear that delivers - a fast, no-admin package manager for Windows, Linux, and macOS.">
   <meta property="og:image" content="https://volibear.dev/assets/volibear-og-1080x1080.jpg">
   <meta property="og:image:width" content="1080">
   <meta property="og:image:height" content="1080">
@@ -945,7 +945,10 @@ This domain is for use in documentation examples without needing permission. Avo
           data, so records can't be reordered or spliced) and linked by a blake2b hash chain.
         </p>
         <ul>
-          <li><strong>Keychain custody.</strong> On Windows the master key lives in the Credential Manager - nothing to remember.</li>
+          <li><strong>Keychain custody.</strong> The master key lives in the OS keychain - Credential Manager on
+            Windows, Keychain on macOS, the kernel keyring on Linux - so there is nothing to remember. The Linux
+            keyring is session-scoped, so on a server set <code>VOLI_MEMORY_PASSPHRASE</code> and run
+            <code>voli memory recover --save</code> for a vault that survives a reboot.</li>
           <li><strong>Passphrase custody.</strong> Set <code>VOLI_MEMORY_PASSPHRASE</code> and the key is derived with Argon2id (19 MiB, 2 passes). A verifier sidecar rejects the wrong passphrase without touching the log.</li>
           <li><strong>Verify anytime.</strong> <code>voli memory verify</code> walks the chain and proves no record was altered.</li>
         </ul>
