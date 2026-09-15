@@ -6,25 +6,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Voli The Bear</title>
   <meta name="description"
-    content="The bear that delivers. A fast, no-admin package manager for Windows. One binary, no scripts, clean uninstalls. Install with one line.">
+    content="The bear that delivers. A fast, no-admin package manager for Windows, Linux, and macOS. One binary, no scripts, clean uninstalls. Install with one line.">
   <meta name="theme-color" content="#001C16">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="voli">
   <meta property="og:title" content="voli — the bear that delivers">
   <meta property="og:description"
-    content="A fast, no-admin package manager for Windows. One line to install, zero scripts, clean uninstalls, thousands of packages.">
+    content="A fast, no-admin package manager for Windows, Linux, and macOS. One line to install, zero scripts, clean uninstalls, thousands of packages.">
   <meta property="og:url" content="https://volibear.dev/">
   <meta property="og:image" content="https://volibear.dev/assets/volibear-og-1200x630.jpg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Voli, the bear that delivers - a fast, no-admin Windows package manager.">
+  <meta property="og:image:alt" content="Voli, the bear that delivers - a fast, no-admin package manager for Windows, Linux, and macOS.">
   <meta property="og:image" content="https://volibear.dev/assets/volibear-og-1080x1080.jpg">
   <meta property="og:image:width" content="1080">
   <meta property="og:image:height" content="1080">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="voli — the bear that delivers">
   <meta name="twitter:description"
-    content="A fast, no-admin package manager for Windows. One line to install, zero scripts, clean uninstalls.">
+    content="A fast, no-admin package manager for Windows, Linux, and macOS. One line to install, zero scripts, clean uninstalls.">
   <meta name="twitter:image" content="https://volibear.dev/assets/volibear-og-1200x628.jpg">
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
   <link rel="icon" type="image/png" sizes="64x64" href="assets/favicon-64.png">
@@ -590,6 +590,47 @@
       justify-content: center;
       flex-wrap: wrap;
       margin-bottom: 2.8rem;
+    }
+
+    /* ---------- OS switcher above the install card ---------- */
+    .os-tabs {
+      display: flex;
+      gap: .35rem;
+      flex-wrap: wrap;
+      margin: 0 0 .6rem;
+    }
+
+    .os-tab {
+      font: inherit;
+      font-size: .82rem;
+      line-height: 1;
+      padding: .45rem .8rem;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      background: transparent;
+      color: var(--cream-muted);
+      cursor: pointer;
+      transition: background .18s ease, color .18s ease, border-color .18s ease;
+    }
+
+    .os-tab:hover {
+      color: var(--cream);
+      border-color: var(--cream-muted);
+    }
+
+    .os-tab[aria-selected="true"] {
+      background: var(--cream);
+      border-color: var(--cream);
+      color: var(--ink);
+    }
+
+    .os-tab:focus-visible {
+      outline: 2px solid var(--verm-bright);
+      outline-offset: 2px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .os-tab { transition: none; }
     }
 
     /* ---------- terminal card ---------- */
@@ -1327,21 +1368,27 @@
       <div class="tk-mesh" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span></div>
       <div class="wrap">
         <h1>No admin.<br>No scripts.<br>Just <span class="accent">delivery.</span></h1>
-        <p class="lead">Voli is a fast, no-admin <b>package manager for Windows</b> - one static binary,
-          portable apps, clean uninstalls, and a package can never run code on your machine.</p>
+        <p class="lead">Voli is a fast, no-admin <b>package manager for Windows, Linux, and macOS</b> - one static
+          binary, portable apps, clean uninstalls, and a package can never run code on your machine.</p>
 
         <div class="hero-btns">
           <a class="btn btn-cream" href="#install">Install Voli</a>
           <a class="btn btn-ghost" href="#why">Why Voli</a>
         </div>
 
+        <div class="os-tabs" role="tablist" aria-label="Choose your platform">
+          <button class="os-tab" type="button" role="tab" data-os="windows" aria-selected="true">Windows</button>
+          <button class="os-tab" type="button" role="tab" data-os="linux" aria-selected="false">Linux</button>
+          <button class="os-tab" type="button" role="tab" data-os="macos" aria-selected="false">macOS</button>
+        </div>
+
         <div class="install term" id="install">
           <div class="term-bar">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-            <span class="tt">PowerShell - no admin</span>
+            <span class="tt" id="term-title">PowerShell - no admin</span>
           </div>
           <div class="row">
-            <span class="p">PS&gt;</span><span id="cmd-text">iwr -useb volibear.dev/install | iex</span>
+            <span class="p" id="cmd-prompt">PS&gt;</span><span id="cmd-text">iwr -useb volibear.dev/install | iex</span>
             <button class="copy" id="copy" type="button" aria-label="Copy install command">
               <svg class="clip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1357,9 +1404,9 @@
           </div>
         </div>
         <p class="install-note">Downloads the latest release, verifies its SHA-256, and runs
-          <code>voli setup</code> (user-level PATH). It does nothing else - read
-          <a href="https://github.com/Topurrra/voli/blob/main/install.ps1" rel="noopener">install.ps1</a> first if you
-          like.</p>
+          <code>voli setup</code> (user-level PATH, no admin or sudo). It does nothing else - read
+          <a id="installer-link" href="https://github.com/Topurrra/voli/blob/main/install.ps1"
+            rel="noopener">install.ps1</a> first if you like.</p>
 
         <div class="scroll-cue" aria-hidden="true">
           <span>Scroll</span>
@@ -2023,6 +2070,57 @@
       splitNode(h1);
     })();
 
+    // ---- Hero install card: show the one-liner for the visitor's OS ----
+    // Runs BEFORE the typing effect below, which reads #cmd-text's textContent as
+    // the string it types -- so the right command has to be in place first.
+    (function () {
+      var SH = { prompt: '$', title: 'sh - no sudo', file: 'install.sh',
+                 cmd: 'curl -fsSL volibear.dev/install.sh | sh' };
+      var CMD = {
+        windows: { prompt: 'PS&gt;', title: 'PowerShell - no admin', file: 'install.ps1',
+                   cmd: 'iwr -useb volibear.dev/install | iex' },
+        linux: SH,
+        macos: SH
+      };
+      var tabs = Array.prototype.slice.call(document.querySelectorAll('.os-tab'));
+      var text = document.getElementById('cmd-text');
+      var prompt = document.getElementById('cmd-prompt');
+      var title = document.getElementById('term-title');
+      var link = document.getElementById('installer-link');
+      if (!tabs.length || !text || !prompt || !title || !link) return;
+
+      function select(os) {
+        var c = CMD[os];
+        if (!c) return;
+        tabs.forEach(function (t) { t.setAttribute('aria-selected', String(t.dataset.os === os)); });
+        prompt.innerHTML = c.prompt;
+        title.textContent = c.title;
+        text.textContent = c.cmd;
+        // The copy button reads data-full, and the typing effect stops once this
+        // is set, so a mid-animation switch cannot leave the old command behind.
+        text.dataset.full = c.cmd;
+        text.dataset.osSwitched = '1';
+        link.textContent = c.file;
+        link.href = 'https://github.com/Topurrra/voli/blob/main/' + c.file;
+      }
+
+      tabs.forEach(function (t) {
+        t.addEventListener('click', function () { select(t.dataset.os); });
+      });
+
+      // Default to the visitor's own platform; anything unrecognised (and every
+      // bot) keeps the Windows default the markup already ships.
+      var ua = ((navigator.userAgentData && navigator.userAgentData.platform) ||
+        navigator.platform || navigator.userAgent || '').toLowerCase();
+      var guess = ua.indexOf('mac') > -1 ? 'macos'
+        : (ua.indexOf('linux') > -1 || ua.indexOf('android') > -1) ? 'linux'
+          : 'windows';
+      // Clear the flag afterwards: this is the initial choice, not a user switch,
+      // so the typing effect should still run on it.
+      select(guess);
+      delete text.dataset.osSwitched;
+    })();
+
     // ---- Hero install line: type the command, then hold a blinking caret ----
     (function () {
       var el = document.getElementById('cmd-text');
@@ -2039,6 +2137,9 @@
       el.textContent = '';
       var i = 0;
       function tick() {
+        // A tab click swaps the command outright; typing the old one over it
+        // would undo the switch a character at a time.
+        if (el.dataset.osSwitched) return;
         el.textContent = full.slice(0, ++i);
         if (i < full.length) setTimeout(tick, 22 + Math.random() * 30);
       }
