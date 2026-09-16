@@ -53,7 +53,7 @@ Global options:
 | `voli delete <pkg> ...` | Delete packages by replaying their ledger. Persist data is kept by default. |
 | `voli delete skill/<name> --for <agent>` | Delete one or more target-scoped skill mappings. |
 | `voli memory <cmd>` | Encrypted, local memory for AI agents - see [Agent memory](#agent-memory). |
-| `voli graph <cmd>` | Native code-knowledge graph: `build`, `status`, `query`, `path`, `explain`, `gods`. Tree-sitter AST for 20+ languages (Rust, Python, JS/TS, Go, Java, C/C++, C#, Ruby, Bash, PHP, Scala, Zig, Julia, Groovy, Pascal, Verilog, Fortran, OCaml, ObjC, PowerShell, CSS + regex fallback for the rest), Markdown links, manifests (cargo/npm/pypi/gomod/maven), SQL tables, Terraform modules, Docker bases. Offline HTML at `.voli-graph/`, stable `graph:<id>` tags for `voli memory note`. |
+| `voli graph <cmd>` | Native code-knowledge graph: `build`, `status`, `query`, `path`, `explain`, `gods`, `wiki`, `export`, `hook`, `merge`. Tree-sitter AST for 20+ languages (Rust, Python, JS/TS, Go, Java, C/C++, C#, Ruby, Bash, PHP, Scala, Zig, Julia, Groovy, Pascal, Verilog, Fortran, OCaml, ObjC, PowerShell, CSS, XML, JSON, YAML + regex fallback for the rest), Louvain clusters, Markdown links, manifests (cargo/npm/pypi/gomod/maven), SQL tables, Terraform modules, Docker bases. Offline HTML/SVG/wiki at `.voli-graph/`, stable `graph:<id>` tags for `voli memory note`. |
 | `voli memory serve --mcp` | Serve memory to an agent over MCP (stdio), so it reads and writes with native tools. |
 | `voli memory hook --global\|--project-shared\|--project-local` | Wire the SessionStart hook that loads memory before the agent decides anything. `--remove` takes it out. |
 | `voli web <bang> <query>` | Open a search shortcut in your browser. Voli builds the URL and fetches nothing. |
@@ -198,6 +198,12 @@ voli memory verify                               # prove nothing was altered
 voli memory hook --project-local                 # deterministic load at session start
 voli memory serve --mcp                          # native tools instead of shelling out
 ```
+
+When the project has a code map (`voli graph build`), `read` appends it
+automatically: a task-ranked subgraph for `--task`, the project map (god
+nodes) without one — including inside the SessionStart hook payload. Cite
+symbols with their `graph:<id>` tags when you `note` the work, and reach the
+map over MCP as `graph_query`, `graph_explain`, `graph_path`.
 
 Recall is firewalled - secrets (keys, cards, SSNs) are masked before an agent
 sees them and `--private` notes are withheld. `voli memory prompt` writes the

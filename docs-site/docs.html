@@ -403,6 +403,12 @@
         <a href="#recovery">Recovery &amp; upkeep</a>
         <a href="#agent">Wiring an agent</a>
         <a href="#env">Environment</a>
+        <span class="side-group">Graph</span>
+        <a href="#graph-overview">Overview</a>
+        <a href="#graph-quickstart">Quickstart</a>
+        <a href="#graph-commands">Command reference</a>
+        <a href="#graph-together">Memory + graph</a>
+        <a href="#graph-limits">Limits</a>
         <span class="side-group">MCP</span>
         <a href="#mcp">MCP</a>
       </nav>
@@ -1031,6 +1037,139 @@ This domain is for use in documentation examples without needing permission. Avo
         </div>
       </section>
 
+      <section id="graph-overview">
+        <h2>Overview</h2>
+        <p>
+          An agent needs two kinds of memory. <a class="inline" href="#overview">voli memory</a> is the
+          <strong>episodic</strong> half: what happened - decisions, preferences, events - encrypted, hash-chained,
+          and firewalled. <code>voli graph</code> is the <strong>structural</strong> half: how the code connects -
+          typed symbols, who calls whom, what inherits from what, and which subsystems the codebase actually splits
+          into. Both live on the machine, both work offline, and neither needs an account, a key, or a server.
+        </p>
+        <p>
+          The graph is built by parsing the code, not by asking a model about it: tree-sitter AST for 20+
+          languages (Rust, Python, JS/TS, Go, Java, C/C++, C#, Ruby, Bash, PHP, Scala, Zig, Julia, Groovy, Pascal,
+          Verilog, Fortran, OCaml, ObjC, PowerShell, CSS, XML, JSON, YAML), a regex fallback for the rest, plus
+          deterministic local extractors for Markdown links, manifests, SQL tables, Terraform modules, and Docker
+          bases. Every edge says how it was found: <code>EXTRACTED</code> (written literally in the source) or
+          <code>INFERRED</code> (resolved by name, verify before quoting).
+        </p>
+        <div class="note">
+          <strong>The join is an id, not a feature.</strong> Every symbol has a stable id
+          (<code>file::Symbol</code>) that doubles as a memory tag (<code>graph:&lt;id&gt;</code>). A decision noted
+          with the tag of the code it concerns stays linked to that code - the structural fact outlives the session.
+        </div>
+      </section>
+
+      <section id="graph-quickstart">
+        <h2>Quickstart</h2>
+        <p>
+          Build once per codebase, then query instead of grepping. Rebuilds are incremental - unchanged files are
+          skipped - and <code>voli graph hook</code> keeps the map fresh on every commit automatically.
+        </p>
+        <div class="term">
+          <div class="term-bar">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="tt">graph</span>
+          </div>
+          <pre><span class="p">PS&gt;</span> voli graph build                          <span class="mut"># 2k nodes in seconds, offline</span>
+<span class="p">PS&gt;</span> voli graph status                         <span class="mut"># fresh or stale vs git HEAD?</span>
+<span class="p">PS&gt;</span> voli graph query "where is rollback handled?"
+<span class="p">PS&gt;</span> voli graph explain install_fs_inner       <span class="mut"># callers, callees, types</span>
+<span class="p">PS&gt;</span> voli graph path Store Manifest             <span class="mut"># shortest connection</span>
+<span class="p">PS&gt;</span> voli graph gods --top 10                   <span class="mut"># architectural hubs</span></pre>
+        </div>
+        <p>
+          Everything lands in <code>.voli-graph/</code> (git-ignored, local-only):
+          <code>graph.json</code> (the full map), <code>REPORT.md</code> (god nodes, Louvain clusters, surprises),
+          <code>graph.html</code> (clickable, no CDN), <code>wiki/</code> (one page per cluster),
+          <code>graph.svg</code> (dependency wheel of the top hubs).
+        </p>
+      </section>
+
+      <section id="graph-commands">
+        <h2>Command reference</h2>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Command</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>voli graph build [path]</code></td><td>Build or incrementally rebuild the map. A no-op when nothing changed.</td></tr>
+              <tr><td><code>voli graph status</code></td><td>Node/edge counts, freshness vs git HEAD, output paths.</td></tr>
+              <tr><td><code>voli graph query "&lt;q&gt;"</code></td><td>Keyword search plus one-hop expansion, ranked - tests last. The replacement for grepping.</td></tr>
+              <tr><td><code>voli graph path &lt;a&gt; &lt;b&gt;</code></td><td>Shortest path between two symbols (directed first, automatic undirected fallback).</td></tr>
+              <tr><td><code>voli graph explain &lt;symbol&gt;</code></td><td>One symbol: kind, definition site, neighbors, and its memory tag.</td></tr>
+              <tr><td><code>voli graph gods</code></td><td>Most-connected symbols. Files, crates and tests are excluded - they would win by construction.</td></tr>
+              <tr><td><code>voli graph wiki</code></td><td>Markdown wiki: index plus one page per cluster.</td></tr>
+              <tr><td><code>voli graph export</code></td><td>Offline dependency-wheel SVG of the top hubs.</td></tr>
+              <tr><td><code>voli graph hook</code></td><td>Install/remove git hooks that rebuild after commit and checkout. <code>--remove</code> takes them out.</td></tr>
+              <tr><td><code>voli graph merge a.json b.json</code></td><td>Combine graph files into one cross-repo map, reclustered.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Every command takes <code>--json</code> for machine-readable output, and every symbol it prints carries its
+          <code>graph:&lt;id&gt;</code> tag.
+        </p>
+      </section>
+
+      <section id="graph-together">
+        <h2>Memory + graph</h2>
+        <p>
+          Standalone, memory answers <em>what was decided</em> and the graph answers <em>how the code connects</em>.
+          Together, the code an agent is about to touch arrives with the session, and what the agent learns about the
+          code is written back linkable. Three seams, each doing a different job:
+        </p>
+        <p>
+          <strong>1. The read carries the map.</strong> <code>voli memory read --task "..."</code> appends a
+          <em>Related code</em> section - top query hits with file positions and tags. Without
+          <code>--task</code> it appends the <em>Project map</em> instead: god nodes, so an agent that was given no
+          task still starts oriented. The SessionStart hook injects the same payload, so this happens whether the
+          model cooperates or not. No graph present, no section - a missing map never fails a read and never lectures.
+        </p>
+        <div class="term">
+          <div class="term-bar">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="tt">together</span>
+          </div>
+          <pre><span class="p">PS&gt;</span> voli graph build
+<span class="p">PS&gt;</span> voli memory read --task "fix install rollback"
+<span class="mut">## Relevant to: fix install rollback
+- #a1b2:3  rollback keeps the ledger row on failure (score 0.8)
+
+## Related code (voli graph @9816483a — query, not read; verify before quoting)
+- `install_fs_inner` [fn] crates/voli-core/src/install.rs:632 — `graph:crates_voli_core_src_install__install_fs_inner`</span>
+<span class="p">PS&gt;</span> voli memory note "rollback keeps the ledger row on failure" --tags graph:crates_voli_core_src_install__install_fs_inner</pre>
+        </div>
+        <p>
+          <strong>2. Notes cite structure.</strong> A decision noted with <code>--tags graph:&lt;id&gt;</code> stays
+          attached to the symbol it concerns. When the code moves, note again against the new id with
+          <code>--supersedes</code> - the old line stays in the log for audit, exactly like any retracted fact.
+        </p>
+        <p>
+          <strong>3. The MCP server serves both.</strong> Next to the six memory tools sit
+          <code>graph_query</code>, <code>graph_explain</code> and <code>graph_path</code> - same engine as the CLI,
+          reachable without shelling out, working even when no memory store exists yet. Their answers carry positions
+          and tags, so the write-back in step 2 is one tool call away.
+        </p>
+        <div class="note">
+          <strong>Query, don't quote.</strong> Graph positions can stale after edits - the header names the commit
+          the map was built from. When positions stop matching, <code>voli graph build</code> (or the hook) refreshes
+          the map in seconds, AST-only, no model involved.
+        </div>
+      </section>
+
+      <section id="graph-limits">
+        <h2>Limits</h2>
+        <p>
+          Stated plainly so nobody discovers them by surprise. Binary blobs (PDFs, images, video, audio) are indexed
+          as file nodes only - reading their <em>content</em> needs a vision or transcription backend, which is
+          deferred rather than half-done. Languages without a pinned grammar (Swift, Kotlin, Lua, Haskell, Elixir
+          and a long tail) get the regex fallback: definitions and heuristic calls, honestly tagged
+          <code>INFERRED</code>. Communities are deterministic Louvain, not LLM-named. Method calls through a
+          variable of unknown type resolve to same-named methods - useful, marked, and worth a glance before quoting.
+        </p>
+      </section>
+
       <section id="mcp">
         <h2>MCP</h2>
         <p>
@@ -1042,7 +1181,10 @@ This domain is for use in documentation examples without needing permission. Avo
         <p>
           Six tools - <code>memory_read</code>, <code>memory_search</code>, <code>memory_note</code>,
           <code>memory_recall</code>, <code>memory_history</code> and <code>memory_verify</code> - each mapping onto
-          the command of the same name. Point an agent at it by adding voli to that agent's MCP config:
+          the command of the same name. Where a project has a code map (<code>voli graph build</code>), three more
+          join them - <code>graph_query</code>, <code>graph_explain</code> and <code>graph_path</code> - so structure
+          is traversable without shelling out. See <a class="inline" href="#graph-together">Memory + graph</a>.
+          Point an agent at it by adding voli to that agent's MCP config:
         </p>
         <div class="snip">{
   <span class="str">"mcpServers"</span>: {

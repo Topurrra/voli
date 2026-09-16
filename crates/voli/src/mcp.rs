@@ -225,6 +225,15 @@ impl Server {
         if !tools().iter().any(|t| t["name"] == name.as_str()) {
             return Err(format!("unknown tool: {name}"));
         }
+        // Graph tools need no memory store: they read `.voli-graph` upward
+        // from the server's working directory, so a missing or locked memory
+        // never blocks code questions.
+        if name.starts_with("graph_") {
+            return Ok(match run_graph_tool(&name, &args) {
+                Ok(text) => content(&text, false),
+                Err(e) => content(&e, true),
+            });
+        }
         let store = match self.open() {
             Ok(s) => s,
             // No store yet, or a locked keychain. The agent can act on that
@@ -305,6 +314,108 @@ fn run_tool(store: &Store, name: &str, args: &Value) -> Result<String, String> {
             // model might summarise into "verified memory". This is the one
             // answer that must not read as reassuring when it is not.
             if report.ok() { Ok(lines) } else { Err(lines) }
+        }
+        _ => Err(format!("unknown tool: {name}")),
+    }
+}
+
+/// Code-map tools. Same engine as `voli graph query/explain/path`, served so
+/// an agent traverses structure with tool calls instead of shelling out.
+/// Every answer carries file:line positions and `graph:<id>` tags: cite the
+/// tag when you `memory_note` what the structure taught you.
+fn run_graph_tool(name: &str, args: &Value) -> Result<String, String> {
+    use voli_core::graph as g;
+    let root = g::find_upwards().ok_or(
+        "no .voli-graph found upward from here — run `voli graph build` in the project first",
+    )?;
+    run_graph_tool_at(&root, name, args)
+}
+
+/// Same, against an explicit root (tests; the server discovers upward).
+fn run_graph_tool_at(root: &std::path::Path, name: &str, args: &Value) -> Result<String, String> {
+    use voli_core::graph as g;
+    let graph = g::load(root).map_err(|e| e.to_string())?;
+    match name {
+        "graph_query" => {
+            let q = string(args, "question").ok_or("graph_query needs a question")?;
+            let hits = g::query(&graph, q, 25);
+            if hits.is_empty() {
+                return Ok("no graph nodes match — try fewer keywords".to_string());
+            }
+            Ok(hits
+                .iter()
+                .map(|n| {
+                    format!(
+                        "`{}` [{}] {}:{} — `{}`",
+                        n.label,
+                        n.kind.as_str(),
+                        n.file,
+                        n.line,
+                        g::memory_tag(n)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+        "graph_explain" => {
+            let s = string(args, "symbol").ok_or("graph_explain needs a symbol")?;
+            let hits = g::resolve(&graph, s);
+            if hits.is_empty() {
+                return Err(format!("no symbol matching '{s}'"));
+            }
+            let n = hits[0];
+            let mut out = format!(
+                "{} [{}] {}:{} — `{}`\n{} neighbor(s):",
+                n.label,
+                n.kind.as_str(),
+                n.file,
+                n.line,
+                g::memory_tag(n),
+                graph.neighbors(&n.id).len()
+            );
+            for (e, m) in graph.neighbors(&n.id).iter().take(20) {
+                let dir = if e.from == n.id { "-->" } else { "<--" };
+                out.push_str(&format!(
+                    "\n  {dir} {} [{}] {}:{} ({})",
+                    m.label,
+                    m.kind.as_str(),
+                    m.file,
+                    m.line,
+                    e.relation
+                ));
+            }
+            Ok(out)
+        }
+        "graph_path" => {
+            let a = string(args, "from").ok_or("graph_path needs `from`")?;
+            let b = string(args, "to").ok_or("graph_path needs `to`")?;
+            let af = g::resolve(&graph, a);
+            let bf = g::resolve(&graph, b);
+            if af.is_empty() || bf.is_empty() {
+                return Err("symbol not found on one side — try graph_explain first".to_string());
+            }
+            match graph.shortest_path(&af[0].id, &bf[0].id) {
+                Some((ids, directed)) => {
+                    let mut out = format!(
+                        "path ({} hops, {}):",
+                        ids.len().saturating_sub(1),
+                        if directed { "directed" } else { "undirected fallback" }
+                    );
+                    for id in &ids {
+                        if let Some(n) = graph.nodes.iter().find(|n| &n.id == id) {
+                            out.push_str(&format!(
+                                "\n  {} [{}] {}:{}",
+                                n.label,
+                                n.kind.as_str(),
+                                n.file,
+                                n.line
+                            ));
+                        }
+                    }
+                    Ok(out)
+                }
+                None => Err(format!("no path between '{}' and '{}'", af[0].label, bf[0].label)),
+            }
         }
         _ => Err(format!("unknown tool: {name}")),
     }
@@ -499,6 +610,63 @@ fn tools() -> Vec<Value> {
         this names the exact record instead of quietly carrying on.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
+        json!({
+            "name": "graph_query",
+            "description": fenced("\
+        Search the CODEBASE the way memory_search searches memory: ranked symbols, not \
+        grep lines. Trigger the moment a task touches unfamiliar code -- before reading \
+        files one by one. Ask in plain words (\"where is install rollback handled?\") and \
+        you get symbols with file:line positions and graph:<id> tags. Verdicts still need \
+        eyes on the file: positions can stale after edits, so run `voli graph build` when \
+        they stop matching. Cite the graph:<id> tag when you memory_note what you learned, \
+        so the structural fact outlives this session."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "What you want to find, in natural words."
+                    }
+                },
+                "required": ["question"]
+            }
+        }),
+        json!({
+            "name": "graph_explain",
+            "description": fenced("\
+        Show everything the codebase knows about ONE symbol: its kind, definition site, \
+        callers, callees, and the types it relates to. Trigger when memory or a previous \
+        answer names a function, struct or module and you need its neighborhood before \
+        touching it -- the cheaper alternative to opening five files. Accepts a bare name, \
+        file::Symbol, or full id; ambiguous names explain the best match and list the rest."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Symbol, file::Symbol, or node id."
+                    }
+                },
+                "required": ["symbol"]
+            }
+        }),
+        json!({
+            "name": "graph_path",
+            "description": fenced("\
+        Trace how two parts of the codebase connect: the shortest call/import path between \
+        any two symbols. Trigger for impact questions (\"what breaks if I change Store?\", \
+        \"how does the CLI reach the index?\") and for orienting in layered code. Directed \
+        edges first, automatic undirected fallback when nothing flows that way -- the answer \
+        says which. Both ends accept anything graph_explain accepts."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Starting symbol." },
+                    "to": { "type": "string", "description": "Target symbol." }
+                },
+                "required": ["from", "to"]
+            }
+        }),
     ]
 }
 
@@ -604,6 +772,9 @@ mod tests {
                 "memory_recall",
                 "memory_history",
                 "memory_verify",
+                "graph_query",
+                "graph_explain",
+                "graph_path",
             ]
         );
     }
@@ -683,6 +854,37 @@ mod tests {
         let (mut store, _) = Store::init_with_key(dir, [7u8; 32]).expect("init store");
         store.set_contradiction_detection(false);
         store
+    }
+
+    /// A scratch graph (python Store/Base) built straight into a tempdir.
+    fn scratch_graph(dir: &std::path::Path) -> std::path::PathBuf {
+        std::fs::write(
+            dir.join("a.py"),
+            "class Base:\n  pass\n\nclass Store(Base):\n  def fresh(self):\n    return Store()\n",
+        )
+        .expect("fixture");
+        let g = voli_core::graph::build(dir);
+        voli_core::graph::save(dir, &g).expect("save graph");
+        dir.to_path_buf()
+    }
+
+    #[test]
+    fn graph_tools_answer_from_a_scratch_graph() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = scratch_graph(dir.path());
+        let q = run_graph_tool_at(&root, "graph_query", &json!({ "question": "store" })).expect("query");
+        assert!(q.contains("Store"), "{q}");
+        let e = run_graph_tool_at(&root, "graph_explain", &json!({ "symbol": "Store" })).expect("explain");
+        assert!(e.contains("inherits"), "{e}");
+        let p = run_graph_tool_at(
+            &root,
+            "graph_path",
+            &json!({ "from": "Store::fresh", "to": "Base" }),
+        )
+        .expect("path");
+        assert!(p.contains("hops"), "{p}");
+        let missing = run_graph_tool_at(&root, "graph_explain", &json!({ "symbol": "Nope" }));
+        assert!(missing.is_err());
     }
 
     #[test]

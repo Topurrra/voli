@@ -228,7 +228,11 @@ pub fn run(action: &MemoryCmd, force_global: bool) -> i32 {
                 return read_for_hook(*budget, task.as_deref(), *k);
             }
             with_store(|s| {
-                out(s.render_read(*budget, task.as_deref(), *k, &global_core_for_project()))
+                let code = out(s.render_read(*budget, task.as_deref(), *k, &global_core_for_project()));
+                if code == 0 {
+                    print_graph_section(task.as_deref());
+                }
+                code
             })
         }
         MemoryCmd::Hook {
@@ -1126,28 +1130,38 @@ fn read_for_hook(budget: u64, task: Option<&str>, k: usize) -> i32 {
     if local_empty && extra.is_empty() {
         return 0;
     }
-    out_hook(store.render_read(budget, task, k, &extra))
-}
-
-/// The SessionStart hook payload.
-///
-/// `hookSpecificOutput.additionalContext` is the documented channel for putting
-/// text into the model's context, and it is the whole point of this mode: the
-/// model never decides whether to load memory, because the hook has already run
-/// by the time it sees anything.
-///
-/// A failure here prints nothing and exits 0 on purpose. A hook that dies noisily
-/// at session start is worse than one that quietly contributes nothing -- a
-/// missing store or a locked keychain must not stop the agent from starting.
-fn out_hook(r: stela::Result<stela::Disclosed>) -> i32 {
-    let Ok(disclosed) = r else {
-        return 0;
+    let mut body = match store.render_read(budget, task, k, &extra) {
+        Ok(d) => d.to_string(),
+        Err(_) => return 0,
     };
-    match hook_envelope(&disclosed.to_string()) {
+    // The map rides along deterministically: task-ranked subgraph when the
+    // hook carries a task, the project map otherwise. Missing graph → nothing.
+    let graph_section = match task {
+        Some(t) => voli_core::graph::related_for_task(t, 12),
+        None => voli_core::graph::map_summary(8),
+    };
+    if let Some(sec) = graph_section {
+        body.push_str("\n\n");
+        body.push_str(&sec);
+    }
+    match hook_envelope(&body) {
         Some(payload) => println!("{payload}"),
         None => return 0,
     }
     0
+}
+
+/// Code-map section appended to `memory read`: related subgraph for a task,
+/// project map without one. Silent unless a `.voli-graph` is discoverable —
+/// a missing map must never fail or lecture during a memory read.
+fn print_graph_section(task: Option<&str>) {
+    let section = match task {
+        Some(t) => voli_core::graph::related_for_task(t, 12),
+        None => voli_core::graph::map_summary(8),
+    };
+    if let Some(s) = section {
+        println!("\n{s}");
+    }
 }
 
 /// Wrap loaded memory in the SessionStart envelope, or `None` when there is

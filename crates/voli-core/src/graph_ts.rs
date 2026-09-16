@@ -489,6 +489,21 @@ const CSS_DEFS: &[&str] = &[
     "(rule_set (selectors) @n) @d.style",
 ];
 
+// -- XML (distinct element names) ------------------------------------------------------------------
+const XML_DEFS: &[&str] = &[
+    "(element (STag (Name) @n)) @d.tag",
+    "(element (EmptyElemTag (Name) @n)) @d.tag",
+];
+
+// -- JSON (object keys as const nodes; merged per file) ----------------------------------------------
+const JSON_DEFS: &[&str] = &["(pair key: (string (string_content) @n)) @d.const"];
+
+// -- YAML (mapping keys as const nodes; merged per file) -----------------------------------------------
+const YAML_DEFS: &[&str] = &[
+    "(block_mapping_pair key: (_) @n) @d.const",
+    "(flow_pair key: (_) @n) @d.const",
+];
+
 // -- Base-type patterns appended to established languages -----------------------------------------------
 // (Same match carries @d + @n + @b, so bases attach to the right symbol.)
 const TS_BASES: &[&str] = &[
@@ -544,6 +559,9 @@ fn queries(lang: TsLang) -> Option<LangQueries> {
         TsLang::Ocaml => LangQueries { defs: OCAML_DEFS, more_defs: NO_MORE, calls: OCAML_CALLS, imports: OCAML_IMPORTS },
         TsLang::PowerShell => LangQueries { defs: POWERSHELL_DEFS, more_defs: NO_MORE, calls: POWERSHELL_CALLS, imports: POWERSHELL_IMPORTS },
         TsLang::Css => LangQueries { defs: CSS_DEFS, more_defs: NO_MORE, calls: NO_CALLS, imports: NO_IMPORTS },
+        TsLang::Xml => LangQueries { defs: XML_DEFS, more_defs: NO_MORE, calls: NO_CALLS, imports: NO_IMPORTS },
+        TsLang::Json => LangQueries { defs: JSON_DEFS, more_defs: NO_MORE, calls: NO_CALLS, imports: NO_IMPORTS },
+        TsLang::Yaml => LangQueries { defs: YAML_DEFS, more_defs: NO_MORE, calls: NO_CALLS, imports: NO_IMPORTS },
         // Json / Html / Yaml / Xml: file nodes only (no symbol queries v1).
         _ => return None,
     })
@@ -569,6 +587,7 @@ fn kind_of(capture: &str) -> Option<NodeKind> {
         "d.const" => NodeKind::Const,
         "d.type" => NodeKind::Struct, // Go type_spec; refined via @x below
         "d.style" => NodeKind::Style, // CSS selectors
+        "d.tag" => NodeKind::Other,   // XML element names
         "d.impl" => NodeKind::Other,  // parent marker, no symbol
         _ => return None,
     })
@@ -988,8 +1007,20 @@ mod tests {
     }
 
     #[test]
-    fn inheritance_captured() {
-        let f = defs(TsLang::Python, "class Store(Base):\n  pass\n");
+    fn structured_configs() {
+        let f = defs(TsLang::Xml, "<Project>\n  <ItemGroup>\n    <Compile Include=\"a.cs\" />\n  </ItemGroup>\n</Project>\n");
+        assert!(f.items.iter().any(|i| i.name == "Project"), "{:?}", f.items);
+        assert!(f.items.iter().any(|i| i.name == "Compile"), "{:?}", f.items);
+        let f = defs(TsLang::Json, "{\"name\": \"x\", \"scripts\": {\"t\": \"y\"}}\n");
+        assert!(f.items.iter().any(|i| i.name == "name"), "{:?}", f.items);
+        assert!(f.items.iter().any(|i| i.name == "scripts"), "{:?}", f.items);
+        let f = defs(TsLang::Yaml, "jobs:\n  build:\n    runs-on: ubuntu\n");
+        assert!(f.items.iter().any(|i| i.name == "jobs"), "{:?}", f.items);
+        assert!(f.items.iter().any(|i| i.name == "build"), "{:?}", f.items);
+    }
+
+    #[test]
+    fn inheritance_captured() {        let f = defs(TsLang::Python, "class Store(Base):\n  pass\n");
         let s = f.items.iter().find(|i| i.name == "Store").unwrap();
         assert!(s.bases.contains(&"Base".to_string()), "{s:?}");
         let f = defs(TsLang::Java, "class Store extends Base {\n}\n");
@@ -1036,6 +1067,14 @@ mod tests {
             (TsLang::Ocaml, "module Store = struct\n  let fresh () = fresh ()\nend\n"),
         ];
         for (lang, src) in more {
+            println!("=== {lang:?} ===\n{}\n", sexp(*lang, src).unwrap_or_default());
+        }
+        let more2: &[(TsLang, &str)] = &[
+            (TsLang::Xml, "<Project>\n  <ItemGroup>\n    <Compile Include=\"a.cs\" />\n  </ItemGroup>\n</Project>\n"),
+            (TsLang::Json, "{\"name\": \"x\", \"scripts\": {\"t\": \"y\"}}\n"),
+            (TsLang::Yaml, "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n"),
+        ];
+        for (lang, src) in more2 {
             println!("=== {lang:?} ===\n{}\n", sexp(*lang, src).unwrap_or_default());
         }
     }

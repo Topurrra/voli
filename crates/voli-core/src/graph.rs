@@ -88,9 +88,15 @@ pub struct GraphNode {
     pub file: String,
     pub line: u32,
     /// File-relative community (one community per file — deterministic and
-    /// honest; Leiden-style clustering is a future step, not a placeholder).
+    /// honest; Louvain clusters live in `cluster`/`cluster_label`).
     pub community: String,
     pub is_test: bool,
+    /// Louvain cluster id (deterministic; 0 when unclustered).
+    #[serde(default)]
+    pub cluster: u32,
+    /// Human label: top-degree member + size, e.g. `Store +8`.
+    #[serde(default)]
+    pub cluster_label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -494,6 +500,8 @@ pub fn build(root: &Path) -> Graph {
             line: 1,
             community: file.to_string(),
             is_test: false,
+            cluster: 0,
+            cluster_label: String::new(),
         });
         pkg_ids.insert(name.to_string(), id.clone());
         id
@@ -515,6 +523,8 @@ pub fn build(root: &Path) -> Graph {
             line: 1,
             community: rel.clone(),
             is_test: test_file,
+            cluster: 0,
+            cluster_label: String::new(),
         });
 
         let big = std::fs::metadata(path).map(|m| m.len() > PARSE_CAP).unwrap_or(false);
@@ -547,6 +557,8 @@ pub fn build(root: &Path) -> Graph {
                 line: 1,
                 community: rel.clone(),
                 is_test: false,
+                cluster: 0,
+                cluster_label: String::new(),
             });
             edges.push(GraphEdge {
                 from: file_id.clone(),
@@ -597,6 +609,8 @@ pub fn build(root: &Path) -> Graph {
                     line: 1,
                     community: rel.clone(),
                     is_test: false,
+                    cluster: 0,
+                    cluster_label: String::new(),
                 });
                 edges.push(GraphEdge {
                     from: file_id.clone(),
@@ -634,6 +648,8 @@ pub fn build(root: &Path) -> Graph {
                     line: 1,
                     community: rel.clone(),
                     is_test: false,
+                    cluster: 0,
+                    cluster_label: String::new(),
                 });
                 edges.push(GraphEdge {
                     from: file_id.clone(),
@@ -677,6 +693,8 @@ pub fn build(root: &Path) -> Graph {
                     line: m.line,
                     community: rel.clone(),
                     is_test: false,
+                    cluster: 0,
+                    cluster_label: String::new(),
                 });
                 edges.push(GraphEdge {
                     from: file_id.clone(),
@@ -707,6 +725,8 @@ pub fn build(root: &Path) -> Graph {
                     line: r.line,
                     community: rel.clone(),
                     is_test: false,
+                    cluster: 0,
+                    cluster_label: String::new(),
                 });
                 edges.push(GraphEdge {
                     from: file_id.clone(),
@@ -737,10 +757,14 @@ pub fn build(root: &Path) -> Graph {
             continue;
         }
         if let Some(lang) = ts::lang_for_ext(&ext) {
-            if let Some(tf) = ts::extract(lang, &text) {
-                if !tf.items.is_empty() || !tf.broken {
-                    emit_ts(&mut wf, &rel, tf, 0, test_file, &text);
-                    emitted = true;
+            // Huge JSON blobs (fixtures, lockfiles-in-disguise): file node only.
+            let too_big = ext == "json" && text.len() > 100_000;
+            if !too_big {
+                if let Some(tf) = ts::extract(lang, &text) {
+                    if !tf.items.is_empty() || !tf.broken {
+                        emit_ts(&mut wf, &rel, tf, 0, test_file, &text);
+                        emitted = true;
+                    }
                 }
             }
             if !emitted && fallback::handles(&ext) {
@@ -763,12 +787,51 @@ pub fn build(root: &Path) -> Graph {
     }
 
     // register symbols (order-independent: every file saw every other)
+    // cfg-duplicates (same file + same symbol, e.g. windows/unix impls)
+    // merge into one node keeping the earliest line.
+    for wf in &mut works {
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        let mut merged: Vec<WorkItem> = Vec::new();
+        for it in std::mem::take(&mut wf.items) {
+            if let Some(&i) = seen.get(&it.label) {
+                let m = &mut merged[i];
+                if it.line < m.line {
+                    m.line = it.line;
+                    m.start_byte = it.start_byte;
+                    m.end_byte = it.end_byte;
+                }
+                for b in it.bases {
+                    if !m.bases.contains(&b) {
+                        m.bases.push(b);
+                    }
+                }
+                if m.parent.is_none() {
+                    m.parent = it.parent;
+                }
+                m.is_test = m.is_test || it.is_test;
+            } else {
+                seen.insert(it.label.clone(), merged.len());
+                merged.push(it);
+            }
+        }
+        wf.items = merged;
+    }
+    // id -> file for same-file call preference
+    let mut node_file: HashMap<String, String> = HashMap::new();
+    for wf in &works {
+        node_file.insert(wf.file_id.clone(), wf.rel.clone());
+    }
     for wf in &works {
         for it in &wf.items {
             by_qual.entry(it.label.clone()).or_default().push(it.id.clone());
             if it.kind == NodeKind::Method {
                 methods_by_short.entry(it.short.clone()).or_default().push(it.id.clone());
-            } else {
+            } else if matches!(
+                it.kind,
+                NodeKind::Fn | NodeKind::Test | NodeKind::Struct | NodeKind::Enum | NodeKind::Trait
+            ) {
+                // Callable or constructible only: config consts (yaml `push`,
+                // json keys, css selectors, modules) must never match `name(`.
                 by_short.entry(it.short.clone()).or_default().push(it.id.clone());
             }
             if matches!(it.kind, NodeKind::Struct | NodeKind::Enum | NodeKind::Trait) {
@@ -778,6 +841,22 @@ pub fn build(root: &Path) -> Graph {
     }
 
     // ---------------- pass 2: edges ----------------
+    // item nodes first: pass 2 resolves everything through node ids.
+    for wf in &works {
+        for it in &wf.items {
+            node_file.insert(it.id.clone(), wf.rel.clone());
+        }
+    }
+    // Same-file preference: vendored near-duplicates (install.sh × 2)
+    // otherwise cross-link every call. When any target lives in the
+    // caller's file, drop the out-of-file candidates.
+    let prefer_local = |targets: Vec<String>, rel: &str| -> Vec<String> {
+        if targets.iter().any(|t| node_file.get(t).map(|f| f == rel).unwrap_or(false)) {
+            targets.into_iter().filter(|t| node_file.get(t).map(|f| f == rel).unwrap_or(false)).collect()
+        } else {
+            targets
+        }
+    };
     for wf in &works {
         // calls
         let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -806,6 +885,7 @@ pub fn build(root: &Path) -> Graph {
                     }),
                 None => by_short.get(&c.name).cloned().unwrap_or_default(),
             };
+            let targets = prefer_local(targets, &wf.rel);
             for t in targets {
                 if let Some(caller) = enclosing_item(&wf.items, c.start_byte) {
                     if caller.id != t && seen.insert((caller.id.clone(), t.clone())) {
@@ -883,6 +963,8 @@ pub fn build(root: &Path) -> Graph {
                 line: 1,
                 community: path.clone(),
                 is_test: false,
+                cluster: 0,
+                cluster_label: String::new(),
             });
             // link member files
             for (rel, fid) in &file_ids {
@@ -959,6 +1041,8 @@ pub fn build(root: &Path) -> Graph {
                 line: it.line,
                 community: wf.rel.clone(),
                 is_test: it.is_test,
+                cluster: 0,
+                cluster_label: String::new(),
             });
             edges.push(GraphEdge {
                 from: wf.file_id.clone(),
@@ -973,8 +1057,82 @@ pub fn build(root: &Path) -> Graph {
     let mut seen = HashSet::new();
     edges.retain(|e| seen.insert((e.from.clone(), e.to.clone(), e.relation.clone())));
 
+    clusterize(&mut nodes, &edges);
+
     let commit = current_commit(root);
     Graph { version: 1, nodes, edges, built_at_commit: commit }
+}
+
+/// Louvain communities over the undirected projection (dangling pseudo-
+/// targets excluded). Assigns `cluster` + LLM-free `cluster_label`
+/// (`<hub> +<n>`) to every node. Deterministic: same graph, same clusters.
+fn clusterize(nodes: &mut [GraphNode], edges: &[GraphEdge]) {
+    use crate::graph_cluster as cluster;
+    let idx: HashMap<&str, usize> =
+        nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for e in edges {
+        if let (Some(&a), Some(&b)) = (idx.get(e.from.as_str()), idx.get(e.to.as_str())) {
+            pairs.push((a, b));
+        }
+    }
+    if nodes.is_empty() {
+        return;
+    }
+    let labels = cluster::louvain(nodes.len(), &pairs);
+    // degree per node for hub election
+    let mut deg = vec![0usize; nodes.len()];
+    for (a, b) in &pairs {
+        deg[*a] += 1;
+        deg[*b] += 1;
+    }
+    // members per cluster
+    let mut members: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (i, c) in labels.iter().enumerate() {
+        members.entry(*c as u32).or_default().push(i);
+    }
+    let mut names: HashMap<u32, String> = HashMap::new();
+    for (c, ms) in &members {
+        // hub = highest-degree non-file, non-test member
+        let mut best: Option<usize> = None;
+        for &i in ms {
+            let n = &nodes[i];
+            if matches!(n.kind, NodeKind::File | NodeKind::Crate) || n.is_test {
+                continue;
+            }
+            if best.map(|b| deg[i] > deg[b]).unwrap_or(true) {
+                best = Some(i);
+            }
+        }
+        let hub = best.map(|i| nodes[i].label.clone()).unwrap_or_else(|| "misc".to_string());
+        names.insert(*c, format!("{hub} +{}", ms.len().saturating_sub(1)));
+    }
+    for (i, n) in nodes.iter_mut().enumerate() {
+        let c = labels[i] as u32;
+        n.cluster = c;
+        n.cluster_label = names.get(&c).cloned().unwrap_or_default();
+    }
+}
+
+/// Merge several graphs into one cross-repo graph: union of nodes (first
+/// wins on id collision) and deduped edges, then fresh Louvain clusters.
+pub fn merge_graphs(graphs: Vec<Graph>) -> Graph {
+    let mut nodes: Vec<GraphNode> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut edges: Vec<GraphEdge> = Vec::new();
+    for g in graphs {
+        for n in g.nodes {
+            if !seen.contains_key(&n.id) {
+                seen.insert(n.id.clone(), nodes.len());
+                nodes.push(n);
+            }
+        }
+        edges.extend(g.edges);
+    }
+    let mut eset = HashSet::new();
+    edges.retain(|e| eset.insert((e.from.clone(), e.to.clone(), e.relation.clone())));
+    clusterize(&mut nodes, &edges);
+    Graph { version: 1, nodes, edges, built_at_commit: String::new() }
 }
 
 /// Shared item/call/import emission from a TsFile (AST or fallback).
@@ -1232,10 +1390,11 @@ fn report(g: &Graph) -> String {
         .count();
     let inferred = g.edges.len().saturating_sub(extracted);
     let mut out = format!(
-        "# Voli Graph Report\n\n- {} nodes · {} edges · {} files\n- Extraction: {} EXTRACTED · {} INFERRED\n- Commit: {}\n\n## God nodes (tests + files excluded)\n",
+        "# Voli Graph Report\n\n- {} nodes · {} edges · {} files · {} clusters (Louvain, deterministic)\n- Extraction: {} EXTRACTED · {} INFERRED\n- Commit: {}\n\n## God nodes (tests + files excluded)\n",
         g.nodes.len(),
         g.edges.len(),
         comms.len(),
+        cluster_count(g),
         extracted,
         inferred,
         if g.built_at_commit.is_empty() {
@@ -1259,10 +1418,55 @@ fn report(g: &Graph) -> String {
     for (c, n) in comms.iter().take(15) {
         out.push_str(&format!("- `{c}` — {n} symbols\n"));
     }
+    out.push_str("\n## Clusters (Louvain — subsystems, not files)\n");
+    for (label, size, hub) in top_clusters(g, 12) {
+        out.push_str(&format!("- `{label}` — {size} nodes (hub: `{hub}`)\n"));
+    }
     out.push_str(
         "\n## Memory hooks\nEach symbol has a stable id (`file::Symbol`) usable as `voli memory note --tags graph:<id>`.\n",
     );
     out
+}
+
+/// Number of distinct Louvain clusters.
+fn cluster_count(g: &Graph) -> usize {
+    let mut s = std::collections::HashSet::new();
+    for n in &g.nodes {
+        s.insert(n.cluster);
+    }
+    s.len()
+}
+
+/// (label, size, hub file:line) for the largest clusters.
+fn top_clusters(g: &Graph, top: usize) -> Vec<(String, usize, String)> {
+    let deg = g.degree();
+    let mut groups: HashMap<u32, Vec<&GraphNode>> = HashMap::new();
+    for n in &g.nodes {
+        groups.entry(n.cluster).or_default().push(n);
+    }
+    let mut v: Vec<(String, usize, String)> = groups
+        .into_values()
+        .map(|ms| {
+            let label = ms.first().map(|n| n.cluster_label.clone()).unwrap_or_default();
+            // hub = highest-degree non-file member, with its location
+            let mut hub = ms.first().map(|n| (n.label.clone(), n.file.clone(), n.line)).unwrap_or_default();
+            let mut best = 0;
+            for n in &ms {
+                if matches!(n.kind, NodeKind::File | NodeKind::Crate) || n.is_test {
+                    continue;
+                }
+                let d = deg.get(n.id.as_str()).copied().unwrap_or(0);
+                if d >= best {
+                    best = d;
+                    hub = (n.label.clone(), n.file.clone(), n.line);
+                }
+            }
+            (label, ms.len(), format!("{} ({}:{})", hub.0, hub.1, hub.2))
+        })
+        .collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.truncate(top);
+    v
 }
 
 /// Offline report page: no CDN, no fetch — JSON inlined, vanilla JS filter.
@@ -1273,16 +1477,18 @@ fn html(g: &Graph) -> String {
     let mut trs = String::new();
     for (n, d) in rows.iter().take(2000) {
         trs.push_str(&format!(
-            "<tr data-q=\"{} {} {} {}\"><td>{}</td><td>{}</td><td>{}:{}</td><td>{}</td><td>{}</td></tr>\n",
+            "<tr data-q=\"{} {} {} {} {}\"><td>{}</td><td>{}</td><td>{}:{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
             n.label.to_lowercase(),
             n.kind.as_str(),
             n.file.to_lowercase(),
             n.id.to_lowercase(),
+            n.cluster_label.to_lowercase(),
             html_esc(&n.label),
             n.kind.as_str(),
             html_esc(&n.file),
             n.line,
             d,
+            html_esc(&n.cluster_label),
             html_esc(&n.id),
         ));
     }
@@ -1296,7 +1502,7 @@ fn html(g: &Graph) -> String {
         th{{color:#9cf}}.meta{{color:#999}}</style></head><body>\
         <h1>voli graph</h1><p class=\"meta\">{nn} nodes · {ne} edges · commit {cm} · offline, no CDN</p>\
         <input id=\"q\" placeholder=\"filter: type a symbol, file, kind (struct/fn/test)…\" autofocus>\
-        <table><thead><tr><th>symbol</th><th>kind</th><th>file:line</th><th>edges</th><th>id (memory tag)</th></tr></thead>\
+        <table><thead><tr><th>symbol</th><th>kind</th><th>file:line</th><th>edges</th><th>cluster</th><th>id (memory tag)</th></tr></thead>\
         <tbody>{trs}</tbody></table>\
         <script>var q=document.getElementById('q');q.addEventListener('input',function(){{\
         var s=q.value.toLowerCase();document.querySelectorAll('tbody tr').forEach(function(r){{\
@@ -1316,6 +1522,136 @@ fn html_esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+// ---------------------------------------------------------------------------
+// Wiki + SVG export (offline; no CDN, no fonts, no JS)
+// ---------------------------------------------------------------------------
+
+/// Markdown wiki: `index.md` (gods + clusters) plus one page per cluster.
+/// Links are relative; open `index.md` anywhere that renders Markdown.
+pub fn wiki(root: &Path) -> std::io::Result<()> {
+    let g = load(root).map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
+    let dir = graph_dir(root).join("wiki");
+    std::fs::create_dir_all(&dir)?;
+    let deg = g.degree();
+    let mut idx: HashMap<&str, &GraphNode> = HashMap::new();
+    for n in &g.nodes {
+        idx.insert(n.id.as_str(), n);
+    }
+    // clusters grouped, biggest first
+    let mut groups: HashMap<u32, Vec<&GraphNode>> = HashMap::new();
+    for n in &g.nodes {
+        groups.entry(n.cluster).or_default().push(n);
+    }
+    let mut clusters: Vec<(u32, Vec<&GraphNode>)> = groups.into_iter().collect();
+    clusters.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+    let mut index = format!(
+        "# {} graph wiki\n\n{} nodes · {} edges · {} clusters · commit {}\n\n## God nodes\n",
+        root.file_name().and_then(|n| n.to_str()).unwrap_or("codebase"),
+        g.nodes.len(),
+        g.edges.len(),
+        clusters.len(),
+        if g.built_at_commit.is_empty() { "(unknown)" } else { &g.built_at_commit }
+    );
+    for (n, d) in g.god_nodes(10, false) {
+        index.push_str(&format!(
+            "- `{}` [{}] — {} edges ({}:{}) `graph:{}`\n",
+            n.label, n.kind.as_str(), d, n.file, n.line, n.id
+        ));
+    }
+    index.push_str("\n## Clusters\n");
+    for (c, ms) in &clusters {
+        let label = ms.first().map(|n| n.cluster_label.as_str()).unwrap_or("?");
+        index.push_str(&format!("- [{}](cluster-{c}.md) — {} nodes\n", label, ms.len()));
+    }
+    index.push_str("\n> Regenerate with `voli graph wiki`. Node ids double as `voli memory note --tags graph:<id>`.\n");
+    std::fs::write(dir.join("index.md"), index)?;
+
+    for (c, ms) in &clusters {
+        let label = ms.first().map(|n| n.cluster_label.as_str()).unwrap_or("?");
+        let mut page = format!("# Cluster `{label}`\n\n{} nodes · [index](index.md)\n\n| symbol | kind | location | edges |\n|---|---|---|---|\n", ms.len());
+        let mut sorted: Vec<&&GraphNode> = ms.iter().collect();
+        sorted.sort_by(|a, b| {
+            deg.get(b.id.as_str()).unwrap_or(&0).cmp(deg.get(a.id.as_str()).unwrap_or(&0))
+        });
+        for n in sorted.iter().take(200) {
+            page.push_str(&format!(
+                "| `{}` | {} | {}:{} | {} |\n",
+                n.label, n.kind.as_str(), n.file, n.line,
+                deg.get(n.id.as_str()).unwrap_or(&0)
+            ));
+        }
+        if ms.len() > 200 {
+            page.push_str(&format!("\n…and {} more (see `graph.json`).\n", ms.len() - 200));
+        }
+        std::fs::write(dir.join(format!("cluster-{c}.md")), page)?;
+    }
+    Ok(())
+}
+
+/// Dependency-wheel SVG of the top-N hubs (edges among them only).
+/// Deterministic circular layout, cluster hues, inline `<title>` tooltips.
+pub fn export_svg(root: &Path, top: usize) -> std::io::Result<()> {
+    let g = load(root).map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
+    let deg = g.degree();
+    let mut hubs: Vec<&GraphNode> = g
+        .nodes
+        .iter()
+        .filter(|n| !matches!(n.kind, NodeKind::File | NodeKind::Crate) && !n.is_test)
+        .collect();
+    hubs.sort_by(|a, b| {
+        deg.get(b.id.as_str()).unwrap_or(&0).cmp(deg.get(a.id.as_str()).unwrap_or(&0)).then(a.id.cmp(&b.id))
+    });
+    hubs.truncate(top.max(3));
+    let n = hubs.len();
+    let (w, h) = (900usize, 700usize);
+    let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+    let r = (w.min(h) as f64 / 2.0 - 90.0).max(50.0);
+    let pos: Vec<(f64, f64)> = (0..n)
+        .map(|i| {
+            let a = -std::f64::consts::FRAC_PI_2 + 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+            (cx + r * a.cos(), cy + r * a.sin())
+        })
+        .collect();
+    let at: HashMap<&str, usize> =
+        hubs.iter().enumerate().map(|(i, x)| (x.id.as_str(), i)).collect();
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" font-family=\"sans-serif\">\
+        <rect width=\"100%\" height=\"100%\" fill=\"#111\"/>\
+        <text x=\"16\" y=\"28\" fill=\"#9cf\" font-size=\"18\">voli graph — top {n} hubs</text>"
+    );
+    // edges (undirected among hubs, width by multiplicity capped)
+    let mut counts: HashMap<(usize, usize), u32> = HashMap::new();
+    for e in &g.edges {
+        if let (Some(&a), Some(&b)) = (at.get(e.from.as_str()), at.get(e.to.as_str())) {
+            if a != b {
+                let key = if a < b { (a, b) } else { (b, a) };
+                *counts.entry(key).or_default() += 1;
+            }
+        }
+    }
+    for ((a, b), c) in &counts {
+        let wdt = (1 + (*c).min(4)) as f64 * 0.8;
+        svg.push_str(&format!(
+            "<line x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" stroke=\"#557\" stroke-width=\"{wdt:.1}\" opacity=\"0.7\"/>",
+            pos[*a].0, pos[*a].1, pos[*b].0, pos[*b].1
+        ));
+    }
+    for (i, node) in hubs.iter().enumerate() {
+        let hue = (node.cluster as u32).wrapping_mul(47) % 360;
+        let (x, y) = pos[i];
+        svg.push_str(&format!(
+            "<g><title>{} [{}] {}:{}</title><circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"9\" fill=\"hsl({hue},60%,55%)\"/>\
+            <text x=\"{:.1}\" y=\"{:.1}\" fill=\"#eee\" font-size=\"11\">{}</text></g>",
+            html_esc(&node.label), node.kind.as_str(), html_esc(&node.file), node.line,
+            x + 12.0, y + 4.0, html_esc(&node.label),
+        ));
+    }
+    svg.push_str("</svg>");
+    std::fs::write(graph_dir(root).join("graph.svg"), svg)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1431,6 +1767,85 @@ pub fn resolve<'a>(g: &'a Graph, symbol: &str) -> Vec<&'a GraphNode> {
 /// Stable memory tag for a node, e.g. `graph:crates_voli_core_src_install__install_fs_inner`.
 pub fn memory_tag(n: &GraphNode) -> String {
     format!("graph:{}", n.id)
+}
+
+/// Find the nearest ancestor (incl. self) holding `.voli-graph/graph.json`.
+/// Project-local discovery, mirroring `.voli/memory` resolution.
+pub fn find_upwards() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if graph_path(&dir).is_file() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// "Related code" section for `voli memory read --task <t>`: top query hits
+/// with locations and memory tags, plus a staleness pointer. `None` when no
+/// graph is present or nothing matches — callers print nothing, never an
+/// error (a missing map must not fail a memory read).
+pub fn related_for_task(task: &str, k: usize) -> Option<String> {
+    let root = find_upwards()?;
+    let g = load(&root).ok()?;
+    let hits = query(&g, task, k.max(1));
+    if hits.is_empty() {
+        return None;
+    }
+    let mut s = format!(
+        "## Related code (voli graph{} — query, not read; verify before quoting)\n",
+        if g.built_at_commit.is_empty() {
+            String::new()
+        } else {
+            format!(" @{}", g.built_at_commit)
+        }
+    );
+    for n in hits {
+        s.push_str(&format!(
+            "- `{}` [{}] {}:{} — `{}`\n",
+            n.label,
+            n.kind.as_str(),
+            n.file,
+            n.line,
+            memory_tag(n)
+        ));
+    }
+    s.push_str("Cite symbols with their `graph:<id>` tags when you `memory note` this work.\n");
+    Some(s)
+}
+
+/// "Project map" section when `read` has no `--task`: god nodes + clusters.
+/// Same never-fail contract as [`related_for_task`].
+pub fn map_summary(top: usize) -> Option<String> {
+    let root = find_upwards()?;
+    let g = load(&root).ok()?;
+    if g.nodes.is_empty() {
+        return None;
+    }
+    let mut s = format!(
+        "## Project map (voli graph{} — {} nodes)\n",
+        if g.built_at_commit.is_empty() {
+            String::new()
+        } else {
+            format!(" @{}", g.built_at_commit)
+        },
+        g.nodes.len()
+    );
+    for (n, d) in g.god_nodes(top.max(1), false) {
+        s.push_str(&format!(
+            "- `{}` [{}] ({} edges) {}:{} — `{}`\n",
+            n.label,
+            n.kind.as_str(),
+            d,
+            n.file,
+            n.line,
+            memory_tag(n)
+        ));
+    }
+    s.push_str("Ask `voli graph query \"…\"` / `explain <symbol>` for detail.\n");
+    Some(s)
 }
 
 #[cfg(test)]

@@ -63,6 +63,37 @@ pub enum GraphCmd {
         #[arg(long)]
         include_tests: bool,
     },
+    /// Build a Markdown wiki (index + one page per cluster).
+    Wiki {
+        /// Corpus root (default: current directory).
+        path: Option<PathBuf>,
+    },
+    /// Export an offline dependency-wheel SVG of the top hubs.
+    Export {
+        /// Corpus root (default: current directory).
+        path: Option<PathBuf>,
+        /// How many hubs to draw.
+        #[arg(long, default_value_t = 40)]
+        top: usize,
+    },
+    /// Install/remove git hooks that rebuild the graph on commit/checkout.
+    Hook {
+        /// Remove the hooks instead of installing them.
+        #[arg(long)]
+        remove: bool,
+        /// Corpus root (default: current directory).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Merge several graph.json files into one cross-repo graph.
+    Merge {
+        /// Input graph.json files (two or more).
+        #[arg(required = true)]
+        graphs: Vec<PathBuf>,
+        /// Output path (default: <cwd>/.voli-graph/merged-graph.json).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 fn root_of(arg: Option<PathBuf>) -> PathBuf {
@@ -362,5 +393,162 @@ pub fn run(cmd: &GraphCmd, json: bool) -> i32 {
             }
             0
         }
+        GraphCmd::Wiki { path } => {
+            let root = root_of(path.clone());
+            match graph::wiki(&root) {
+                Ok(()) => {
+                    let dir = graph::graph_dir(&root).join("wiki");
+                    if json {
+                        println!("{}", serde_json::json!({"ok": true, "dir": dir}));
+                    } else {
+                        println!("wiki written to {}", dir.display());
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+        GraphCmd::Export { path, top } => {
+            let root = root_of(path.clone());
+            match graph::export_svg(&root, *top) {
+                Ok(()) => {
+                    let p = graph::graph_dir(&root).join("graph.svg");
+                    if json {
+                        println!("{}", serde_json::json!({"ok": true, "path": p}));
+                    } else {
+                        println!("svg written to {} — offline, open anywhere", p.display());
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+        GraphCmd::Hook { remove, path } => run_hook(*remove, path.clone(), json),
+        GraphCmd::Merge { graphs, out } => {
+            if graphs.len() < 2 {
+                eprintln!("error: merge needs two or more graph.json files");
+                return 1;
+            }
+            let mut loaded = Vec::new();
+            for p in graphs {
+                match std::fs::read_to_string(p) {
+                    Ok(data) => match serde_json::from_str::<voli_core::graph::Graph>(&data) {
+                        Ok(g) => loaded.push(g),
+                        Err(e) => {
+                            eprintln!("error: cannot parse {}: {e}", p.display());
+                            return 1;
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("error: cannot read {}: {e}", p.display());
+                        return 1;
+                    }
+                }
+            }
+            let merged = voli_core::graph::merge_graphs(loaded);
+            let dest = out.clone().unwrap_or_else(|| {
+                graph::graph_dir(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+                    .join("merged-graph.json")
+            });
+            match serde_json::to_string_pretty(&merged)
+                .map_err(|e| e.to_string())
+                .and_then(|s| std::fs::write(&dest, s).map_err(|e| e.to_string()))
+            {
+                Ok(()) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({"ok": true, "nodes": merged.nodes.len(), "edges": merged.edges.len(), "out": dest})
+                        );
+                    } else {
+                        println!(
+                            "merged {} nodes · {} edges → {}",
+                            merged.nodes.len(),
+                            merged.edges.len(),
+                            dest.display()
+                        );
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
     }
+}
+
+/// Install/remove `.git/hooks/post-commit` + `post-checkout` that keep the
+/// graph fresh. The hook runs `voli graph build`, which is a no-op when the
+/// manifest says the corpus is unchanged — so normal commits stay fast.
+fn run_hook(remove: bool, path: Option<PathBuf>, json: bool) -> i32 {
+    let root = root_of(path);
+    let git = root.join(".git");
+    if !git.is_dir() {
+        eprintln!("error: {} is not a git checkout", root.display());
+        return 1;
+    }
+    let hooks = git.join("hooks");
+    let body = "# voli graph: keep .voli-graph/ fresh (AST-only, no network)\n\
+        if command -v voli >/dev/null 2>&1; then\n  \
+        voli graph build --json >/dev/null 2>&1 || true\nfi\n";
+    let mut code = 0;
+    for name in ["post-commit", "post-checkout"] {
+        let p = hooks.join(name);
+        if remove {
+            if p.is_file() {
+                if let Ok(cur) = std::fs::read_to_string(&p) {
+                    if cur.contains("voli graph") {
+                        if std::fs::remove_file(&p).is_err() {
+                            eprintln!("error: cannot remove {}", p.display());
+                            code = 1;
+                        } else if !json {
+                            println!("removed {}", p.display());
+                        }
+                    } else if !json {
+                        println!("kept {} (not ours)", p.display());
+                    }
+                }
+            }
+            continue;
+        }
+        if p.is_file() {
+            if let Ok(cur) = std::fs::read_to_string(&p) {
+                if cur.contains("voli graph") {
+                    if !json {
+                        println!("{} already installed", p.display());
+                    }
+                    continue;
+                }
+                eprintln!("error: {} exists and is not ours — refusing to overwrite", p.display());
+                code = 1;
+                continue;
+            }
+        }
+        let script = format!("#!/bin/sh\n{body}");
+        if std::fs::write(&p, script).is_err() {
+            eprintln!("error: cannot write {}", p.display());
+            code = 1;
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+        }
+        if !json {
+            println!("installed {}", p.display());
+        }
+    }
+    if json {
+        println!("{}", serde_json::json!({"ok": code == 0}));
+    }
+    code
 }
