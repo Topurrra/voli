@@ -6,6 +6,10 @@
 pub mod config;
 pub mod env;
 pub mod fetch;
+pub mod graph;
+pub mod graph_extra;
+pub mod graph_fallback;
+pub mod graph_ts;
 pub mod index;
 pub mod install;
 pub mod manifest;

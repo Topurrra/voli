@@ -28,6 +28,8 @@ Cargo.lock.bak
 
 # voli project memory (local knowledge, not for the repo)
 .voli/
+# voli code graph (local build artifact, like .voli/ — rebuild with `voli graph build`)
+.voli-graph/
 # the setup prompt is generated from crates/stela; a committed copy only
 # goes stale the next time the wording changes
 voli-memory-prompt*.md
@@ -38,3 +40,4 @@ voli-memory-prompt*.md
 
 # design redesign mockups: local review only, never served or shipped
 redesign/
+.opencode/

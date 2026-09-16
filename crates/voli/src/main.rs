@@ -1,6 +1,7 @@
 //! voli command-line application.
 
 mod cmd_fetch;
+mod cmd_graph;
 mod cmd_index;
 mod cmd_install;
 mod cmd_memory;
@@ -190,6 +191,11 @@ enum Command {
         #[command(subcommand)]
         action: cmd_memory::MemoryCmd,
     },
+    /// Native code-knowledge graph (typed nodes, offline HTML, memory-ready ids).
+    Graph {
+        #[command(subcommand)]
+        action: cmd_graph::GraphCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -280,6 +286,7 @@ fn main() {
             format,
         } => cmd_fetch::run(url, *max_bytes, *format, cli.json),
         Command::Memory { action, global } => cmd_memory::run(action, *global),
+        Command::Graph { action } => cmd_graph::run(action, cli.json),
     };
     std::process::exit(code);
 }
