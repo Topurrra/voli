@@ -420,27 +420,32 @@ pub fn install_remote(
     root: &Path,
     on_step: &mut dyn FnMut(Step),
 ) -> Result<RemoteReport, RemoteError> {
-    // Bare form: no env consent context, so `[env]` blocks are skipped. The CLI
-    // uses [`install_remote_env`] to drive the consent prompt (spec §8).
+    // Bare form: no consent context, so `[env]` blocks are skipped and shim
+    // conflicts are auto-approved. The CLI uses [`install_remote_env`] to
+    // drive the consent prompts (spec §8; review item 2).
     install_remote_env(
         name,
         version,
         root,
         crate::env::ENVIRONMENT,
         &mut install::skip_env,
+        &mut install::allow_all_shims,
         on_step,
     )
 }
 
 /// Like [`install_remote`], but applies each package's `[env]` block subject to
-/// `consent` (spec §8). `env_subkey` is the registry subkey to write to
-/// ([`crate::env::env_subkey`] in production; a scratch subkey in tests).
+/// `consent` (spec §8), and gates reserved/shadowing/colliding shim names on
+/// `shim_consent` (supply-chain review item 2). `env_subkey` is the registry
+/// subkey to write to ([`crate::env::env_subkey`] in production; a scratch
+/// subkey in tests).
 pub fn install_remote_env(
     name: &str,
     version: Option<&str>,
     root: &Path,
     env_subkey: &str,
     consent: &mut EnvConsent,
+    shim_consent: &mut install::ShimConsent,
     on_step: &mut dyn FnMut(Step),
 ) -> Result<RemoteReport, RemoteError> {
     // Resolve the whole chain up front (deps-first). This also surfaces a typo
@@ -507,8 +512,15 @@ pub fn install_remote_env(
             bytes: artifact_bytes,
             cache_hit,
         });
-        let installed =
-            install::install_manifest(manifest, &archive.path, &extras, root, env_subkey, consent)?;
+        let installed = install::install_manifest(
+            manifest,
+            &archive.path,
+            &extras,
+            root,
+            env_subkey,
+            consent,
+            shim_consent,
+        )?;
         on_step(Step::Installed(&installed));
         report.installed.push(installed);
     }
@@ -539,6 +551,7 @@ pub enum UpgradeOutcome {
 pub fn upgrade(
     name: &str,
     root: &Path,
+    shim_consent: &mut install::ShimConsent,
     on_step: &mut dyn FnMut(Step),
 ) -> Result<UpgradeOutcome, RemoteError> {
     let state = State::open(&Paths::at(root).state_db())
@@ -607,7 +620,7 @@ pub fn upgrade(
         bytes: artifact_bytes,
         cache_hit,
     });
-    let report = install::upgrade_install(&latest, &archive.path, &extras, root)?;
+    let report = install::upgrade_install(&latest, &archive.path, &extras, root, shim_consent)?;
     Ok(UpgradeOutcome::Upgraded(report))
 }
 

@@ -89,3 +89,53 @@ fn doctor_healthy_then_broken() {
 
     env::delete_subkey(SUBKEY).unwrap();
 }
+
+/// Supply-chain review item 2: `voli doctor` must report every shim that
+/// shadows a same-named command on PATH — as a warning, not a failure.
+#[test]
+fn doctor_reports_shadowing_shims() {
+    // Own subkey: this test must not race `doctor_healthy_then_broken` on the
+    // shared env store.
+    const SHADOW_SUBKEY: &str = "Software\\voli-test-doctor-shadow";
+    let root = tempfile::tempdir().unwrap();
+    build_healthy_root(root.path());
+
+    let _ = env::delete_subkey(SHADOW_SUBKEY);
+    let shims = root.path().join("shims");
+    env::add_to_path(SHADOW_SUBKEY, &shims.to_string_lossy()).unwrap();
+
+    // A system dir that also has `rg`: the voli shim shadows it.
+    let system = tempfile::tempdir().unwrap();
+    let rg = system
+        .path()
+        .join(if cfg!(windows) { "rg.exe" } else { "rg" });
+    fs::write(&rg, b"system rg").unwrap();
+
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    let path = format!(
+        "{shims}{sep}{system}{sep}{existing}",
+        shims = shims.display(),
+        system = system.path().display(),
+        existing = std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_voli"))
+        .arg("doctor")
+        .env("VOLI_ROOT", root.path())
+        .env("VOLI_ENV_SUBKEY", SHADOW_SUBKEY)
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("shim shadowing"),
+        "doctor must name the shadowing check, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("rg -> "),
+        "doctor must name the shadowed command, got: {stdout}"
+    );
+    // Shadowing is a warning: the run itself still passes.
+    assert_eq!(out.status.code(), Some(0));
+
+    env::delete_subkey(SHADOW_SUBKEY).unwrap();
+}

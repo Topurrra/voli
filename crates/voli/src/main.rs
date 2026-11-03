@@ -71,6 +71,11 @@ enum Command {
         /// Download requested app packages concurrently, then install safely in order.
         #[arg(short = 'p', long)]
         parallel: bool,
+        /// Approve reserved or shadowing shim names (sudo, ssh, git, ...)
+        /// without the interactive prompt. `--yes` alone never does: a shim
+        /// that shadows a system tool must be an explicit choice.
+        #[arg(long)]
+        allow_shadow: bool,
     },
     /// Delete one or more packages.
     #[command(alias = "uninstall")]
@@ -232,6 +237,7 @@ fn main() {
             project,
             global,
             parallel,
+            allow_shadow,
         } => cmd_install::run(
             packages,
             archive.as_deref(),
@@ -244,6 +250,7 @@ fn main() {
                 project: *project,
                 global: *global,
                 parallel: *parallel,
+                allow_shadow: *allow_shadow,
             },
         ),
         Command::Delete {
@@ -262,7 +269,7 @@ fn main() {
             cli.json,
         ),
         Command::List => cmd_list(cli.json),
-        Command::Upgrade { packages, all } => cmd_upgrade(packages, *all, cli.json),
+        Command::Upgrade { packages, all } => cmd_upgrade(packages, *all, cli.json, cli.yes),
         Command::Pin { package } => cmd_pin(package, true),
         Command::Unpin { package } => cmd_pin(package, false),
         Command::Env { package } => cmd_env(package, cli.json),
@@ -525,7 +532,7 @@ fn cmd_list(json: bool) -> i32 {
     0
 }
 
-fn cmd_upgrade(packages: &[String], all: bool, json: bool) -> i32 {
+fn cmd_upgrade(packages: &[String], all: bool, json: bool, yes: bool) -> i32 {
     let root = root();
 
     // Determine the target set: explicit names, or every non-pinned package.
@@ -598,7 +605,11 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool) -> i32 {
         }
 
         let mut reporter = cmd_install::Reporter::new(json, position + 1, targets.len());
-        let result = upgrade(name, &root, &mut |step| reporter.step(step));
+        let auto = yes || json || !std::io::stdin().is_terminal();
+        let mut shim_consent = cmd_install::shim_consent(auto, false);
+        let result = upgrade(name, &root, &mut shim_consent, &mut |step| {
+            reporter.step(step)
+        });
         reporter.finish_bar();
         let (_, bytes) = reporter.stats();
         match result {
@@ -2047,6 +2058,32 @@ fn cmd_doctor(json: bool) -> i32 {
                  restart your shell or `export PATH=\"{shims_str}:$PATH\"`)"
             ),
         );
+    }
+
+    // 1b. shims shadowing other commands on PATH (review item 2). The shims
+    // dir is first on PATH, so any same-named command further out is the one
+    // being replaced — say so explicitly, with what is being replaced.
+    {
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        let report = voli_core::shims::doctor_shadow_report(&shims, &path_var);
+        if report.is_empty() {
+            add(
+                Status::Pass,
+                "shim shadowing",
+                "no shim shadows another command on PATH".to_string(),
+            );
+        } else {
+            let detail = report
+                .iter()
+                .map(|(base, cmd)| format!("{base} -> {}", cmd.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            add(
+                Status::Warn,
+                "shim shadowing",
+                format!("shims shadow commands on PATH: {detail}"),
+            );
+        }
     }
 
     // 2. bin dir + binaries present?

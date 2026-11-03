@@ -290,6 +290,20 @@ impl Action {
 /// The CLI supplies the `[Y/n]` prompt / `--yes` / non-TTY / `--no-env` logic.
 pub type EnvConsent<'a> = dyn FnMut(&str, &[(String, String)]) -> bool + 'a;
 
+/// Per-shim conflict consent (supply-chain review item 2): called once per
+/// shim name that is reserved, shadows a command on PATH, or is already owned
+/// by another package. Return `true` to install anyway, `false` to abort the
+/// whole install. The CLI supplies the prompt and the `--allow-shadow` rules;
+/// [`allow_all_shims`] is the no-prompt default for internal callers.
+pub type ShimConsent<'a> = dyn FnMut(&crate::shims::ShimConflict) -> bool + 'a;
+
+/// Consent callback that approves every shim conflict. Used where no consent
+/// context exists (bare `install_local`, `install_remote`); the CLI drives
+/// the interactive flow explicitly.
+pub fn allow_all_shims(_: &crate::shims::ShimConflict) -> bool {
+    true
+}
+
 /// A consent closure that always skips `[env]` (used by [`install_local`] and by
 /// tests whose fixtures carry no env).
 pub fn skip_env(_name: &str, _resolved: &[(String, String)]) -> bool {
@@ -387,6 +401,8 @@ pub enum InstallError {
     ExtractDirMissing(String),
     #[error("package '{0}' is already installed; delete it first")]
     AlreadyInstalled(String),
+    #[error("refusing to install shadowing shim — {0}")]
+    ShimShadow(String),
     #[error("package '{0}' is not installed")]
     NotInstalled(String),
     #[error("shim stub not found at {0}; build voli-shim or set VOLI_SHIM_STUB")]
@@ -448,6 +464,7 @@ pub fn install_local(
         root,
         crate::env::ENVIRONMENT,
         &mut skip_env,
+        &mut allow_all_shims,
     )
 }
 
@@ -457,6 +474,10 @@ pub fn install_local(
 /// from the downloaded index by [`crate::remote::install_remote`]) rather than
 /// read from a `.toml` file. The archive is still hash-verified against the
 /// manifest before any mutation — the security gate never moves.
+///
+/// `shim_consent` gates shim names that are reserved, shadow a PATH command,
+/// or collide with another package's shim (supply-chain review item 2);
+/// refusing any conflict aborts the install.
 pub fn install_manifest(
     manifest: &Manifest,
     archive_path: &Path,
@@ -464,6 +485,7 @@ pub fn install_manifest(
     root: &Path,
     env_subkey: &str,
     consent: &mut EnvConsent,
+    shim_consent: &mut ShimConsent,
 ) -> Result<InstallReport> {
     let paths = Paths::at(root);
     paths.ensure()?;
@@ -487,8 +509,14 @@ pub fn install_manifest(
     }
 
     // Perform every filesystem mutation, rolling those back internally on error.
-    let (mut actions, mut report) =
-        do_install_fs(&paths, manifest, selected, archive_path, extras)?;
+    let (mut actions, mut report) = do_install_fs(
+        &paths,
+        manifest,
+        selected,
+        archive_path,
+        extras,
+        shim_consent,
+    )?;
 
     // Env consent flow (spec §8): resolve `{dir}` -> apps\<name>\current, prompt
     // (via `consent`), and — if applied — append EnvSet/PathAdded to the SAME
@@ -609,6 +637,7 @@ fn do_install_fs(
     selected: SelectedSource<'_>,
     archive_path: &Path,
     extras: &[(PathBuf, String)],
+    shim_consent: &mut ShimConsent,
 ) -> Result<(Vec<Action>, InstallReport)> {
     let mut actions: Vec<Action> = Vec::new();
     match install_fs_inner(
@@ -618,6 +647,7 @@ fn do_install_fs(
         archive_path,
         extras,
         &mut actions,
+        shim_consent,
     ) {
         Ok(report) => Ok((actions, report)),
         Err(e) => {
@@ -636,8 +666,26 @@ fn install_fs_inner(
     archive_path: &Path,
     extras: &[(PathBuf, String)],
     actions: &mut Vec<Action>,
+    shim_consent: &mut ShimConsent,
 ) -> Result<InstallReport> {
     let name = &manifest.name;
+
+    // 0. Shim shadowing gate (supply-chain review item 2), before ANY
+    // mutation: the shims dir is first on PATH, so a shim named `sudo` or
+    // `ssh` silently replaces the system tool. A name that is reserved,
+    // already resolves on PATH outside the shims dir, or is already owned by
+    // another installed package must be explicitly approved by `shim_consent`;
+    // a refusal aborts the install (and the caller rolls back).
+    {
+        let bases: Vec<String> = manifest.bin.iter().map(|b| b.shim_name()).collect();
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        for conflict in crate::shims::collect_conflicts(&bases, &paths.shims(), &path_var, name) {
+            if !shim_consent(&conflict) {
+                return Err(InstallError::ShimShadow(conflict.describe()));
+            }
+        }
+    }
+
     let version = &manifest.version;
     let source = selected.source;
 
@@ -1270,6 +1318,7 @@ pub fn upgrade_install(
     archive_path: &Path,
     extras: &[(PathBuf, String)],
     root: &Path,
+    shim_consent: &mut ShimConsent,
 ) -> Result<UpgradeReport> {
     let paths = Paths::at(root);
     let name = &manifest_new.name;
@@ -1314,6 +1363,7 @@ pub fn upgrade_install(
         archive_path,
         extras,
         &mut new_actions,
+        shim_consent,
     ) {
         Ok(r) => r,
         Err(e) => {

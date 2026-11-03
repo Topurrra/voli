@@ -15,7 +15,10 @@ use std::sync::Once;
 
 use sevenz_rust2::{ArchiveEntry, ArchiveWriter};
 use sha2::{Digest, Sha256};
-use voli_core::{InstallError, State, install_local, uninstall};
+use voli_core::{
+    InstallError, Manifest, ShimConflict, State, allow_all_shims, install_local, install_manifest,
+    skip_env, uninstall,
+};
 use zip::write::SimpleFileOptions;
 
 /// True if `path` is a directory link: an NTFS junction on Windows, a symlink
@@ -1071,7 +1074,8 @@ fn binary_upgrade_flips_the_junction() {
         &fs::read_to_string(write_binary_manifest(root, "2.0.0", &sha256_hex(v2))).unwrap(),
     )
     .unwrap();
-    let up = voli_core::upgrade_install(&m2, &d2, &[], root).unwrap();
+    let up =
+        voli_core::upgrade_install(&m2, &d2, &[], root, &mut voli_core::allow_all_shims).unwrap();
     assert_eq!(up.from_version, "1.0.0");
 
     // current follows the new version; the old dir survives for `cleanup`.
@@ -1292,7 +1296,7 @@ sha256 = "{sha}"
         ),
     );
     let m2 = voli_core::Manifest::from_toml_str(&toml2).unwrap();
-    voli_core::upgrade_install(&m2, &archive2, &[], root).unwrap();
+    voli_core::upgrade_install(&m2, &archive2, &[], root, &mut voli_core::allow_all_shims).unwrap();
 
     // DisplayVersion must now be 2.0.0 (Windows registry; unix keeps no key).
     #[cfg(windows)]
@@ -1351,4 +1355,73 @@ fn shortcuts_are_skipped_on_macos() {
 
     uninstall("rgshort", root, true).unwrap();
     assert!(!root.join("apps/rgshort").exists());
+}
+
+/// Supply-chain review item 2: a package exposing `sudo` (reserved shim name)
+/// is refused without explicit consent and installs only when consent approves.
+/// The refusal must leave no shims behind (the check runs before mutations,
+/// and the engine rolls the rest back).
+#[test]
+fn reserved_shim_name_requires_consent() {
+    ensure_stub();
+    let root = tempfile::tempdir().unwrap();
+    let zip = build_zip(&[
+        ("psutils-1.0.0/", b""),
+        ("psutils-1.0.0/sudo.exe", b"fake sudo"),
+    ]);
+    let sha = sha256_hex(&zip);
+    let archive = root.path().join("psutils.zip");
+    fs::write(&archive, &zip).unwrap();
+    let toml = format!(
+        r#"
+name = "psutils"
+version = "1.0.0"
+kind = "app"
+extract_dir = "psutils-1.0.0"
+bin = ["sudo.exe"]
+
+[source.x64]
+url = "https://example.com/psutils.zip"
+sha256 = "{sha}"
+
+{unix}
+"#,
+        unix = unix_blocks("https://example.com/psutils.zip", &sha, "")
+    );
+    let m = Manifest::from_toml_str(&toml).unwrap();
+    let subkey = format!("voli-test-shims-{}", std::process::id());
+
+    // Refusing consent: reserved name → ShimShadow error, no shim written.
+    let err = install_manifest(
+        &m,
+        &archive,
+        &[],
+        root.path(),
+        &subkey,
+        &mut skip_env,
+        &mut |c: &ShimConflict| {
+            assert!(c.reserved, "sudo must be flagged reserved, got {c:?}");
+            false
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, InstallError::ShimShadow(_)),
+        "expected ShimShadow, got {err:?}"
+    );
+    let shim = root.path().join("shims").join("sudo.shim");
+    assert!(!shim.exists(), "no shim may be written after a refusal");
+
+    // Explicit consent installs it.
+    install_manifest(
+        &m,
+        &archive,
+        &[],
+        root.path(),
+        &subkey,
+        &mut skip_env,
+        &mut allow_all_shims,
+    )
+    .unwrap();
+    assert!(shim.exists(), "consented install writes the shim");
 }

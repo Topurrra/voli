@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
 use voli_core::remote::{PrefetchStep, prefetch_remote};
 use voli_core::{
-    Kind, Manifest, PackageRef, RemoteError, RemoteReport, SkillInstallReport, SkillRemoteReport,
-    SkillStep, SkillTarget, Step, env, install_manifest, install_remote_env,
+    Kind, Manifest, PackageRef, RemoteError, RemoteReport, ShimConflict, SkillInstallReport,
+    SkillRemoteReport, SkillStep, SkillTarget, Step, env, install_manifest, install_remote_env,
     install_skill_archive_many, install_skill_remote_many,
 };
 
@@ -34,6 +34,9 @@ pub struct Options<'a> {
     pub project: bool,
     pub global: bool,
     pub parallel: bool,
+    /// Explicit approval for reserved / shadowing shim names (`--allow-shadow`).
+    /// `--yes` alone never covers them (supply-chain review item 2).
+    pub allow_shadow: bool,
 }
 
 /// Entry point for the `install` subcommand.
@@ -47,6 +50,7 @@ pub fn run(packages: &[String], archive: Option<&Path>, options: Options<'_>) ->
         project,
         global,
         parallel,
+        allow_shadow,
     } = options;
     // `--yes`, `--json`, or a non-TTY stdin all mean "don't wait for input":
     // apply env without prompting (spec §8, §9).
@@ -57,12 +61,86 @@ pub fn run(packages: &[String], archive: Option<&Path>, options: Options<'_>) ->
             return EXIT_ERROR;
         }
         return install_local_path(
-            manifest, archive, root, json, auto, no_env, for_agents, project, global,
+            manifest,
+            archive,
+            root,
+            json,
+            auto,
+            no_env,
+            for_agents,
+            project,
+            global,
+            allow_shadow,
         );
     }
     install_network(
-        packages, root, json, auto, no_env, for_agents, project, global, parallel,
+        packages,
+        root,
+        json,
+        auto,
+        no_env,
+        for_agents,
+        project,
+        global,
+        parallel,
+        allow_shadow,
     )
+}
+
+/// Shim-conflict consent (supply-chain review item 2).
+///
+/// voli's shims dir is first on PATH, so a shim silently replaces the
+/// same-named system command. Policy:
+///
+/// - **reserved name** (`sudo`, `ssh`, `git`, ...): needs `--allow-shadow`
+///   when non-interactive; `--yes` alone never approves it. Interactive:
+///   asked with default **no**.
+/// - **name held by another package**: refused when non-interactive
+///   (which package wins must be a human choice); interactive: asked
+///   with default **no**.
+/// - **name resolves elsewhere on PATH**: interactive prompt (default yes,
+///   shadowing a tool is often the point of installing); auto-approved under
+///   `--yes`/`--json` like the env consent.
+pub fn shim_consent(auto: bool, allow_shadow: bool) -> impl FnMut(&ShimConflict) -> bool {
+    move |c: &ShimConflict| {
+        println!("shim conflict: {}", c.describe());
+        if allow_shadow {
+            println!("  approved via --allow-shadow");
+            return true;
+        }
+        if c.reserved || c.held_by.is_some() {
+            if auto {
+                eprintln!(
+                    "  refusing: pass --allow-shadow to install a shim that {}",
+                    if c.reserved {
+                        "shadows a reserved system tool name"
+                    } else {
+                        "takes over another package's shim"
+                    }
+                );
+                return false;
+            }
+            print!("Install anyway? [y/N] ");
+        } else {
+            if auto {
+                println!("  approved non-interactively (--yes)");
+                return true;
+            }
+            print!("Install anyway? [Y/n] ");
+        }
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_err() {
+            return false;
+        }
+        let a = line.trim().to_ascii_lowercase();
+        match (c.reserved || c.held_by.is_some(), a.is_empty()) {
+            (true, true) => false, // risky: default no
+            (true, _) => a == "y" || a == "yes",
+            (false, true) => true, // plain shadow: default yes
+            (false, _) => a != "n" && a != "no",
+        }
+    }
 }
 
 /// Build the per-package env consent closure (spec §8). Prints the requested
@@ -104,6 +182,7 @@ fn local_manifest(packages: &[String]) -> Option<&Path> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn install_local_path(
     manifest: &Path,
     archive: Option<&Path>,
@@ -114,6 +193,7 @@ fn install_local_path(
     for_agents: &[String],
     project_scope: bool,
     global_scope: bool,
+    allow_shadow: bool,
 ) -> i32 {
     let Some(archive) = archive else {
         eprintln!("error: --archive <path> is required to install from a local manifest");
@@ -206,6 +286,7 @@ fn install_local_path(
         return EXIT_ERROR;
     }
     let mut consent = env_consent(auto, no_env);
+    let mut shims = shim_consent(auto, allow_shadow);
     match install_manifest(
         &parsed,
         archive,
@@ -213,6 +294,7 @@ fn install_local_path(
         root,
         &env::env_subkey(),
         &mut consent,
+        &mut shims,
     ) {
         Ok(r) => {
             println!(
@@ -371,6 +453,7 @@ fn row_style(color: &str) -> ProgressStyle {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn install_network(
     packages: &[String],
     root: &Path,
@@ -381,6 +464,7 @@ fn install_network(
     project_scope: bool,
     global_scope: bool,
     parallel: bool,
+    allow_shadow: bool,
 ) -> i32 {
     let mut parsed = Vec::with_capacity(packages.len());
     for spec in packages {
@@ -514,12 +598,17 @@ fn install_network(
                         .borrow_mut()
                         .during_prompt(|| consent(name, resolved))
                 };
+                let mut shims = shim_consent(auto, allow_shadow);
+                let mut visible_shims = |conflict: &ShimConflict| {
+                    reporter.borrow_mut().during_prompt(|| shims(conflict))
+                };
                 install_remote_env(
                     &package.name,
                     *version,
                     root,
                     &subkey,
                     &mut visible_consent,
+                    &mut visible_shims,
                     &mut |step| reporter.borrow_mut().step(step),
                 )
             };

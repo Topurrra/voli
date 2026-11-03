@@ -135,7 +135,16 @@ fn env_applied_ledgered_and_uninstall_restores_absent() {
     let expect_path_seg = format!("{current_str}\\bin");
 
     // Consent = apply. JAVA_HOME + PATH did not exist before → priors are None.
-    let report = install_manifest(&m, &archive, &[], root, &sk, &mut |_, _| true).unwrap();
+    let report = install_manifest(
+        &m,
+        &archive,
+        &[],
+        root,
+        &sk,
+        &mut |_, _| true,
+        &mut voli_core::allow_all_shims,
+    )
+    .unwrap();
     assert_eq!(report.env_applied.len(), 2);
 
     // Registry now carries our values.
@@ -204,7 +213,16 @@ fn uninstall_restores_preexisting_value() {
     fs::write(&archive, &zip).unwrap();
     let m = app_manifest(&sha256_hex(&zip));
 
-    install_manifest(&m, &archive, &[], root, &sk, &mut |_, _| true).unwrap();
+    install_manifest(
+        &m,
+        &archive,
+        &[],
+        root,
+        &sk,
+        &mut |_, _| true,
+        &mut voli_core::allow_all_shims,
+    )
+    .unwrap();
     // Our value now, prior recorded.
     assert_ne!(
         env::get(&sk, "JAVA_HOME").unwrap().as_deref(),
@@ -244,7 +262,16 @@ fn no_env_consent_applies_nothing() {
     let m = app_manifest(&sha256_hex(&zip));
 
     // Consent = skip (mirrors `--no-env`).
-    let report = install_manifest(&m, &archive, &[], root, &sk, &mut |_, _| false).unwrap();
+    let report = install_manifest(
+        &m,
+        &archive,
+        &[],
+        root,
+        &sk,
+        &mut |_, _| false,
+        &mut voli_core::allow_all_shims,
+    )
+    .unwrap();
     assert!(report.env_applied.is_empty());
     assert_eq!(
         report.env_requested.len(),

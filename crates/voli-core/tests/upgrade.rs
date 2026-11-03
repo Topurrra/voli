@@ -224,7 +224,7 @@ fn upgrade_flips_junction_keeps_old_and_tracks_bins() {
     fs::write(root.join("apps/app/persist/data/user.txt"), b"mine").unwrap();
 
     // Upgrade to latest (2.0.0).
-    let outcome = upgrade("app", root, &mut |_| {}).unwrap();
+    let outcome = upgrade("app", root, &mut voli_core::allow_all_shims, &mut |_| {}).unwrap();
     match outcome {
         UpgradeOutcome::Upgraded(r) => {
             assert_eq!(r.from_version, "1.0.0");
@@ -289,7 +289,7 @@ fn cleanup_removes_only_the_old_version() {
 
     install_remote("app", Some("1.0.0"), root, &mut |_| {}).unwrap();
     fs::write(root.join("apps/app/persist/data/user.txt"), b"mine").unwrap();
-    upgrade("app", root, &mut |_| {}).unwrap();
+    upgrade("app", root, &mut voli_core::allow_all_shims, &mut |_| {}).unwrap();
 
     // Dry-run reports the old dir but removes nothing.
     let (dry, _bytes) = cleanup_versions(root, "app", "2.0.0", true).unwrap();
@@ -323,7 +323,7 @@ fn uninstall_after_upgrade_leaves_zero_trace() {
     let _srv = setup(root);
 
     install_remote("app", Some("1.0.0"), root, &mut |_| {}).unwrap();
-    upgrade("app", root, &mut |_| {}).unwrap();
+    upgrade("app", root, &mut voli_core::allow_all_shims, &mut |_| {}).unwrap();
 
     // Both version dirs exist before uninstall.
     assert!(root.join("apps/app/1.0.0").exists());
@@ -351,7 +351,7 @@ fn upgrade_when_already_latest_is_up_to_date() {
 
     // Install latest directly, then an upgrade is a no-op.
     install_remote("app", None, root, &mut |_| {}).unwrap();
-    let outcome = upgrade("app", root, &mut |_| {}).unwrap();
+    let outcome = upgrade("app", root, &mut voli_core::allow_all_shims, &mut |_| {}).unwrap();
     assert!(matches!(outcome, UpgradeOutcome::UpToDate { version } if version == "2.0.0"));
 }
 
@@ -386,7 +386,7 @@ fn upgrade_reports_a_rename_instead_of_following_it() {
     .unwrap();
     index::build(&[renamed], &index::index_db_path(root)).unwrap();
 
-    match upgrade("app", root, &mut |_| {}).unwrap() {
+    match upgrade("app", root, &mut voli_core::allow_all_shims, &mut |_| {}).unwrap() {
         UpgradeOutcome::Renamed { to, version } => {
             assert_eq!(to, "app-ng");
             assert_eq!(version, "1.0.0");
