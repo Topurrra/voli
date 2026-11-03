@@ -124,29 +124,61 @@ pub fn extract_for_ext(text: &str, ext: &str) -> TsFile {
                 in_robot_cases = h[1].to_lowercase().contains("test case");
                 continue;
             }
-            if in_robot_cases && p.robot_case.is_match(line) && !line.starts_with(' ') && !line.starts_with('\t') {
-                raws.push(Raw { name: line.trim().to_string(), kind: NodeKind::Test, line0: i });
+            if in_robot_cases
+                && p.robot_case.is_match(line)
+                && !line.starts_with(' ')
+                && !line.starts_with('\t')
+            {
+                raws.push(Raw {
+                    name: line.trim().to_string(),
+                    kind: NodeKind::Test,
+                    line0: i,
+                });
                 continue;
             }
         }
         if let Some(c) = p.class.captures(line) {
-            raws.push(Raw { name: c[1].to_string(), kind: NodeKind::Struct, line0: i });
+            raws.push(Raw {
+                name: c[1].to_string(),
+                kind: NodeKind::Struct,
+                line0: i,
+            });
         } else if let Some(c) = p.func.captures(line) {
             let name = c[1].to_string();
             if !name.is_empty() && name.len() < 80 {
-                raws.push(Raw { name, kind: NodeKind::Fn, line0: i });
+                raws.push(Raw {
+                    name,
+                    kind: NodeKind::Fn,
+                    line0: i,
+                });
             }
         } else if let Some(c) = p.trigger.captures(line) {
-            raws.push(Raw { name: c[1].to_string(), kind: NodeKind::Struct, line0: i });
+            raws.push(Raw {
+                name: c[1].to_string(),
+                kind: NodeKind::Struct,
+                line0: i,
+            });
         } else if (ext == "hs" || ext == "lhs") && p.haskell_sig.captures(line).is_some() {
             let c = p.haskell_sig.captures(line).unwrap();
-            raws.push(Raw { name: c[1].to_string(), kind: NodeKind::Fn, line0: i });
+            raws.push(Raw {
+                name: c[1].to_string(),
+                kind: NodeKind::Fn,
+                line0: i,
+            });
         } else if (ext == "erl" || ext == "hrl") && p.erlang_clause.captures(line).is_some() {
             let c = p.erlang_clause.captures(line).unwrap();
-            raws.push(Raw { name: c[1].to_string(), kind: NodeKind::Fn, line0: i });
+            raws.push(Raw {
+                name: c[1].to_string(),
+                kind: NodeKind::Fn,
+                line0: i,
+            });
         } else if ext == "r" && p.r_assign.captures(line).is_some() {
             let c = p.r_assign.captures(line).unwrap();
-            raws.push(Raw { name: c[1].to_string(), kind: NodeKind::Fn, line0: i });
+            raws.push(Raw {
+                name: c[1].to_string(),
+                kind: NodeKind::Fn,
+                line0: i,
+            });
         }
     }
     // fn inside class range → method (same rule as the AST path)
@@ -154,7 +186,10 @@ pub fn extract_for_ext(text: &str, ext: &str) -> TsFile {
         let mut parent: Option<String> = None;
         if r.kind == NodeKind::Fn {
             let indent_of = |l: usize| -> usize {
-                text.lines().nth(l).map(|s| s.len() - s.trim_start().len()).unwrap_or(0)
+                text.lines()
+                    .nth(l)
+                    .map(|s| s.len() - s.trim_start().len())
+                    .unwrap_or(0)
             };
             let my_indent = indent_of(r.line0);
             for prev in raws[..idx].iter().rev() {
@@ -208,7 +243,13 @@ pub fn extract_for_ext(text: &str, ext: &str) -> TsFile {
 }
 
 fn short(s: &str) -> String {
-    s.rsplit('.').next().unwrap_or(s).rsplit("::").next().unwrap_or(s).to_string()
+    s.rsplit('.')
+        .next()
+        .unwrap_or(s)
+        .rsplit("::")
+        .next()
+        .unwrap_or(s)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -219,7 +260,11 @@ mod tests {
     fn kotlin_class_and_fun() {
         let f = extract_for_ext("class Store {\n  fun fresh(): Store = Store()\n}\n", "kt");
         assert!(f.items.iter().any(|i| i.name == "Store"), "{:?}", f.items);
-        assert!(f.items.iter().any(|i| i.qualified == "Store::fresh"), "{:?}", f.items);
+        assert!(
+            f.items.iter().any(|i| i.qualified == "Store::fresh"),
+            "{:?}",
+            f.items
+        );
     }
 
     #[test]
@@ -244,6 +289,12 @@ mod tests {
     #[test]
     fn robot_cases_are_tests() {
         let f = extract_for_ext("*** Test Cases ***\nLogin works\n  Click  ok\n", "robot");
-        assert!(f.items.iter().any(|i| i.name == "Login works" && i.kind == NodeKind::Test), "{:?}", f.items);
+        assert!(
+            f.items
+                .iter()
+                .any(|i| i.name == "Login works" && i.kind == NodeKind::Test),
+            "{:?}",
+            f.items
+        );
     }
 }

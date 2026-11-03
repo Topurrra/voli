@@ -265,11 +265,21 @@ pub fn run(cmd: &GraphCmd, json: bool) -> i32 {
                         println!(
                             "path ({} hops, {}):",
                             ids.len().saturating_sub(1),
-                            if directed { "directed" } else { "undirected fallback" }
+                            if directed {
+                                "directed"
+                            } else {
+                                "undirected fallback"
+                            }
                         );
                         for id in &ids {
                             if let Some(n) = g.nodes.iter().find(|n| &n.id == id) {
-                                println!("  {} [{}] {}:{}", n.label, n.kind.as_str(), n.file, n.line);
+                                println!(
+                                    "  {} [{}] {}:{}",
+                                    n.label,
+                                    n.kind.as_str(),
+                                    n.file,
+                                    n.line
+                                );
                             } else {
                                 println!("  {id}");
                             }
@@ -300,7 +310,10 @@ pub fn run(cmd: &GraphCmd, json: bool) -> i32 {
             if hits.len() > 1 && hits.iter().all(|n| n.id != *symbol) {
                 // ambiguous bare name — list candidates, then explain the best.
                 if !json {
-                    println!("{} candidates — showing best, refine with file::Symbol:\n", hits.len());
+                    println!(
+                        "{} candidates — showing best, refine with file::Symbol:\n",
+                        hits.len()
+                    );
                     for n in &hits {
                         println!("  {} [{}] {}:{}", n.label, n.kind.as_str(), n.file, n.line);
                     }
@@ -333,7 +346,10 @@ pub fn run(cmd: &GraphCmd, json: bool) -> i32 {
             } else {
                 println!("{} [{}] {}:{}", n.label, n.kind.as_str(), n.file, n.line);
                 println!("  id: {}", n.id);
-                println!("  memory: voli memory note \"...\" --tags {}", graph::memory_tag(n));
+                println!(
+                    "  memory: voli memory note \"...\" --tags {}",
+                    graph::memory_tag(n)
+                );
                 println!("  {} neighbor(s):", nb.len());
                 for (e, m) in nb.iter().take(30) {
                     let dir = if e.from == n.id { "-->" } else { "<--" };
@@ -503,34 +519,37 @@ fn run_hook(remove: bool, path: Option<PathBuf>, json: bool) -> i32 {
     for name in ["post-commit", "post-checkout"] {
         let p = hooks.join(name);
         if remove {
-            if p.is_file() {
-                if let Ok(cur) = std::fs::read_to_string(&p) {
-                    if cur.contains("voli graph") {
-                        if std::fs::remove_file(&p).is_err() {
-                            eprintln!("error: cannot remove {}", p.display());
-                            code = 1;
-                        } else if !json {
-                            println!("removed {}", p.display());
-                        }
+            if p.is_file()
+                && let Ok(cur) = std::fs::read_to_string(&p)
+            {
+                if cur.contains("voli graph") {
+                    if std::fs::remove_file(&p).is_err() {
+                        eprintln!("error: cannot remove {}", p.display());
+                        code = 1;
                     } else if !json {
-                        println!("kept {} (not ours)", p.display());
+                        println!("removed {}", p.display());
                     }
+                } else if !json {
+                    println!("kept {} (not ours)", p.display());
                 }
             }
             continue;
         }
-        if p.is_file() {
-            if let Ok(cur) = std::fs::read_to_string(&p) {
-                if cur.contains("voli graph") {
-                    if !json {
-                        println!("{} already installed", p.display());
-                    }
-                    continue;
+        if p.is_file()
+            && let Ok(cur) = std::fs::read_to_string(&p)
+        {
+            if cur.contains("voli graph") {
+                if !json {
+                    println!("{} already installed", p.display());
                 }
-                eprintln!("error: {} exists and is not ours — refusing to overwrite", p.display());
-                code = 1;
                 continue;
             }
+            eprintln!(
+                "error: {} exists and is not ours — refusing to overwrite",
+                p.display()
+            );
+            code = 1;
+            continue;
         }
         let script = format!("#!/bin/sh\n{body}");
         if std::fs::write(&p, script).is_err() {

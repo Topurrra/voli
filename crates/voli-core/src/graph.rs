@@ -143,8 +143,7 @@ impl Graph {
             .nodes
             .iter()
             .filter(|n| {
-                (include_tests || !n.is_test)
-                    && !matches!(n.kind, NodeKind::File | NodeKind::Crate)
+                (include_tests || !n.is_test) && !matches!(n.kind, NodeKind::File | NodeKind::Crate)
             })
             .map(|n| (n, deg.get(n.id.as_str()).copied().unwrap_or(0)))
             .collect();
@@ -161,10 +160,10 @@ impl Graph {
                 if let Some(&i) = idx.get(e.to.as_str()) {
                     out.push((e, &self.nodes[i]));
                 }
-            } else if e.to == id {
-                if let Some(&i) = idx.get(e.from.as_str()) {
-                    out.push((e, &self.nodes[i]));
-                }
+            } else if e.to == id
+                && let Some(&i) = idx.get(e.from.as_str())
+            {
+                out.push((e, &self.nodes[i]));
             }
         }
         out
@@ -296,12 +295,13 @@ fn read_crate_name(manifest: &Path) -> Option<String> {
             in_pkg = t == "[package]";
             continue;
         }
-        if in_pkg && t.starts_with("name") {
-            if let Some(v) = t.split('=').nth(1) {
-                let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
-                if !v.is_empty() {
-                    return Some(v);
-                }
+        if in_pkg
+            && t.starts_with("name")
+            && let Some(v) = t.split('=').nth(1)
+        {
+            let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+            if !v.is_empty() {
+                return Some(v);
             }
         }
     }
@@ -311,10 +311,10 @@ fn read_crate_name(manifest: &Path) -> Option<String> {
 /// Extensions never indexed (binary / media / archives). Everything else gets
 /// at least a file node; code-likes get symbols.
 const SKIP_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "webp", "gif", "ico", "bmp", "svg", "pdf", "mp4", "mov", "webm",
-    "mp3", "wav", "ogg", "flac", "zip", "tar", "gz", "xz", "zst", "7z", "rar", "exe",
-    "dll", "so", "dylib", "bin", "o", "a", "class", "pyc", "pyo", "wasm", "ttf",
-    "otf", "woff", "woff2", "eot", "lock", "node",
+    "png", "jpg", "jpeg", "webp", "gif", "ico", "bmp", "svg", "pdf", "mp4", "mov", "webm", "mp3",
+    "wav", "ogg", "flac", "zip", "tar", "gz", "xz", "zst", "7z", "rar", "exe", "dll", "so",
+    "dylib", "bin", "o", "a", "class", "pyc", "pyo", "wasm", "ttf", "otf", "woff", "woff2", "eot",
+    "lock", "node",
 ];
 
 /// Files bigger than this get a file node only (never parsed).
@@ -342,10 +342,10 @@ fn collect_files(root: &Path) -> Vec<PathBuf> {
                 }
                 stack.push(p);
             } else if p.is_file() {
-                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                    if SKIP_EXTS.contains(&ext.to_lowercase().as_str()) {
-                        continue;
-                    }
+                if let Some(ext) = p.extension().and_then(|e| e.to_str())
+                    && SKIP_EXTS.contains(&ext.to_lowercase().as_str())
+                {
+                    continue;
                 }
                 out.push(p);
             }
@@ -356,12 +356,18 @@ fn collect_files(root: &Path) -> Vec<PathBuf> {
 }
 
 fn file_name_of(p: &Path) -> String {
-    p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string()
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn ext_of(p: &Path) -> String {
     // Dockerfile / Makefile style names have no useful extension.
-    p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase()
+    p.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase()
 }
 
 /// One file's intermediate work: symbols first, edges after every file's
@@ -401,13 +407,23 @@ struct WorkFile {
 /// Normalize an import/use/include statement into a stable target string.
 fn clean_import(s: &str) -> String {
     let mut t = s.trim().to_string();
-    for prefix in ["use ", "from ", "import ", "require ", "require_relative ", "load "] {
+    for prefix in [
+        "use ",
+        "from ",
+        "import ",
+        "require ",
+        "require_relative ",
+        "load ",
+    ] {
         if let Some(rest) = t.strip_prefix(prefix) {
             t = rest.trim().to_string();
             break;
         }
     }
-    t = t.trim().trim_matches(|c| c == '"' || c == '\'' || c == '<' || c == '>' || c == ';').to_string();
+    t = t
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'' || c == '<' || c == '>' || c == ';')
+        .to_string();
     // `use a::b::{C, D}` → keep whole; trailing commas/semicolons trimmed.
     t.trim_matches([',', ';', ' ']).to_string()
 }
@@ -424,7 +440,10 @@ fn rust_test_lines(text: &str) -> HashSet<u32> {
             for k in 1..=6 {
                 if let Some(nl) = lines.get(i + k) {
                     let nt = nl.trim_start();
-                    if nt.starts_with("fn ") || nt.starts_with("pub ") && nt.contains(" fn ") || nt.starts_with("async fn") {
+                    if nt.starts_with("fn ")
+                        || nt.starts_with("pub ") && nt.contains(" fn ")
+                        || nt.starts_with("async fn")
+                    {
                         out.insert((i + k + 1) as u32);
                         break;
                     }
@@ -487,7 +506,11 @@ pub fn build(root: &Path) -> Graph {
     let mut file_ids: HashMap<String, String> = HashMap::new();
     let mut works: Vec<WorkFile> = Vec::new();
 
-    let ensure_pkg = |nodes: &mut Vec<GraphNode>, pkg_ids: &mut HashMap<String, String>, name: &str, file: &str| -> String {
+    let ensure_pkg = |nodes: &mut Vec<GraphNode>,
+                      pkg_ids: &mut HashMap<String, String>,
+                      name: &str,
+                      file: &str|
+     -> String {
         if let Some(id) = pkg_ids.get(name) {
             return id.clone();
         }
@@ -527,8 +550,14 @@ pub fn build(root: &Path) -> Graph {
             cluster_label: String::new(),
         });
 
-        let big = std::fs::metadata(path).map(|m| m.len() > PARSE_CAP).unwrap_or(false);
-        let text = if big { None } else { std::fs::read_to_string(path).ok() };
+        let big = std::fs::metadata(path)
+            .map(|m| m.len() > PARSE_CAP)
+            .unwrap_or(false);
+        let text = if big {
+            None
+        } else {
+            std::fs::read_to_string(path).ok()
+        };
         let Some(text) = text else { continue };
         if text.trim().is_empty() {
             continue;
@@ -743,7 +772,11 @@ pub fn build(root: &Path) -> Graph {
         let mut emitted = false;
         if ext == "vue" || ext == "svelte" || ext == "astro" {
             for (is_ts, code, off) in script_blocks(&text) {
-                let lang = if is_ts { ts::TsLang::TypeScript } else { ts::TsLang::JavaScript };
+                let lang = if is_ts {
+                    ts::TsLang::TypeScript
+                } else {
+                    ts::TsLang::JavaScript
+                };
                 if let Some(tf) = ts::extract(lang, &code) {
                     emit_ts(&mut wf, &rel, tf, off, test_file, &text);
                     emitted = true;
@@ -759,13 +792,12 @@ pub fn build(root: &Path) -> Graph {
         if let Some(lang) = ts::lang_for_ext(&ext) {
             // Huge JSON blobs (fixtures, lockfiles-in-disguise): file node only.
             let too_big = ext == "json" && text.len() > 100_000;
-            if !too_big {
-                if let Some(tf) = ts::extract(lang, &text) {
-                    if !tf.items.is_empty() || !tf.broken {
-                        emit_ts(&mut wf, &rel, tf, 0, test_file, &text);
-                        emitted = true;
-                    }
-                }
+            if !too_big
+                && let Some(tf) = ts::extract(lang, &text)
+                && (!tf.items.is_empty() || !tf.broken)
+            {
+                emit_ts(&mut wf, &rel, tf, 0, test_file, &text);
+                emitted = true;
             }
             if !emitted && fallback::handles(&ext) {
                 let tf = fallback::extract_for_ext(&text, &ext);
@@ -823,19 +855,31 @@ pub fn build(root: &Path) -> Graph {
     }
     for wf in &works {
         for it in &wf.items {
-            by_qual.entry(it.label.clone()).or_default().push(it.id.clone());
+            by_qual
+                .entry(it.label.clone())
+                .or_default()
+                .push(it.id.clone());
             if it.kind == NodeKind::Method {
-                methods_by_short.entry(it.short.clone()).or_default().push(it.id.clone());
+                methods_by_short
+                    .entry(it.short.clone())
+                    .or_default()
+                    .push(it.id.clone());
             } else if matches!(
                 it.kind,
                 NodeKind::Fn | NodeKind::Test | NodeKind::Struct | NodeKind::Enum | NodeKind::Trait
             ) {
                 // Callable or constructible only: config consts (yaml `push`,
                 // json keys, css selectors, modules) must never match `name(`.
-                by_short.entry(it.short.clone()).or_default().push(it.id.clone());
+                by_short
+                    .entry(it.short.clone())
+                    .or_default()
+                    .push(it.id.clone());
             }
             if matches!(it.kind, NodeKind::Struct | NodeKind::Enum | NodeKind::Trait) {
-                types_by_short.entry(it.short.clone()).or_default().push(it.id.clone());
+                types_by_short
+                    .entry(it.short.clone())
+                    .or_default()
+                    .push(it.id.clone());
             }
         }
     }
@@ -851,8 +895,14 @@ pub fn build(root: &Path) -> Graph {
     // otherwise cross-link every call. When any target lives in the
     // caller's file, drop the out-of-file candidates.
     let prefer_local = |targets: Vec<String>, rel: &str| -> Vec<String> {
-        if targets.iter().any(|t| node_file.get(t).map(|f| f == rel).unwrap_or(false)) {
-            targets.into_iter().filter(|t| node_file.get(t).map(|f| f == rel).unwrap_or(false)).collect()
+        if targets
+            .iter()
+            .any(|t| node_file.get(t).map(|f| f == rel).unwrap_or(false))
+        {
+            targets
+                .into_iter()
+                .filter(|t| node_file.get(t).map(|f| f == rel).unwrap_or(false))
+                .collect()
         } else {
             targets
         }
@@ -887,15 +937,16 @@ pub fn build(root: &Path) -> Graph {
             };
             let targets = prefer_local(targets, &wf.rel);
             for t in targets {
-                if let Some(caller) = enclosing_item(&wf.items, c.start_byte) {
-                    if caller.id != t && seen.insert((caller.id.clone(), t.clone())) {
-                        edges.push(GraphEdge {
-                            from: caller.id.clone(),
-                            to: t.clone(),
-                            relation: "calls".to_string(),
-                            confidence: Confidence::Inferred,
-                        });
-                    }
+                if let Some(caller) = enclosing_item(&wf.items, c.start_byte)
+                    && caller.id != t
+                    && seen.insert((caller.id.clone(), t.clone()))
+                {
+                    edges.push(GraphEdge {
+                        from: caller.id.clone(),
+                        to: t.clone(),
+                        relation: "calls".to_string(),
+                        confidence: Confidence::Inferred,
+                    });
                 }
                 if seen.insert((wf.file_id.clone(), t.clone())) {
                     edges.push(GraphEdge {
@@ -922,15 +973,15 @@ pub fn build(root: &Path) -> Graph {
         }
         // markdown references (only to indexed files — no dangling ids)
         for target in &wf.md_targets {
-            if let Some(fid) = resolve_doc_target(&wf.rel, target, &file_ids) {
-                if fid != wf.file_id {
-                    edges.push(GraphEdge {
-                        from: wf.file_id.clone(),
-                        to: fid,
-                        relation: "references".to_string(),
-                        confidence: Confidence::Extracted,
-                    });
-                }
+            if let Some(fid) = resolve_doc_target(&wf.rel, target, &file_ids)
+                && fid != wf.file_id
+            {
+                edges.push(GraphEdge {
+                    from: wf.file_id.clone(),
+                    to: fid,
+                    relation: "references".to_string(),
+                    confidence: Confidence::Extracted,
+                });
             }
         }
         // terraform local sources → directory node + member files
@@ -984,30 +1035,28 @@ pub fn build(root: &Path) -> Graph {
     let mut tail: Vec<GraphEdge> = Vec::new();
     for wf in &works {
         for it in &wf.items {
-            if it.kind == NodeKind::Method {
-                if let Some(parent) = &it.parent {
-                    if let Some(cands) = types_by_short.get(parent) {
-                        if let Some(ty) = cands.first() {
-                            tail.push(GraphEdge {
-                                from: it.id.clone(),
-                                to: ty.clone(),
-                                relation: "method_of".to_string(),
-                                confidence: Confidence::Extracted,
-                            });
-                        }
-                    }
-                }
+            if it.kind == NodeKind::Method
+                && let Some(parent) = &it.parent
+                && let Some(cands) = types_by_short.get(parent)
+                && let Some(ty) = cands.first()
+            {
+                tail.push(GraphEdge {
+                    from: it.id.clone(),
+                    to: ty.clone(),
+                    relation: "method_of".to_string(),
+                    confidence: Confidence::Extracted,
+                });
             }
             for b in &it.bases {
-                if let Some(cands) = types_by_short.get(b) {
-                    if let Some(ty) = cands.first() {
-                        tail.push(GraphEdge {
-                            from: it.id.clone(),
-                            to: ty.clone(),
-                            relation: "inherits".to_string(),
-                            confidence: Confidence::Extracted,
-                        });
-                    }
+                if let Some(cands) = types_by_short.get(b)
+                    && let Some(ty) = cands.first()
+                {
+                    tail.push(GraphEdge {
+                        from: it.id.clone(),
+                        to: ty.clone(),
+                        relation: "inherits".to_string(),
+                        confidence: Confidence::Extracted,
+                    });
                 }
             }
         }
@@ -1060,7 +1109,12 @@ pub fn build(root: &Path) -> Graph {
     clusterize(&mut nodes, &edges);
 
     let commit = current_commit(root);
-    Graph { version: 1, nodes, edges, built_at_commit: commit }
+    Graph {
+        version: 1,
+        nodes,
+        edges,
+        built_at_commit: commit,
+    }
 }
 
 /// Louvain communities over the undirected projection (dangling pseudo-
@@ -1068,8 +1122,11 @@ pub fn build(root: &Path) -> Graph {
 /// (`<hub> +<n>`) to every node. Deterministic: same graph, same clusters.
 fn clusterize(nodes: &mut [GraphNode], edges: &[GraphEdge]) {
     use crate::graph_cluster as cluster;
-    let idx: HashMap<&str, usize> =
-        nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
+    let idx: HashMap<&str, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.as_str(), i))
+        .collect();
     let mut pairs: Vec<(usize, usize)> = Vec::new();
     for e in edges {
         if let (Some(&a), Some(&b)) = (idx.get(e.from.as_str()), idx.get(e.to.as_str())) {
@@ -1104,7 +1161,9 @@ fn clusterize(nodes: &mut [GraphNode], edges: &[GraphEdge]) {
                 best = Some(i);
             }
         }
-        let hub = best.map(|i| nodes[i].label.clone()).unwrap_or_else(|| "misc".to_string());
+        let hub = best
+            .map(|i| nodes[i].label.clone())
+            .unwrap_or_else(|| "misc".to_string());
         names.insert(*c, format!("{hub} +{}", ms.len().saturating_sub(1)));
     }
     for (i, n) in nodes.iter_mut().enumerate() {
@@ -1132,7 +1191,12 @@ pub fn merge_graphs(graphs: Vec<Graph>) -> Graph {
     let mut eset = HashSet::new();
     edges.retain(|e| eset.insert((e.from.clone(), e.to.clone(), e.relation.clone())));
     clusterize(&mut nodes, &edges);
-    Graph { version: 1, nodes, edges, built_at_commit: String::new() }
+    Graph {
+        version: 1,
+        nodes,
+        edges,
+        built_at_commit: String::new(),
+    }
 }
 
 /// Shared item/call/import emission from a TsFile (AST or fallback).
@@ -1147,11 +1211,16 @@ fn emit_ts(
     srctext: &str,
 ) {
     let is_rs = rel.ends_with(".rs");
-    let test_lines: HashSet<u32> = if is_rs { rust_test_lines(srctext) } else { HashSet::new() };
+    let test_lines: HashSet<u32> = if is_rs {
+        rust_test_lines(srctext)
+    } else {
+        HashSet::new()
+    };
     for it in tf.items {
         let mut kind = it.kind;
         let mut is_test = test_file;
-        if is_rs && matches!(kind, NodeKind::Fn | NodeKind::Method) && test_lines.contains(&it.line) {
+        if is_rs && matches!(kind, NodeKind::Fn | NodeKind::Method) && test_lines.contains(&it.line)
+        {
             kind = NodeKind::Test;
             is_test = true;
         }
@@ -1179,7 +1248,11 @@ fn emit_ts(
         });
     }
     for c in tf.calls {
-        wf.calls.push(WorkCall { start_byte: c.start_byte, qualifier: c.qualifier, name: c.name });
+        wf.calls.push(WorkCall {
+            start_byte: c.start_byte,
+            qualifier: c.qualifier,
+            name: c.name,
+        });
     }
     for i in tf.imports {
         if !i.trim().is_empty() {
@@ -1192,7 +1265,7 @@ fn emit_ts(
 }
 
 /// Enclosing item id for a byte offset (smallest containing def).
-fn enclosing_item<'a>(items: &'a [WorkItem], byte: usize) -> Option<&'a WorkItem> {
+fn enclosing_item(items: &[WorkItem], byte: usize) -> Option<&WorkItem> {
     let mut best: Option<&WorkItem> = None;
     let mut best_size = usize::MAX;
     for it in items {
@@ -1229,13 +1302,26 @@ fn enclosing_type(items: &[WorkItem], byte: usize) -> Option<String> {
 /// Last-segment qualifier (`a.b.C` / `a::b` → `C` / `b`).
 fn short_ty(s: &str) -> String {
     let s = s.split('<').next().unwrap_or(s).trim();
-    s.rsplit("::").next().unwrap_or(s).rsplit('.').next().unwrap_or(s).trim().to_string()
+    s.rsplit("::")
+        .next()
+        .unwrap_or(s)
+        .rsplit('.')
+        .next()
+        .unwrap_or(s)
+        .trim()
+        .to_string()
 }
 
 /// Resolve a markdown link target to an indexed file id, if any.
-fn resolve_doc_target(from_rel: &str, target: &str, file_ids: &HashMap<String, String>) -> Option<String> {
+fn resolve_doc_target(
+    from_rel: &str,
+    target: &str,
+    file_ids: &HashMap<String, String>,
+) -> Option<String> {
     let base = std::path::Path::new(from_rel).parent();
-    let joined = base.map(|b| b.join(target)).unwrap_or_else(|| std::path::PathBuf::from(target));
+    let joined = base
+        .map(|b| b.join(target))
+        .unwrap_or_else(|| std::path::PathBuf::from(target));
     let norm = normalize_rel(&joined);
     if let Some(id) = file_ids.get(&norm) {
         return Some(id.clone());
@@ -1254,7 +1340,9 @@ fn resolve_doc_target(from_rel: &str, target: &str, file_ids: &HashMap<String, S
 /// Resolve a `./` / `../` terraform source to a repo-relative dir path.
 fn normalize_doc_dir(from_rel: &str, src: &str) -> String {
     let base = std::path::Path::new(from_rel).parent();
-    let joined = base.map(|b| b.join(src)).unwrap_or_else(|| std::path::PathBuf::from(src));
+    let joined = base
+        .map(|b| b.join(src))
+        .unwrap_or_else(|| std::path::PathBuf::from(src));
     normalize_rel(&joined)
 }
 
@@ -1370,8 +1458,8 @@ pub fn save(root: &Path, g: &Graph) -> std::io::Result<()> {
 }
 
 pub fn load(root: &Path) -> Result<Graph, String> {
-    let data =
-        std::fs::read_to_string(graph_path(root)).map_err(|_| "no graph yet — run `voli graph build`".to_string())?;
+    let data = std::fs::read_to_string(graph_path(root))
+        .map_err(|_| "no graph yet — run `voli graph build`".to_string())?;
     serde_json::from_str(&data).map_err(|e| format!("cannot parse graph.json: {e}"))
 }
 
@@ -1382,7 +1470,7 @@ fn report(g: &Graph) -> String {
         *communities.entry(n.community.as_str()).or_default() += 1;
     }
     let mut comms: Vec<(&str, usize)> = communities.into_iter().collect();
-    comms.sort_by(|a, b| b.1.cmp(&a.1));
+    comms.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
     let extracted = g
         .edges
         .iter()
@@ -1447,9 +1535,15 @@ fn top_clusters(g: &Graph, top: usize) -> Vec<(String, usize, String)> {
     let mut v: Vec<(String, usize, String)> = groups
         .into_values()
         .map(|ms| {
-            let label = ms.first().map(|n| n.cluster_label.clone()).unwrap_or_default();
+            let label = ms
+                .first()
+                .map(|n| n.cluster_label.clone())
+                .unwrap_or_default();
             // hub = highest-degree non-file member, with its location
-            let mut hub = ms.first().map(|n| (n.label.clone(), n.file.clone(), n.line)).unwrap_or_default();
+            let mut hub = ms
+                .first()
+                .map(|n| (n.label.clone(), n.file.clone(), n.line))
+                .unwrap_or_default();
             let mut best = 0;
             for n in &ms {
                 if matches!(n.kind, NodeKind::File | NodeKind::Crate) || n.is_test {
@@ -1464,7 +1558,7 @@ fn top_clusters(g: &Graph, top: usize) -> Vec<(String, usize, String)> {
             (label, ms.len(), format!("{} ({}:{})", hub.0, hub.1, hub.2))
         })
         .collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|&(_, count, _)| std::cmp::Reverse(count));
     v.truncate(top);
     v
 }
@@ -1472,8 +1566,12 @@ fn top_clusters(g: &Graph, top: usize) -> Vec<(String, usize, String)> {
 /// Offline report page: no CDN, no fetch — JSON inlined, vanilla JS filter.
 fn html(g: &Graph) -> String {
     let deg = g.degree();
-    let mut rows: Vec<(&GraphNode, usize)> = g.nodes.iter().map(|n| (n, deg.get(n.id.as_str()).copied().unwrap_or(0))).collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut rows: Vec<(&GraphNode, usize)> = g
+        .nodes
+        .iter()
+        .map(|n| (n, deg.get(n.id.as_str()).copied().unwrap_or(0)))
+        .collect();
+    rows.sort_by_key(|&(_, degree)| std::cmp::Reverse(degree));
     let mut trs = String::new();
     for (n, d) in rows.iter().take(2000) {
         trs.push_str(&format!(
@@ -1545,46 +1643,72 @@ pub fn wiki(root: &Path) -> std::io::Result<()> {
         groups.entry(n.cluster).or_default().push(n);
     }
     let mut clusters: Vec<(u32, Vec<&GraphNode>)> = groups.into_iter().collect();
-    clusters.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    clusters.sort_by_key(|(_, nodes)| std::cmp::Reverse(nodes.len()));
 
     let mut index = format!(
         "# {} graph wiki\n\n{} nodes · {} edges · {} clusters · commit {}\n\n## God nodes\n",
-        root.file_name().and_then(|n| n.to_str()).unwrap_or("codebase"),
+        root.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("codebase"),
         g.nodes.len(),
         g.edges.len(),
         clusters.len(),
-        if g.built_at_commit.is_empty() { "(unknown)" } else { &g.built_at_commit }
+        if g.built_at_commit.is_empty() {
+            "(unknown)"
+        } else {
+            &g.built_at_commit
+        }
     );
     for (n, d) in g.god_nodes(10, false) {
         index.push_str(&format!(
             "- `{}` [{}] — {} edges ({}:{}) `graph:{}`\n",
-            n.label, n.kind.as_str(), d, n.file, n.line, n.id
+            n.label,
+            n.kind.as_str(),
+            d,
+            n.file,
+            n.line,
+            n.id
         ));
     }
     index.push_str("\n## Clusters\n");
     for (c, ms) in &clusters {
         let label = ms.first().map(|n| n.cluster_label.as_str()).unwrap_or("?");
-        index.push_str(&format!("- [{}](cluster-{c}.md) — {} nodes\n", label, ms.len()));
+        index.push_str(&format!(
+            "- [{}](cluster-{c}.md) — {} nodes\n",
+            label,
+            ms.len()
+        ));
     }
     index.push_str("\n> Regenerate with `voli graph wiki`. Node ids double as `voli memory note --tags graph:<id>`.\n");
     std::fs::write(dir.join("index.md"), index)?;
 
     for (c, ms) in &clusters {
         let label = ms.first().map(|n| n.cluster_label.as_str()).unwrap_or("?");
-        let mut page = format!("# Cluster `{label}`\n\n{} nodes · [index](index.md)\n\n| symbol | kind | location | edges |\n|---|---|---|---|\n", ms.len());
+        let mut page = format!(
+            "# Cluster `{label}`\n\n{} nodes · [index](index.md)\n\n| symbol | kind | location | edges |\n|---|---|---|---|\n",
+            ms.len()
+        );
         let mut sorted: Vec<&&GraphNode> = ms.iter().collect();
         sorted.sort_by(|a, b| {
-            deg.get(b.id.as_str()).unwrap_or(&0).cmp(deg.get(a.id.as_str()).unwrap_or(&0))
+            deg.get(b.id.as_str())
+                .unwrap_or(&0)
+                .cmp(deg.get(a.id.as_str()).unwrap_or(&0))
         });
         for n in sorted.iter().take(200) {
             page.push_str(&format!(
                 "| `{}` | {} | {}:{} | {} |\n",
-                n.label, n.kind.as_str(), n.file, n.line,
+                n.label,
+                n.kind.as_str(),
+                n.file,
+                n.line,
                 deg.get(n.id.as_str()).unwrap_or(&0)
             ));
         }
         if ms.len() > 200 {
-            page.push_str(&format!("\n…and {} more (see `graph.json`).\n", ms.len() - 200));
+            page.push_str(&format!(
+                "\n…and {} more (see `graph.json`).\n",
+                ms.len() - 200
+            ));
         }
         std::fs::write(dir.join(format!("cluster-{c}.md")), page)?;
     }
@@ -1602,7 +1726,10 @@ pub fn export_svg(root: &Path, top: usize) -> std::io::Result<()> {
         .filter(|n| !matches!(n.kind, NodeKind::File | NodeKind::Crate) && !n.is_test)
         .collect();
     hubs.sort_by(|a, b| {
-        deg.get(b.id.as_str()).unwrap_or(&0).cmp(deg.get(a.id.as_str()).unwrap_or(&0)).then(a.id.cmp(&b.id))
+        deg.get(b.id.as_str())
+            .unwrap_or(&0)
+            .cmp(deg.get(a.id.as_str()).unwrap_or(&0))
+            .then(a.id.cmp(&b.id))
     });
     hubs.truncate(top.max(3));
     let n = hubs.len();
@@ -1615,8 +1742,11 @@ pub fn export_svg(root: &Path, top: usize) -> std::io::Result<()> {
             (cx + r * a.cos(), cy + r * a.sin())
         })
         .collect();
-    let at: HashMap<&str, usize> =
-        hubs.iter().enumerate().map(|(i, x)| (x.id.as_str(), i)).collect();
+    let at: HashMap<&str, usize> = hubs
+        .iter()
+        .enumerate()
+        .map(|(i, x)| (x.id.as_str(), i))
+        .collect();
     let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" font-family=\"sans-serif\">\
         <rect width=\"100%\" height=\"100%\" fill=\"#111\"/>\
@@ -1625,11 +1755,11 @@ pub fn export_svg(root: &Path, top: usize) -> std::io::Result<()> {
     // edges (undirected among hubs, width by multiplicity capped)
     let mut counts: HashMap<(usize, usize), u32> = HashMap::new();
     for e in &g.edges {
-        if let (Some(&a), Some(&b)) = (at.get(e.from.as_str()), at.get(e.to.as_str())) {
-            if a != b {
-                let key = if a < b { (a, b) } else { (b, a) };
-                *counts.entry(key).or_default() += 1;
-            }
+        if let (Some(&a), Some(&b)) = (at.get(e.from.as_str()), at.get(e.to.as_str()))
+            && a != b
+        {
+            let key = if a < b { (a, b) } else { (b, a) };
+            *counts.entry(key).or_default() += 1;
         }
     }
     for ((a, b), c) in &counts {
@@ -1640,7 +1770,7 @@ pub fn export_svg(root: &Path, top: usize) -> std::io::Result<()> {
         ));
     }
     for (i, node) in hubs.iter().enumerate() {
-        let hue = (node.cluster as u32).wrapping_mul(47) % 360;
+        let hue = node.cluster.wrapping_mul(47) % 360;
         let (x, y) = pos[i];
         svg.push_str(&format!(
             "<g><title>{} [{}] {}:{}</title><circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"9\" fill=\"hsl({hue},60%,55%)\"/>\
@@ -1709,7 +1839,11 @@ pub fn query<'a>(g: &'a Graph, question: &str, budget: usize) -> Vec<&'a GraphNo
             out_ids.push(s);
         }
         for (e, _) in g.neighbors(s) {
-            let other = if e.from == s { e.to.as_str() } else { e.from.as_str() };
+            let other = if e.from == s {
+                e.to.as_str()
+            } else {
+                e.from.as_str()
+            };
             if seen.insert(other) {
                 out_ids.push(other);
             }
@@ -1719,7 +1853,12 @@ pub fn query<'a>(g: &'a Graph, question: &str, budget: usize) -> Vec<&'a GraphNo
         .iter()
         .filter_map(|id| idx.get(id).map(|&i| &g.nodes[i]))
         .collect();
-    out.sort_by(|a, b| score.get(b.id.as_str()).unwrap_or(&0).cmp(score.get(a.id.as_str()).unwrap_or(&0)));
+    out.sort_by(|a, b| {
+        score
+            .get(b.id.as_str())
+            .unwrap_or(&0)
+            .cmp(score.get(a.id.as_str()).unwrap_or(&0))
+    });
     out.truncate(budget.max(1));
     out
 }
@@ -1735,7 +1874,9 @@ pub fn resolve<'a>(g: &'a Graph, symbol: &str) -> Vec<&'a GraphNode> {
         let hits: Vec<&GraphNode> = g
             .nodes
             .iter()
-            .filter(|n| n.file.contains(f) && (n.label == sym || n.label.ends_with(&format!("::{sym}"))))
+            .filter(|n| {
+                n.file.contains(f) && (n.label == sym || n.label.ends_with(&format!("::{sym}")))
+            })
             .collect();
         if !hits.is_empty() {
             return hits;
@@ -1877,9 +2018,17 @@ mod tests {
         let labels: Vec<(&str, NodeKind)> =
             g.nodes.iter().map(|n| (n.label.as_str(), n.kind)).collect();
         assert!(labels.contains(&("Store", NodeKind::Struct)));
-        assert!(labels.iter().any(|(l, k)| *k == NodeKind::Method && l.contains("fresh")));
+        assert!(
+            labels
+                .iter()
+                .any(|(l, k)| *k == NodeKind::Method && l.contains("fresh"))
+        );
         assert!(labels.contains(&("setup", NodeKind::Fn)));
-        assert!(g.nodes.iter().any(|n| n.kind == NodeKind::Crate && n.label == "demo"));
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.kind == NodeKind::Crate && n.label == "demo")
+        );
         assert!(g.edges.iter().any(|e| e.relation == "calls"));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1898,8 +2047,20 @@ mod tests {
     fn path_falls_back_to_undirected() {
         let root = fixture_root("path");
         let g = build(&root);
-        let setup = g.nodes.iter().find(|n| n.label == "setup").unwrap().id.clone();
-        let store = g.nodes.iter().find(|n| n.label == "Store").unwrap().id.clone();
+        let setup = g
+            .nodes
+            .iter()
+            .find(|n| n.label == "setup")
+            .unwrap()
+            .id
+            .clone();
+        let store = g
+            .nodes
+            .iter()
+            .find(|n| n.label == "Store")
+            .unwrap()
+            .id
+            .clone();
         assert!(g.shortest_path(&setup, &store).is_some());
         let _ = std::fs::remove_dir_all(&root);
     }

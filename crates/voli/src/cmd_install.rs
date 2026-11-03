@@ -182,7 +182,6 @@ fn local_manifest(packages: &[String]) -> Option<&Path> {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn install_local_path(
     manifest: &Path,
     archive: Option<&Path>,
@@ -452,7 +451,6 @@ fn row_style(color: &str) -> ProgressStyle {
     ProgressStyle::with_template(template).unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn install_network(
     packages: &[String],

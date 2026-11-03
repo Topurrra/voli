@@ -228,7 +228,8 @@ pub fn run(action: &MemoryCmd, force_global: bool) -> i32 {
                 return read_for_hook(*budget, task.as_deref(), *k);
             }
             with_store(|s| {
-                let code = out(s.render_read(*budget, task.as_deref(), *k, &global_core_for_project()));
+                let code =
+                    out(s.render_read(*budget, task.as_deref(), *k, &global_core_for_project()));
                 if code == 0 {
                     print_graph_section(task.as_deref());
                 }

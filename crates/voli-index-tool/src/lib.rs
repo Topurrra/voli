@@ -1073,7 +1073,7 @@ mod tests {
         let key = dir.path().join("key.hex");
         fs::write(&key, hex::encode([5u8; 32])).unwrap();
 
-        let pubkey = sign_assets(&key, &[asset.clone()]).unwrap();
+        let pubkey = sign_assets(&key, std::slice::from_ref(&asset)).unwrap();
         let sig_path = dir.path().join("voli-x86_64-linux.tar.gz.sig");
         assert_eq!(sig_path, {
             let mut p = asset.clone();

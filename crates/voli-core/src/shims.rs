@@ -161,10 +161,10 @@ pub fn shim_owner(shim_file: &Path) -> Option<String> {
     let mut comps = path.components();
     while let Some(comp) = comps.next() {
         if comp.as_os_str() == "apps" {
-            if let Some(owner) = comps.next() {
-                if comps.next().is_some_and(|c| c.as_os_str() == "current") {
-                    return Some(owner.as_os_str().to_string_lossy().into_owned());
-                }
+            if let Some(owner) = comps.next()
+                && comps.next().is_some_and(|c| c.as_os_str() == "current")
+            {
+                return Some(owner.as_os_str().to_string_lossy().into_owned());
             }
             return None;
         }
@@ -194,10 +194,10 @@ pub fn collect_conflicts(
             held_by: None,
         };
         let shim_file = shims_dir.join(format!("{base}.shim"));
-        if let Some(owner) = shim_owner(&shim_file) {
-            if !owner.eq_ignore_ascii_case(self_pkg) {
-                conflict.held_by = Some(owner);
-            }
+        if let Some(owner) = shim_owner(&shim_file)
+            && !owner.eq_ignore_ascii_case(self_pkg)
+        {
+            conflict.held_by = Some(owner);
         }
         if conflict.reserved || conflict.shadows.is_some() || conflict.held_by.is_some() {
             out.push(conflict);
@@ -316,7 +316,7 @@ mod tests {
         fs::create_dir_all(&shims).unwrap();
         // an existing shim owned by another package
         fs::write(
-            &shims.join("scp.shim"),
+            shims.join("scp.shim"),
             format!(
                 "{}\n",
                 tmp.path().join("apps/openssh/current/scp").display()
@@ -375,7 +375,7 @@ mod tests {
         let shims = tmp.path().join("shims");
         fs::create_dir_all(&shims).unwrap();
         fs::write(
-            &shims.join("sudo.shim"),
+            shims.join("sudo.shim"),
             format!(
                 "{}\n",
                 tmp.path().join("apps/psutils/current/sudo.ps1").display()

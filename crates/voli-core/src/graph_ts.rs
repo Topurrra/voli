@@ -36,10 +36,19 @@ thread_local! {
 
 /// Run `f` with a cached compiled pattern (`table`: 0 = defs, 1 = calls,
 /// 2 = imports). Uncompilable patterns are cached as misses.
-fn with_query<T>(lang: TsLang, language: &Language, table: u8, idx: usize, src: &str, f: impl FnOnce(&Query) -> T) -> Option<T> {
+fn with_query<T>(
+    lang: TsLang,
+    language: &Language,
+    table: u8,
+    idx: usize,
+    src: &str,
+    f: impl FnOnce(&Query) -> T,
+) -> Option<T> {
     QUERIES.with(|qc| {
         let mut qc = qc.borrow_mut();
-        let entry = qc.entry((lang, table, idx)).or_insert_with(|| Query::new(language, src).ok());
+        let entry = qc
+            .entry((lang, table, idx))
+            .or_insert_with(|| Query::new(language, src).ok());
         entry.as_ref().map(f)
     })
 }
@@ -433,9 +442,8 @@ const PASCAL_IMPORTS: &[&str] = &[
 ];
 
 // -- Verilog -----------------------------------------------------------------------------
-const VERILOG_DEFS: &[&str] = &[
-    "(module_declaration (module_header (module_keyword) . (simple_identifier) @n)) @d.mod",
-];
+const VERILOG_DEFS: &[&str] =
+    &["(module_declaration (module_header (module_keyword) . (simple_identifier) @n)) @d.mod"];
 const VERILOG_CALLS: &[&str] = &["(module_instantiation (simple_identifier) @cn) @c"];
 
 // -- Fortran -------------------------------------------------------------------------------
@@ -467,9 +475,8 @@ const OCAML_DEFS: &[&str] = &[
     "(module_binding (module_name) @n) @d.mod",
     "(value_definition (let_binding pattern: (value_name) @n)) @d.fn",
 ];
-const OCAML_CALLS: &[&str] = &[
-    "(application_expression function: (value_path (value_name) @cn)) @c",
-];
+const OCAML_CALLS: &[&str] =
+    &["(application_expression function: (value_path (value_name) @cn)) @c"];
 const OCAML_IMPORTS: &[&str] = &["(open_module (module_name) @i) @imp"];
 
 // -- PowerShell -------------------------------------------------------------------------------------
@@ -526,42 +533,170 @@ const CSHARP_BASES: &[&str] = &[
     "(class_declaration name: (identifier) @n (base_list (identifier) @b)) @d.class",
     "(class_declaration name: (identifier) @n (base_list (qualified_name) @b)) @d.class",
 ];
-const RUBY_BASES: &[&str] = &[
-    "(class name: (constant) @n superclass: (superclass (constant) @b)) @d.class",
-];
-const PHP_BASES: &[&str] = &[
-    "(class_declaration name: (name) @n (base_clause (name) @b)) @d.class",
-];
+const RUBY_BASES: &[&str] =
+    &["(class name: (constant) @n superclass: (superclass (constant) @b)) @d.class"];
+const PHP_BASES: &[&str] =
+    &["(class_declaration name: (name) @n (base_clause (name) @b)) @d.class"];
 const RUST_IMPL: &[&str] = &["(impl_item trait: (type_identifier) @t type: (type_identifier) @y)"];
 
 fn queries(lang: TsLang) -> Option<LangQueries> {
     Some(match lang {
-        TsLang::Rust => LangQueries { defs: RUST_DEFS, more_defs: RUST_IMPL, calls: RUST_CALLS, imports: RUST_IMPORTS },
-        TsLang::Python => LangQueries { defs: PYTHON_DEFS, more_defs: PYTHON_BASES, calls: PYTHON_CALLS, imports: PYTHON_IMPORTS },
-        TsLang::JavaScript => LangQueries { defs: JS_DEFS, more_defs: NO_MORE, calls: JS_CALLS, imports: JS_IMPORTS },
-        TsLang::TypeScript | TsLang::Tsx => LangQueries { defs: TS_DEFS, more_defs: TS_BASES, calls: JS_CALLS, imports: JS_IMPORTS },
-        TsLang::Go => LangQueries { defs: GO_DEFS, more_defs: NO_MORE, calls: GO_CALLS, imports: GO_IMPORTS },
-        TsLang::Java => LangQueries { defs: JAVA_DEFS, more_defs: JAVA_BASES, calls: JAVA_CALLS, imports: JAVA_IMPORTS },
-        TsLang::C => LangQueries { defs: C_DEFS, more_defs: NO_MORE, calls: C_CALLS, imports: C_IMPORTS },
-        TsLang::Cpp => LangQueries { defs: CPP_DEFS, more_defs: CPP_BASES, calls: C_CALLS, imports: C_IMPORTS },
-        TsLang::CSharp => LangQueries { defs: CSHARP_DEFS, more_defs: CSHARP_BASES, calls: CSHARP_CALLS, imports: CSHARP_IMPORTS },
-        TsLang::Ruby => LangQueries { defs: RUBY_DEFS, more_defs: RUBY_BASES, calls: RUBY_CALLS, imports: RUBY_IMPORTS },
-        TsLang::Bash => LangQueries { defs: BASH_DEFS, more_defs: NO_MORE, calls: BASH_CALLS, imports: BASH_IMPORTS },
-        TsLang::Php => LangQueries { defs: PHP_DEFS, more_defs: PHP_BASES, calls: PHP_CALLS, imports: PHP_IMPORTS },
-        TsLang::Scala => LangQueries { defs: SCALA_DEFS, more_defs: NO_MORE, calls: SCALA_CALLS, imports: SCALA_IMPORTS },
-        TsLang::Zig => LangQueries { defs: ZIG_DEFS, more_defs: NO_MORE, calls: NO_CALLS, imports: ZIG_IMPORTS },
-        TsLang::Julia => LangQueries { defs: JULIA_DEFS, more_defs: NO_MORE, calls: JULIA_CALLS, imports: JULIA_IMPORTS },
-        TsLang::Groovy => LangQueries { defs: GROOVY_DEFS, more_defs: NO_MORE, calls: GROOVY_CALLS, imports: GROOVY_IMPORTS },
-        TsLang::Pascal => LangQueries { defs: PASCAL_DEFS, more_defs: NO_MORE, calls: PASCAL_CALLS, imports: PASCAL_IMPORTS },
-        TsLang::Verilog => LangQueries { defs: VERILOG_DEFS, more_defs: NO_MORE, calls: VERILOG_CALLS, imports: NO_IMPORTS },
-        TsLang::Fortran => LangQueries { defs: FORTRAN_DEFS, more_defs: NO_MORE, calls: FORTRAN_CALLS, imports: NO_IMPORTS },
-        TsLang::ObjC => LangQueries { defs: OBJC_DEFS, more_defs: NO_MORE, calls: OBJC_CALLS, imports: C_IMPORTS },
-        TsLang::Ocaml => LangQueries { defs: OCAML_DEFS, more_defs: NO_MORE, calls: OCAML_CALLS, imports: OCAML_IMPORTS },
-        TsLang::PowerShell => LangQueries { defs: POWERSHELL_DEFS, more_defs: NO_MORE, calls: POWERSHELL_CALLS, imports: POWERSHELL_IMPORTS },
-        TsLang::Css => LangQueries { defs: CSS_DEFS, more_defs: NO_MORE, calls: NO_CALLS, imports: NO_IMPORTS },
-        TsLang::Xml => LangQueries { defs: XML_DEFS, more_defs: NO_MORE, calls: NO_CALLS, imports: NO_IMPORTS },
-        TsLang::Json => LangQueries { defs: JSON_DEFS, more_defs: NO_MORE, calls: NO_CALLS, imports: NO_IMPORTS },
-        TsLang::Yaml => LangQueries { defs: YAML_DEFS, more_defs: NO_MORE, calls: NO_CALLS, imports: NO_IMPORTS },
+        TsLang::Rust => LangQueries {
+            defs: RUST_DEFS,
+            more_defs: RUST_IMPL,
+            calls: RUST_CALLS,
+            imports: RUST_IMPORTS,
+        },
+        TsLang::Python => LangQueries {
+            defs: PYTHON_DEFS,
+            more_defs: PYTHON_BASES,
+            calls: PYTHON_CALLS,
+            imports: PYTHON_IMPORTS,
+        },
+        TsLang::JavaScript => LangQueries {
+            defs: JS_DEFS,
+            more_defs: NO_MORE,
+            calls: JS_CALLS,
+            imports: JS_IMPORTS,
+        },
+        TsLang::TypeScript | TsLang::Tsx => LangQueries {
+            defs: TS_DEFS,
+            more_defs: TS_BASES,
+            calls: JS_CALLS,
+            imports: JS_IMPORTS,
+        },
+        TsLang::Go => LangQueries {
+            defs: GO_DEFS,
+            more_defs: NO_MORE,
+            calls: GO_CALLS,
+            imports: GO_IMPORTS,
+        },
+        TsLang::Java => LangQueries {
+            defs: JAVA_DEFS,
+            more_defs: JAVA_BASES,
+            calls: JAVA_CALLS,
+            imports: JAVA_IMPORTS,
+        },
+        TsLang::C => LangQueries {
+            defs: C_DEFS,
+            more_defs: NO_MORE,
+            calls: C_CALLS,
+            imports: C_IMPORTS,
+        },
+        TsLang::Cpp => LangQueries {
+            defs: CPP_DEFS,
+            more_defs: CPP_BASES,
+            calls: C_CALLS,
+            imports: C_IMPORTS,
+        },
+        TsLang::CSharp => LangQueries {
+            defs: CSHARP_DEFS,
+            more_defs: CSHARP_BASES,
+            calls: CSHARP_CALLS,
+            imports: CSHARP_IMPORTS,
+        },
+        TsLang::Ruby => LangQueries {
+            defs: RUBY_DEFS,
+            more_defs: RUBY_BASES,
+            calls: RUBY_CALLS,
+            imports: RUBY_IMPORTS,
+        },
+        TsLang::Bash => LangQueries {
+            defs: BASH_DEFS,
+            more_defs: NO_MORE,
+            calls: BASH_CALLS,
+            imports: BASH_IMPORTS,
+        },
+        TsLang::Php => LangQueries {
+            defs: PHP_DEFS,
+            more_defs: PHP_BASES,
+            calls: PHP_CALLS,
+            imports: PHP_IMPORTS,
+        },
+        TsLang::Scala => LangQueries {
+            defs: SCALA_DEFS,
+            more_defs: NO_MORE,
+            calls: SCALA_CALLS,
+            imports: SCALA_IMPORTS,
+        },
+        TsLang::Zig => LangQueries {
+            defs: ZIG_DEFS,
+            more_defs: NO_MORE,
+            calls: NO_CALLS,
+            imports: ZIG_IMPORTS,
+        },
+        TsLang::Julia => LangQueries {
+            defs: JULIA_DEFS,
+            more_defs: NO_MORE,
+            calls: JULIA_CALLS,
+            imports: JULIA_IMPORTS,
+        },
+        TsLang::Groovy => LangQueries {
+            defs: GROOVY_DEFS,
+            more_defs: NO_MORE,
+            calls: GROOVY_CALLS,
+            imports: GROOVY_IMPORTS,
+        },
+        TsLang::Pascal => LangQueries {
+            defs: PASCAL_DEFS,
+            more_defs: NO_MORE,
+            calls: PASCAL_CALLS,
+            imports: PASCAL_IMPORTS,
+        },
+        TsLang::Verilog => LangQueries {
+            defs: VERILOG_DEFS,
+            more_defs: NO_MORE,
+            calls: VERILOG_CALLS,
+            imports: NO_IMPORTS,
+        },
+        TsLang::Fortran => LangQueries {
+            defs: FORTRAN_DEFS,
+            more_defs: NO_MORE,
+            calls: FORTRAN_CALLS,
+            imports: NO_IMPORTS,
+        },
+        TsLang::ObjC => LangQueries {
+            defs: OBJC_DEFS,
+            more_defs: NO_MORE,
+            calls: OBJC_CALLS,
+            imports: C_IMPORTS,
+        },
+        TsLang::Ocaml => LangQueries {
+            defs: OCAML_DEFS,
+            more_defs: NO_MORE,
+            calls: OCAML_CALLS,
+            imports: OCAML_IMPORTS,
+        },
+        TsLang::PowerShell => LangQueries {
+            defs: POWERSHELL_DEFS,
+            more_defs: NO_MORE,
+            calls: POWERSHELL_CALLS,
+            imports: POWERSHELL_IMPORTS,
+        },
+        TsLang::Css => LangQueries {
+            defs: CSS_DEFS,
+            more_defs: NO_MORE,
+            calls: NO_CALLS,
+            imports: NO_IMPORTS,
+        },
+        TsLang::Xml => LangQueries {
+            defs: XML_DEFS,
+            more_defs: NO_MORE,
+            calls: NO_CALLS,
+            imports: NO_IMPORTS,
+        },
+        TsLang::Json => LangQueries {
+            defs: JSON_DEFS,
+            more_defs: NO_MORE,
+            calls: NO_CALLS,
+            imports: NO_IMPORTS,
+        },
+        TsLang::Yaml => LangQueries {
+            defs: YAML_DEFS,
+            more_defs: NO_MORE,
+            calls: NO_CALLS,
+            imports: NO_IMPORTS,
+        },
         // Json / Html / Yaml / Xml: file nodes only (no symbol queries v1).
         _ => return None,
     })
@@ -600,12 +735,12 @@ pub fn extract(lang: TsLang, text: &str) -> Option<TsFile> {
     let language = language(lang);
     let tree = PARSERS.with(|ps| {
         let mut ps = ps.borrow_mut();
-        if !ps.contains_key(&lang) {
+        if let std::collections::hash_map::Entry::Vacant(e) = ps.entry(lang) {
             let mut p = Parser::new();
             if p.set_language(&language).is_err() {
                 return None;
             }
-            ps.insert(lang, p);
+            e.insert(p);
         }
         ps.get_mut(&lang).unwrap().parse(text, None)
     })?;
@@ -613,14 +748,24 @@ pub fn extract(lang: TsLang, text: &str) -> Option<TsFile> {
     if root.named_child_count() == 0 && !text.trim().is_empty() {
         return None; // degenerate parse — fall back
     }
-    let mut out = TsFile::default();
-    out.broken = error_fraction(root) > 0.5;
+    let mut out = TsFile {
+        broken: error_fraction(root) > 0.5,
+        ..Default::default()
+    };
     let bytes = text.as_bytes();
 
     // --- defs (each pattern compiled independently) ---
     // (def node, kind, name, detail, parent-qualifier, bases, is marker)
-    let mut raw: Vec<(Node, NodeKind, String, String, Option<String>, Vec<String>, bool)> =
-        Vec::new();
+    type RawDef<'g> = (
+        Node<'g>,
+        NodeKind,
+        String,
+        String,
+        Option<String>,
+        Vec<String>,
+        bool,
+    );
+    let mut raw: Vec<RawDef<'_>> = Vec::new();
     // (self-type, trait) pairs for `impl Trait for Type`
     let mut impl_edges: Vec<(String, String)> = Vec::new();
     for (pidx, pattern) in q.defs.iter().chain(q.more_defs).enumerate() {
@@ -629,71 +774,73 @@ pub fn extract(lang: TsLang, text: &str) -> Option<TsFile> {
             let mut cursor = QueryCursor::new();
             let mut matches = cursor.matches(dq, root, bytes);
             while let Some(m) = matches.next() {
-            let mut def_node: Option<Node> = None;
-            let mut def_kind: Option<NodeKind> = None;
-            let mut name_node: Option<Node> = None;
-            let mut detail_node: Option<Node> = None;
-            let mut qual_node: Option<Node> = None;
-            let mut base_nodes: Vec<Node> = Vec::new();
-            let mut trait_node: Option<Node> = None;
-            let mut self_node: Option<Node> = None;
-            let mut is_impl = false;
-            for cap in m.captures {
-                let cname = &names[cap.index as usize];
-                if cname == "n" {
-                    if name_node.is_none() {
-                        name_node = Some(cap.node); // first name wins (ObjC selectors)
-                    }
-                } else if cname == "x" {
-                    detail_node = Some(cap.node);
-                } else if cname == "qn" {
-                    qual_node = Some(cap.node);
-                } else if cname == "b" {
-                    base_nodes.push(cap.node);
-                } else if cname == "t" {
-                    trait_node = Some(cap.node);
-                } else if cname == "y" {
-                    self_node = Some(cap.node);
-                } else if *cname == "d.impl" {
-                    is_impl = true;
-                    def_node = Some(cap.node);
-                } else if let Some(k) = kind_of(cname) {
-                    def_node = Some(cap.node);
-                    def_kind = Some(k);
-                }
-            }
-            // `impl Trait for Type` — no symbol, just an edge pair.
-            if let (Some(t), Some(y)) = (trait_node, self_node) {
-                let (tr, ty) = (text_of(t, text), text_of(y, text));
-                if !tr.is_empty() && !ty.is_empty() {
-                    impl_edges.push((ty, tr));
-                }
-            }
-            let Some(dn) = def_node else { continue };
-            if is_impl {
-                if let Some(nn) = name_node {
-                    let nm = text_of(nn, text);
-                    if !nm.is_empty() {
-                        raw.push((dn, NodeKind::Other, nm, String::new(), None, vec![], true));
+                let mut def_node: Option<Node> = None;
+                let mut def_kind: Option<NodeKind> = None;
+                let mut name_node: Option<Node> = None;
+                let mut detail_node: Option<Node> = None;
+                let mut qual_node: Option<Node> = None;
+                let mut base_nodes: Vec<Node> = Vec::new();
+                let mut trait_node: Option<Node> = None;
+                let mut self_node: Option<Node> = None;
+                let mut is_impl = false;
+                for cap in m.captures {
+                    let cname = &names[cap.index as usize];
+                    if cname == "n" {
+                        if name_node.is_none() {
+                            name_node = Some(cap.node); // first name wins (ObjC selectors)
+                        }
+                    } else if cname == "x" {
+                        detail_node = Some(cap.node);
+                    } else if cname == "qn" {
+                        qual_node = Some(cap.node);
+                    } else if cname == "b" {
+                        base_nodes.push(cap.node);
+                    } else if cname == "t" {
+                        trait_node = Some(cap.node);
+                    } else if cname == "y" {
+                        self_node = Some(cap.node);
+                    } else if *cname == "d.impl" {
+                        is_impl = true;
+                        def_node = Some(cap.node);
+                    } else if let Some(k) = kind_of(cname) {
+                        def_node = Some(cap.node);
+                        def_kind = Some(k);
                     }
                 }
-                continue;
-            }
-            let (Some(dk), Some(nn)) = (def_kind, name_node) else {
-                continue;
-            };
-            let name = text_of(nn, text);
-            if name.is_empty() {
-                continue;
-            }
-            let detail = detail_node.map(|x| text_of(x, text)).unwrap_or_default();
-            let qual = qual_node.map(|x| text_of(x, text)).filter(|s| !s.is_empty());
-            let bases: Vec<String> = base_nodes
-                .iter()
-                .map(|b| text_of(*b, text))
-                .map(|s| short_name(&s))
-                .filter(|s| !s.is_empty())
-                .collect();
+                // `impl Trait for Type` — no symbol, just an edge pair.
+                if let (Some(t), Some(y)) = (trait_node, self_node) {
+                    let (tr, ty) = (text_of(t, text), text_of(y, text));
+                    if !tr.is_empty() && !ty.is_empty() {
+                        impl_edges.push((ty, tr));
+                    }
+                }
+                let Some(dn) = def_node else { continue };
+                if is_impl {
+                    if let Some(nn) = name_node {
+                        let nm = text_of(nn, text);
+                        if !nm.is_empty() {
+                            raw.push((dn, NodeKind::Other, nm, String::new(), None, vec![], true));
+                        }
+                    }
+                    continue;
+                }
+                let (Some(dk), Some(nn)) = (def_kind, name_node) else {
+                    continue;
+                };
+                let name = text_of(nn, text);
+                if name.is_empty() {
+                    continue;
+                }
+                let detail = detail_node.map(|x| text_of(x, text)).unwrap_or_default();
+                let qual = qual_node
+                    .map(|x| text_of(x, text))
+                    .filter(|s| !s.is_empty());
+                let bases: Vec<String> = base_nodes
+                    .iter()
+                    .map(|b| text_of(*b, text))
+                    .map(|s| short_name(&s))
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 raw.push((dn, dk, name, detail, qual, bases, false));
             }
         });
@@ -701,8 +848,7 @@ pub fn extract(lang: TsLang, text: &str) -> Option<TsFile> {
 
     // dedupe: several patterns can match one node (plain + heritage).
     // Merge by (range, name): union bases, first qualifier wins.
-    let mut merged: Vec<(Node, NodeKind, String, String, Option<String>, Vec<String>, bool)> =
-        Vec::new();
+    let mut merged: Vec<RawDef<'_>> = Vec::new();
     let mut pos: HashMap<(usize, usize, String), usize> = HashMap::new();
     for (dn, dk, name, detail, qual, bases, is_marker) in raw {
         let key = (dn.start_byte(), dn.end_byte(), name.clone());
@@ -730,8 +876,8 @@ pub fn extract(lang: TsLang, text: &str) -> Option<TsFile> {
     // Mod scopes do NOT method-ify (Julia/OCaml module functions stay Fn).
     let mut scopes: Vec<(usize, usize, String, bool)> = Vec::new();
     for (dn, dk, name, _detail, _qual, _bases, is_marker) in &raw {
-        let methodify = *is_marker
-            || matches!(dk, NodeKind::Struct | NodeKind::Enum | NodeKind::Trait);
+        let methodify =
+            *is_marker || matches!(dk, NodeKind::Struct | NodeKind::Enum | NodeKind::Trait);
         if methodify || matches!(dk, NodeKind::Mod) {
             scopes.push((dn.start_byte(), dn.end_byte(), name.clone(), methodify));
         }
@@ -824,17 +970,17 @@ pub fn extract(lang: TsLang, text: &str) -> Option<TsFile> {
             let mut cursor = QueryCursor::new();
             let mut matches = cursor.matches(cq, root, bytes);
             while let Some(m) = matches.next() {
-            let mut cnode: Option<Node> = None;
-            let mut name: Option<String> = None;
-            let mut qual: Option<String> = None;
-            for cap in m.captures {
-                match cnames[cap.index as usize].as_str() {
-                    "c" => cnode = Some(cap.node),
-                    "cn" => name = Some(text_of(cap.node, text)),
-                    "cq" => qual = Some(text_of(cap.node, text)),
-                    _ => {}
+                let mut cnode: Option<Node> = None;
+                let mut name: Option<String> = None;
+                let mut qual: Option<String> = None;
+                for cap in m.captures {
+                    match cnames[cap.index as usize].as_str() {
+                        "c" => cnode = Some(cap.node),
+                        "cn" => name = Some(text_of(cap.node, text)),
+                        "cq" => qual = Some(text_of(cap.node, text)),
+                        _ => {}
+                    }
                 }
-            }
                 if let (Some(cn), Some(n)) = (cnode, name) {
                     if n.is_empty() {
                         continue;
@@ -851,7 +997,8 @@ pub fn extract(lang: TsLang, text: &str) -> Option<TsFile> {
 
     // dedupe calls (same site can match several patterns)
     let mut seen = std::collections::HashSet::new();
-    out.calls.retain(|c| seen.insert((c.start_byte, c.name.clone(), c.qualifier.clone())));
+    out.calls
+        .retain(|c| seen.insert((c.start_byte, c.name.clone(), c.qualifier.clone())));
 
     Some(out)
 }
@@ -859,13 +1006,20 @@ pub fn extract(lang: TsLang, text: &str) -> Option<TsFile> {
 /// `a::b::C<T>` / `a.b.C` → `C`.
 fn short_name(s: &str) -> String {
     let s = s.split('<').next().unwrap_or(s).trim();
-    s.rsplit("::").next().unwrap_or(s).rsplit('.').next().unwrap_or(s).trim().to_string()
+    s.rsplit("::")
+        .next()
+        .unwrap_or(s)
+        .rsplit('.')
+        .next()
+        .unwrap_or(s)
+        .trim()
+        .to_string()
 }
 
 /// `func (s *Store)` / `func (s Store)` → `Store`.
 fn go_receiver(detail: &str) -> Option<String> {
     let inner = detail.trim().trim_start_matches('(').trim_end_matches(')');
-    for tok in inner.split(|c: char| c == ' ' || c == '\t' || c == ',') {
+    for tok in inner.split([' ', '\t', ',']) {
         let t = tok.trim().trim_start_matches('*').trim_start_matches("[]");
         if t.len() > 1 && t.starts_with(|c: char| c.is_uppercase()) {
             return Some(t.to_string());
@@ -893,7 +1047,7 @@ fn error_fraction(root: Node) -> f64 {
 }
 
 /// Enclosing item for a byte offset (smallest containing def).
-pub fn enclosing<'a>(items: &'a [TsItem], byte: usize) -> Option<&'a TsItem> {
+pub fn enclosing(items: &[TsItem], byte: usize) -> Option<&TsItem> {
     let mut best: Option<&TsItem> = None;
     let mut best_size = usize::MAX;
     for it in items {
@@ -932,13 +1086,31 @@ mod tests {
             TsLang::Rust,
             "use crate::store::Store;\n\npub struct Store;\nimpl Store {\n  pub fn fresh() -> Store { Store }\n}\npub fn setup() { let _ = Store::fresh(); }\n",
         );
-        let names: Vec<(&str, NodeKind)> =
-            f.items.iter().map(|i| (i.qualified.as_str(), i.kind)).collect();
+        let names: Vec<(&str, NodeKind)> = f
+            .items
+            .iter()
+            .map(|i| (i.qualified.as_str(), i.kind))
+            .collect();
         assert!(names.contains(&("Store", NodeKind::Struct)), "{names:?}");
-        assert!(names.iter().any(|(n, k)| *k == NodeKind::Method && n.contains("fresh")), "{names:?}");
+        assert!(
+            names
+                .iter()
+                .any(|(n, k)| *k == NodeKind::Method && n.contains("fresh")),
+            "{names:?}"
+        );
         assert!(names.contains(&("setup", NodeKind::Fn)), "{names:?}");
-        assert!(f.imports.iter().any(|i| i.contains("Store")), "{:?}", f.imports);
-        assert!(f.calls.iter().any(|c| c.name == "fresh" && c.qualifier.as_deref() == Some("Store")), "{:?}", f.calls);
+        assert!(
+            f.imports.iter().any(|i| i.contains("Store")),
+            "{:?}",
+            f.imports
+        );
+        assert!(
+            f.calls
+                .iter()
+                .any(|c| c.name == "fresh" && c.qualifier.as_deref() == Some("Store")),
+            "{:?}",
+            f.calls
+        );
     }
 
     #[test]
@@ -947,8 +1119,18 @@ mod tests {
             TsLang::Python,
             "from .store import Store\n\nclass Store:\n  def fresh(self):\n    return Store()\n",
         );
-        assert!(f.items.iter().any(|i| i.name == "Store" && i.kind == NodeKind::Struct), "{:?}", f.items);
-        assert!(f.items.iter().any(|i| i.qualified == "Store::fresh"), "{:?}", f.items);
+        assert!(
+            f.items
+                .iter()
+                .any(|i| i.name == "Store" && i.kind == NodeKind::Struct),
+            "{:?}",
+            f.items
+        );
+        assert!(
+            f.items.iter().any(|i| i.qualified == "Store::fresh"),
+            "{:?}",
+            f.items
+        );
         assert!(f.calls.iter().any(|c| c.name == "Store"), "{:?}", f.calls);
     }
 
@@ -959,7 +1141,11 @@ mod tests {
             "import { Store } from './store.js';\nclass Store {\n  fresh() { return new Store(); }\n}\n",
         );
         assert!(f.items.iter().any(|i| i.name == "Store"), "{:?}", f.items);
-        assert!(f.imports.iter().any(|i| i.contains("store")), "{:?}", f.imports);
+        assert!(
+            f.imports.iter().any(|i| i.contains("store")),
+            "{:?}",
+            f.imports
+        );
     }
 
     #[test]
@@ -976,25 +1162,115 @@ mod tests {
     fn every_table_language_yields_defs() {
         // (lang, snippet, expected symbol, expected kind)
         let cases: &[(TsLang, &str, &str, NodeKind)] = &[
-            (TsLang::TypeScript, "class Store {\n  fresh(): Store { return new Store(); }\n}\n", "Store", NodeKind::Struct),
-            (TsLang::Java, "class Store {\n  Store fresh() { return new Store(); }\n}\n", "Store", NodeKind::Struct),
-            (TsLang::C, "struct Point { int x; };\nint add(int a) { return a; }\n", "Point", NodeKind::Struct),
-            (TsLang::Cpp, "class Store {\n  Store fresh() { return Store(); }\n};\n", "Store", NodeKind::Struct),
-            (TsLang::CSharp, "class Store {\n  Store Fresh() { return new Store(); }\n}\n", "Store", NodeKind::Struct),
-            (TsLang::Ruby, "class Store\n  def fresh\n  end\nend\n", "Store", NodeKind::Struct),
+            (
+                TsLang::TypeScript,
+                "class Store {\n  fresh(): Store { return new Store(); }\n}\n",
+                "Store",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::Java,
+                "class Store {\n  Store fresh() { return new Store(); }\n}\n",
+                "Store",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::C,
+                "struct Point { int x; };\nint add(int a) { return a; }\n",
+                "Point",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::Cpp,
+                "class Store {\n  Store fresh() { return Store(); }\n};\n",
+                "Store",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::CSharp,
+                "class Store {\n  Store Fresh() { return new Store(); }\n}\n",
+                "Store",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::Ruby,
+                "class Store\n  def fresh\n  end\nend\n",
+                "Store",
+                NodeKind::Struct,
+            ),
             (TsLang::Bash, "fail() { echo hi; }\n", "fail", NodeKind::Fn),
-            (TsLang::Php, "<?php\nclass Store {\n  public function fresh() {}\n}\n", "Store", NodeKind::Struct),
-            (TsLang::Scala, "class Store {\n  def fresh(): Store = new Store()\n}\n", "Store", NodeKind::Struct),
-            (TsLang::Zig, "const Store = struct {\n  pub fn fresh() Store { return .{}; }\n};\n", "Store", NodeKind::Struct),
-            (TsLang::Julia, "module M\nfunction fresh() 1 end\nend\n", "fresh", NodeKind::Fn),
-            (TsLang::Groovy, "class Store {\n  def fresh() {}\n}\n", "Store", NodeKind::Struct),
-            (TsLang::Pascal, "unit U;\ninterface\ntype TStore = class\nend;\nend.\n", "TStore", NodeKind::Struct),
-            (TsLang::Verilog, "module adder(input a, output b);\nendmodule\n", "adder", NodeKind::Mod),
-            (TsLang::Fortran, "module m\ncontains\nsubroutine hello()\nend subroutine\nend module\n", "hello", NodeKind::Fn),
-            (TsLang::ObjC, "@interface Store : NSObject\n@end\n", "Store", NodeKind::Struct),
-            (TsLang::Ocaml, "module Store = struct\nend\n", "Store", NodeKind::Mod),
-            (TsLang::PowerShell, "function Get-Store {\n  Get-Item .\n}\n", "Get-Store", NodeKind::Fn),
-            (TsLang::Css, ".card { color: red; }\n", ".card", NodeKind::Style),
+            (
+                TsLang::Php,
+                "<?php\nclass Store {\n  public function fresh() {}\n}\n",
+                "Store",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::Scala,
+                "class Store {\n  def fresh(): Store = new Store()\n}\n",
+                "Store",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::Zig,
+                "const Store = struct {\n  pub fn fresh() Store { return .{}; }\n};\n",
+                "Store",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::Julia,
+                "module M\nfunction fresh() 1 end\nend\n",
+                "fresh",
+                NodeKind::Fn,
+            ),
+            (
+                TsLang::Groovy,
+                "class Store {\n  def fresh() {}\n}\n",
+                "Store",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::Pascal,
+                "unit U;\ninterface\ntype TStore = class\nend;\nend.\n",
+                "TStore",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::Verilog,
+                "module adder(input a, output b);\nendmodule\n",
+                "adder",
+                NodeKind::Mod,
+            ),
+            (
+                TsLang::Fortran,
+                "module m\ncontains\nsubroutine hello()\nend subroutine\nend module\n",
+                "hello",
+                NodeKind::Fn,
+            ),
+            (
+                TsLang::ObjC,
+                "@interface Store : NSObject\n@end\n",
+                "Store",
+                NodeKind::Struct,
+            ),
+            (
+                TsLang::Ocaml,
+                "module Store = struct\nend\n",
+                "Store",
+                NodeKind::Mod,
+            ),
+            (
+                TsLang::PowerShell,
+                "function Get-Store {\n  Get-Item .\n}\n",
+                "Get-Store",
+                NodeKind::Fn,
+            ),
+            (
+                TsLang::Css,
+                ".card { color: red; }\n",
+                ".card",
+                NodeKind::Style,
+            ),
         ];
         for (lang, src, want, kind) in cases {
             let f = defs(*lang, src);
@@ -1008,10 +1284,16 @@ mod tests {
 
     #[test]
     fn structured_configs() {
-        let f = defs(TsLang::Xml, "<Project>\n  <ItemGroup>\n    <Compile Include=\"a.cs\" />\n  </ItemGroup>\n</Project>\n");
+        let f = defs(
+            TsLang::Xml,
+            "<Project>\n  <ItemGroup>\n    <Compile Include=\"a.cs\" />\n  </ItemGroup>\n</Project>\n",
+        );
         assert!(f.items.iter().any(|i| i.name == "Project"), "{:?}", f.items);
         assert!(f.items.iter().any(|i| i.name == "Compile"), "{:?}", f.items);
-        let f = defs(TsLang::Json, "{\"name\": \"x\", \"scripts\": {\"t\": \"y\"}}\n");
+        let f = defs(
+            TsLang::Json,
+            "{\"name\": \"x\", \"scripts\": {\"t\": \"y\"}}\n",
+        );
         assert!(f.items.iter().any(|i| i.name == "name"), "{:?}", f.items);
         assert!(f.items.iter().any(|i| i.name == "scripts"), "{:?}", f.items);
         let f = defs(TsLang::Yaml, "jobs:\n  build:\n    runs-on: ubuntu\n");
@@ -1020,14 +1302,19 @@ mod tests {
     }
 
     #[test]
-    fn inheritance_captured() {        let f = defs(TsLang::Python, "class Store(Base):\n  pass\n");
+    fn inheritance_captured() {
+        let f = defs(TsLang::Python, "class Store(Base):\n  pass\n");
         let s = f.items.iter().find(|i| i.name == "Store").unwrap();
         assert!(s.bases.contains(&"Base".to_string()), "{s:?}");
         let f = defs(TsLang::Java, "class Store extends Base {\n}\n");
         let s = f.items.iter().find(|i| i.name == "Store").unwrap();
         assert!(s.bases.contains(&"Base".to_string()), "{s:?}");
         let f = defs(TsLang::Rust, "trait T {}\nstruct S;\nimpl T for S {}\n");
-        assert!(f.impls.iter().any(|e| e.ty == "S" && e.tr == "T"), "{:?}", f.impls);
+        assert!(
+            f.impls.iter().any(|e| e.ty == "S" && e.tr == "T"),
+            "{:?}",
+            f.impls
+        );
     }
 
     #[test]
@@ -1035,47 +1322,134 @@ mod tests {
         // Prints S-expressions so queries can be authored for the remaining
         // grammars. Run with --nocapture and read the output.
         let cases: &[(TsLang, &str)] = &[
-            (TsLang::Scala, "class Store {\n  def fresh(): Store = new Store()\n}\n"),
-            (TsLang::Zig, "const Store = struct {\n  pub fn fresh() Store { return .{}; }\n};\n"),
-            (TsLang::Julia, "module M\nstruct Store end\nfunction fresh() Store() end\nend\n"),
-            (TsLang::PowerShell, "function Get-Store {\n  Get-Item .\n}\n"),
-            (TsLang::Php, "<?php\nclass Store {\n  public function fresh() { return new Store(); }\n}\n"),
-            (TsLang::Ruby, "class Store < Base\n  def fresh\n    Store.new\n  end\nend\n"),
-            (TsLang::Java, "import a.B;\nclass Store extends Base {\n  Store fresh() { return new Store(); }\n}\n"),
-            (TsLang::CSharp, "using System;\nclass Store {\n  Store Fresh() { return new Store(); }\n}\n"),
+            (
+                TsLang::Scala,
+                "class Store {\n  def fresh(): Store = new Store()\n}\n",
+            ),
+            (
+                TsLang::Zig,
+                "const Store = struct {\n  pub fn fresh() Store { return .{}; }\n};\n",
+            ),
+            (
+                TsLang::Julia,
+                "module M\nstruct Store end\nfunction fresh() Store() end\nend\n",
+            ),
+            (
+                TsLang::PowerShell,
+                "function Get-Store {\n  Get-Item .\n}\n",
+            ),
+            (
+                TsLang::Php,
+                "<?php\nclass Store {\n  public function fresh() { return new Store(); }\n}\n",
+            ),
+            (
+                TsLang::Ruby,
+                "class Store < Base\n  def fresh\n    Store.new\n  end\nend\n",
+            ),
+            (
+                TsLang::Java,
+                "import a.B;\nclass Store extends Base {\n  Store fresh() { return new Store(); }\n}\n",
+            ),
+            (
+                TsLang::CSharp,
+                "using System;\nclass Store {\n  Store Fresh() { return new Store(); }\n}\n",
+            ),
         ];
         for (lang, src) in cases {
-            println!("=== {lang:?} ===\n{}\n", sexp(*lang, src).unwrap_or_default());
+            println!(
+                "=== {lang:?} ===\n{}\n",
+                sexp(*lang, src).unwrap_or_default()
+            );
         }
         let more: &[(TsLang, &str)] = &[
-            (TsLang::TypeScript, "import { A } from './a';\ninterface Box {\n  v: number;\n}\ntype Name = string;\nclass Store implements Box {\n  v = 0;\n  fresh(): Store { return new Store(); }\n}\nfunction top() { return new Store().fresh(); }\n"),
-            (TsLang::C, "#include <stdio.h>\nstruct Point { int x; };\nint add(int a) { return add(a); }\n"),
-            (TsLang::Cpp, "#include <x.h>\nnamespace N {\nclass Store : public Base {\n  Store fresh() { return Store(); }\n};\n}\n"),
+            (
+                TsLang::TypeScript,
+                "import { A } from './a';\ninterface Box {\n  v: number;\n}\ntype Name = string;\nclass Store implements Box {\n  v = 0;\n  fresh(): Store { return new Store(); }\n}\nfunction top() { return new Store().fresh(); }\n",
+            ),
+            (
+                TsLang::C,
+                "#include <stdio.h>\nstruct Point { int x; };\nint add(int a) { return add(a); }\n",
+            ),
+            (
+                TsLang::Cpp,
+                "#include <x.h>\nnamespace N {\nclass Store : public Base {\n  Store fresh() { return Store(); }\n};\n}\n",
+            ),
             (TsLang::Bash, "source ./lib.sh\nfail() { echo hi; }\nfail\n"),
-            (TsLang::Php, "<?php\nrequire 'a.php';\nfunction top() { return strlen('x'); }\nStore::fresh();\n"),
-            (TsLang::Scala, "import a.B\nclass Store extends Base {\n  def fresh(): Store = Store.make()\n}\n"),
-            (TsLang::Zig, "const std = @import(\"std\");\nfn main() void { _ = std.io; }\n"),
+            (
+                TsLang::Php,
+                "<?php\nrequire 'a.php';\nfunction top() { return strlen('x'); }\nStore::fresh();\n",
+            ),
+            (
+                TsLang::Scala,
+                "import a.B\nclass Store extends Base {\n  def fresh(): Store = Store.make()\n}\n",
+            ),
+            (
+                TsLang::Zig,
+                "const std = @import(\"std\");\nfn main() void { _ = std.io; }\n",
+            ),
             (TsLang::Julia, "using Pkg\nfunction f(x) g(x) end\n"),
-            (TsLang::Groovy, "import a.B\nclass Store {\n  def fresh() { Store.make() }\n}\n"),
-            (TsLang::Css, ".card { color: red; }\n#nav .item:hover { margin: 0; }\n"),
-            (TsLang::PowerShell, "using module M\n. ./lib.ps1\nfunction Get-Store { Get-Item $x }\n"),
-            (TsLang::Fortran, "module m\ncontains\nsubroutine hello() \ncall world()\nend subroutine\nend module\n"),
-            (TsLang::Pascal, "unit U;\ninterface\ntype TStore = class\n  procedure Fresh;\nend;\nimplementation\nprocedure TStore.Fresh; begin end;\nend.\n"),
-            (TsLang::Verilog, "module adder(input a, output b);\nassign b = a;\nendmodule\n"),
-            (TsLang::ObjC, "#import <F/F.h>\n@interface Store : NSObject\n- (void)fresh;\n@end\n@implementation Store\n- (void)fresh {}\n@end\n"),
-            (TsLang::Xml, "<Project><PackageReference Include=\"X\" Version=\"1.0\" /></Project>\n"),
-            (TsLang::Ocaml, "module Store = struct\n  let fresh () = fresh ()\nend\n"),
+            (
+                TsLang::Groovy,
+                "import a.B\nclass Store {\n  def fresh() { Store.make() }\n}\n",
+            ),
+            (
+                TsLang::Css,
+                ".card { color: red; }\n#nav .item:hover { margin: 0; }\n",
+            ),
+            (
+                TsLang::PowerShell,
+                "using module M\n. ./lib.ps1\nfunction Get-Store { Get-Item $x }\n",
+            ),
+            (
+                TsLang::Fortran,
+                "module m\ncontains\nsubroutine hello() \ncall world()\nend subroutine\nend module\n",
+            ),
+            (
+                TsLang::Pascal,
+                "unit U;\ninterface\ntype TStore = class\n  procedure Fresh;\nend;\nimplementation\nprocedure TStore.Fresh; begin end;\nend.\n",
+            ),
+            (
+                TsLang::Verilog,
+                "module adder(input a, output b);\nassign b = a;\nendmodule\n",
+            ),
+            (
+                TsLang::ObjC,
+                "#import <F/F.h>\n@interface Store : NSObject\n- (void)fresh;\n@end\n@implementation Store\n- (void)fresh {}\n@end\n",
+            ),
+            (
+                TsLang::Xml,
+                "<Project><PackageReference Include=\"X\" Version=\"1.0\" /></Project>\n",
+            ),
+            (
+                TsLang::Ocaml,
+                "module Store = struct\n  let fresh () = fresh ()\nend\n",
+            ),
         ];
         for (lang, src) in more {
-            println!("=== {lang:?} ===\n{}\n", sexp(*lang, src).unwrap_or_default());
+            println!(
+                "=== {lang:?} ===\n{}\n",
+                sexp(*lang, src).unwrap_or_default()
+            );
         }
         let more2: &[(TsLang, &str)] = &[
-            (TsLang::Xml, "<Project>\n  <ItemGroup>\n    <Compile Include=\"a.cs\" />\n  </ItemGroup>\n</Project>\n"),
-            (TsLang::Json, "{\"name\": \"x\", \"scripts\": {\"t\": \"y\"}}\n"),
-            (TsLang::Yaml, "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n"),
+            (
+                TsLang::Xml,
+                "<Project>\n  <ItemGroup>\n    <Compile Include=\"a.cs\" />\n  </ItemGroup>\n</Project>\n",
+            ),
+            (
+                TsLang::Json,
+                "{\"name\": \"x\", \"scripts\": {\"t\": \"y\"}}\n",
+            ),
+            (
+                TsLang::Yaml,
+                "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n",
+            ),
         ];
         for (lang, src) in more2 {
-            println!("=== {lang:?} ===\n{}\n", sexp(*lang, src).unwrap_or_default());
+            println!(
+                "=== {lang:?} ===\n{}\n",
+                sexp(*lang, src).unwrap_or_default()
+            );
         }
     }
 }

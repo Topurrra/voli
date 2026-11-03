@@ -399,7 +399,11 @@ fn run_graph_tool_at(root: &std::path::Path, name: &str, args: &Value) -> Result
                     let mut out = format!(
                         "path ({} hops, {}):",
                         ids.len().saturating_sub(1),
-                        if directed { "directed" } else { "undirected fallback" }
+                        if directed {
+                            "directed"
+                        } else {
+                            "undirected fallback"
+                        }
                     );
                     for id in &ids {
                         if let Some(n) = graph.nodes.iter().find(|n| &n.id == id) {
@@ -414,7 +418,10 @@ fn run_graph_tool_at(root: &std::path::Path, name: &str, args: &Value) -> Result
                     }
                     Ok(out)
                 }
-                None => Err(format!("no path between '{}' and '{}'", af[0].label, bf[0].label)),
+                None => Err(format!(
+                    "no path between '{}' and '{}'",
+                    af[0].label, bf[0].label
+                )),
             }
         }
         _ => Err(format!("unknown tool: {name}")),
@@ -872,9 +879,11 @@ mod tests {
     fn graph_tools_answer_from_a_scratch_graph() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = scratch_graph(dir.path());
-        let q = run_graph_tool_at(&root, "graph_query", &json!({ "question": "store" })).expect("query");
+        let q = run_graph_tool_at(&root, "graph_query", &json!({ "question": "store" }))
+            .expect("query");
         assert!(q.contains("Store"), "{q}");
-        let e = run_graph_tool_at(&root, "graph_explain", &json!({ "symbol": "Store" })).expect("explain");
+        let e = run_graph_tool_at(&root, "graph_explain", &json!({ "symbol": "Store" }))
+            .expect("explain");
         assert!(e.contains("inherits"), "{e}");
         let p = run_graph_tool_at(
             &root,

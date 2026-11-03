@@ -10,8 +10,16 @@ use regex::Regex;
 use std::path::Path;
 use std::sync::OnceLock;
 
-fn re(pat: &str) -> Regex { Regex::new(pat).unwrap() }
-macro_rules! static_re { ($cell:ident, $n:ident, $pat:expr) => { #[allow(non_upper_case_globals)] static $cell: OnceLock<Regex> = OnceLock::new(); let $n: &Regex = $cell.get_or_init(|| re($pat)); } }
+fn re(pat: &str) -> Regex {
+    Regex::new(pat).unwrap()
+}
+macro_rules! static_re {
+    ($cell:ident, $n:ident, $pat:expr) => {
+        #[allow(non_upper_case_globals)]
+        static $cell: OnceLock<Regex> = OnceLock::new();
+        let $n: &Regex = $cell.get_or_init(|| re($pat));
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Markdown: `[text](./other.md)` links + `[[wikilinks]]` → references edges
@@ -26,10 +34,21 @@ pub fn md_links(text: &str) -> Vec<(String, u32)> {
         let no = (i + 1) as u32;
         for cap in re_link.captures_iter(line) {
             let t = cap[1].trim().to_string();
-            if t.starts_with("http://") || t.starts_with("https://") || t.starts_with("mailto:") || t.starts_with('#') {
+            if t.starts_with("http://")
+                || t.starts_with("https://")
+                || t.starts_with("mailto:")
+                || t.starts_with('#')
+            {
                 continue;
             }
-            let t = t.split('#').next().unwrap_or("").split('?').next().unwrap_or("").to_string();
+            let t = t
+                .split('#')
+                .next()
+                .unwrap_or("")
+                .split('?')
+                .next()
+                .unwrap_or("")
+                .to_string();
             if !t.is_empty() {
                 out.push((t, no));
             }
@@ -72,10 +91,19 @@ pub fn manifest_deps(file_name: &str, text: &str) -> Option<ManifestDeps> {
         "pyproject.toml" => {
             let v: toml::Value = text.parse().ok()?;
             let mut deps = Vec::new();
-            if let Some(arr) = v.get("project").and_then(|p| p.get("dependencies")).and_then(|d| d.as_array()) {
+            if let Some(arr) = v
+                .get("project")
+                .and_then(|p| p.get("dependencies"))
+                .and_then(|d| d.as_array())
+            {
                 for d in arr {
                     if let Some(s) = d.as_str() {
-                        let name: String = s.chars().take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.').collect();
+                        let name: String = s
+                            .chars()
+                            .take_while(|c| {
+                                c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.'
+                            })
+                            .collect();
                         if !name.is_empty() {
                             deps.push((name, s.to_string()));
                         }
@@ -109,7 +137,11 @@ pub fn manifest_deps(file_name: &str, text: &str) -> Option<ManifestDeps> {
             Some(ManifestDeps { deps })
         }
         "go.mod" => {
-            static_re!(C_re, re, r"^\s*([A-Za-z0-9_./~+-]+\.[A-Za-z]{2,}[A-Za-z0-9_./~+-]*)\s+v[0-9]");
+            static_re!(
+                C_re,
+                re,
+                r"^\s*([A-Za-z0-9_./~+-]+\.[A-Za-z]{2,}[A-Za-z0-9_./~+-]*)\s+v[0-9]"
+            );
             let mut deps = Vec::new();
             for line in text.lines() {
                 if let Some(c) = re.captures(line) {
@@ -120,16 +152,34 @@ pub fn manifest_deps(file_name: &str, text: &str) -> Option<ManifestDeps> {
         }
         "pom.xml" => {
             // groupId:artifactId pairs inside <dependencies>
-            static_re!(C_re_dep, re_dep, r"(?s)<dependency>\s*<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>");
+            static_re!(
+                C_re_dep,
+                re_dep,
+                r"(?s)<dependency>\s*<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>"
+            );
             let mut deps = Vec::new();
             for cap in re_dep.captures_iter(text) {
-                deps.push((format!("{}:{}", cap[1].trim(), cap[2].trim()), String::new()));
+                deps.push((
+                    format!("{}:{}", cap[1].trim(), cap[2].trim()),
+                    String::new(),
+                ));
             }
             Some(ManifestDeps { deps })
         }
-        name if name.ends_with(".csproj") || name.ends_with(".fsproj") || name.ends_with(".vbproj") => {
-            static_re!(C_re, re, r#"<PackageReference\s+Include="([^"]+)"\s+Version="([^"]*)""#);
-            static_re!(C_re2, re2, r#"<PackageReference[^>]*Include="([^"]+)"[^>]*>"#);
+        name if name.ends_with(".csproj")
+            || name.ends_with(".fsproj")
+            || name.ends_with(".vbproj") =>
+        {
+            static_re!(
+                C_re,
+                re,
+                r#"<PackageReference\s+Include="([^"]+)"\s+Version="([^"]*)""#
+            );
+            static_re!(
+                C_re2,
+                re2,
+                r#"<PackageReference[^>]*Include="([^"]+)"[^>]*>"#
+            );
             let mut deps = Vec::new();
             for cap in re.captures_iter(text) {
                 deps.push((cap[1].to_string(), cap[2].to_string()));
@@ -172,7 +222,12 @@ pub fn manifest_identity(file_name: &str, text: &str) -> Option<String> {
 // MCP configs: server nodes + package refs
 // ---------------------------------------------------------------------------
 
-const MCP_FILES: &[&str] = &[".mcp.json", "mcp.json", "mcp_servers.json", "claude_desktop_config.json"];
+const MCP_FILES: &[&str] = &[
+    ".mcp.json",
+    "mcp.json",
+    "mcp_servers.json",
+    "claude_desktop_config.json",
+];
 
 pub fn is_mcp_config(name: &str) -> bool {
     MCP_FILES.contains(&name)
@@ -197,7 +252,8 @@ pub fn mcp_servers(text: &str) -> Vec<(String, Vec<String>)> {
         }
         if let Some(args) = cfg.get("args").and_then(|a| a.as_array()) {
             for a in args.iter().filter_map(|a| a.as_str()) {
-                if a.contains('/') || a.starts_with('@') || a.ends_with(".js") || a.contains("mcp") {
+                if a.contains('/') || a.starts_with('@') || a.ends_with(".js") || a.contains("mcp")
+                {
                     refs.push(a.to_string());
                 }
             }
@@ -213,8 +269,16 @@ pub fn mcp_servers(text: &str) -> Vec<(String, Vec<String>)> {
 
 /// (table name, referenced tables)
 pub fn sql_tables(text: &str) -> Vec<(String, Vec<String>)> {
-    static_re!(C_re_table, re_table, r"(?i)\bCREATE\s+(?:TEMPORARY\s+|TEMP\s+|UNLOGGED\s+|OR\s+REPLACE\s+)*TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_.]*)");
-    static_re!(C_re_ref, re_ref, r"(?i)\bREFERENCES\s+([A-Za-z_][A-Za-z0-9_.]*)");
+    static_re!(
+        C_re_table,
+        re_table,
+        r"(?i)\bCREATE\s+(?:TEMPORARY\s+|TEMP\s+|UNLOGGED\s+|OR\s+REPLACE\s+)*TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_.]*)"
+    );
+    static_re!(
+        C_re_ref,
+        re_ref,
+        r"(?i)\bREFERENCES\s+([A-Za-z_][A-Za-z0-9_.]*)"
+    );
     let mut tables: Vec<(String, usize)> = Vec::new();
     for cap in re_table.captures_iter(text) {
         let m = cap.get(0).unwrap();
@@ -228,13 +292,20 @@ pub fn sql_tables(text: &str) -> Vec<(String, Vec<String>)> {
         for cap in re_ref.captures_iter(body) {
             refs.push(cap[1].to_string());
         }
-        out.push((short_table(name), refs.into_iter().map(|r| short_table(&r)).collect()));
+        out.push((
+            short_table(name),
+            refs.into_iter().map(|r| short_table(&r)).collect(),
+        ));
     }
     out
 }
 
 fn short_table(s: &str) -> String {
-    s.rsplit('.').next().unwrap_or(s).trim_matches('"').to_string()
+    s.rsplit('.')
+        .next()
+        .unwrap_or(s)
+        .trim_matches('"')
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +314,11 @@ fn short_table(s: &str) -> String {
 
 /// Base images referenced by FROM (stages included).
 pub fn docker_bases(text: &str) -> Vec<String> {
-    static_re!(C_re, re, r"(?i)^\s*FROM\s+(?:--[A-Za-z0-9_=.-]+\s+)*([A-Za-z0-9_./:@-]+)");
+    static_re!(
+        C_re,
+        re,
+        r"(?i)^\s*FROM\s+(?:--[A-Za-z0-9_=.-]+\s+)*([A-Za-z0-9_./:@-]+)"
+    );
     text.lines()
         .filter_map(|l| re.captures(l).map(|c| c[1].to_string()))
         .filter(|s| s.to_lowercase() != "scratch")
@@ -291,26 +366,42 @@ pub fn terraform(text: &str) -> (Vec<TfModule>, Vec<TfResource>) {
         if let Some(c) = re_mod.captures(line) {
             if cur.is_some() {
                 let (n, l, s) = cur.take().unwrap();
-                modules.push(TfModule { name: n, source: s, line: l });
+                modules.push(TfModule {
+                    name: n,
+                    source: s,
+                    line: l,
+                });
             }
             cur = Some((c[1].to_string(), no, None));
             depth = 0;
         } else if let Some(c) = re_res.captures(line) {
-            resources.push(TfResource { rtype: c[1].to_string(), name: c[2].to_string(), line: no });
-        } else if let Some(c) = re_source.captures(line) {
-            if let Some(m) = cur.as_mut() {
-                m.2 = Some(c[1].to_string());
-            }
+            resources.push(TfResource {
+                rtype: c[1].to_string(),
+                name: c[2].to_string(),
+                line: no,
+            });
+        } else if let Some(c) = re_source.captures(line)
+            && let Some(m) = cur.as_mut()
+        {
+            m.2 = Some(c[1].to_string());
         }
         depth += line.chars().filter(|&c| c == '{').count() as i32
             - line.chars().filter(|&c| c == '}').count() as i32;
         if cur.is_some() && depth <= 0 && line.contains('}') {
             let (n, l, s) = cur.take().unwrap();
-            modules.push(TfModule { name: n, source: s, line: l });
+            modules.push(TfModule {
+                name: n,
+                source: s,
+                line: l,
+            });
         }
     }
     if let Some((n, l, s)) = cur.take() {
-        modules.push(TfModule { name: n, source: s, line: l });
+        modules.push(TfModule {
+            name: n,
+            source: s,
+            line: l,
+        });
     }
     (modules, resources)
 }
@@ -329,20 +420,36 @@ mod tests {
 
     #[test]
     fn package_json_deps() {
-        let d = manifest_deps("package.json", r#"{"dependencies":{"a":"^1.0"},"devDependencies":{"b":"2.0"}}"#).unwrap();
+        let d = manifest_deps(
+            "package.json",
+            r#"{"dependencies":{"a":"^1.0"},"devDependencies":{"b":"2.0"}}"#,
+        )
+        .unwrap();
         assert_eq!(d.deps.len(), 2);
     }
 
     #[test]
     fn sql_tables_and_refs() {
-        let t = sql_tables("CREATE TABLE orders (id INT PRIMARY KEY, user_id INT REFERENCES users(id));\nCREATE TABLE users (id INT);");
-        assert!(t.iter().any(|(n, r)| n == "orders" && r.contains(&"users".to_string())), "{t:?}");
+        let t = sql_tables(
+            "CREATE TABLE orders (id INT PRIMARY KEY, user_id INT REFERENCES users(id));\nCREATE TABLE users (id INT);",
+        );
+        assert!(
+            t.iter()
+                .any(|(n, r)| n == "orders" && r.contains(&"users".to_string())),
+            "{t:?}"
+        );
     }
 
     #[test]
     fn tf_modules() {
-        let (m, r) = terraform("module \"app\" {\n  source = \"./modules/app\"\n}\nresource \"aws_s3_bucket\" \"b\" {}\n");
-        assert!(m.iter().any(|x| x.name == "app" && x.source.as_deref() == Some("./modules/app")), "{m:?}");
+        let (m, r) = terraform(
+            "module \"app\" {\n  source = \"./modules/app\"\n}\nresource \"aws_s3_bucket\" \"b\" {}\n",
+        );
+        assert!(
+            m.iter()
+                .any(|x| x.name == "app" && x.source.as_deref() == Some("./modules/app")),
+            "{m:?}"
+        );
         assert!(r.iter().any(|x| x.rtype == "aws_s3_bucket"), "{r:?}");
     }
 }
