@@ -5,7 +5,7 @@
 //!
 //! - [`build`] — compile parsed [`Manifest`]s into an `index.sqlite` (used by
 //!   tests and, later, the registry CI compiler).
-//! - [`sign`] — Ed25519 sign/verify plus the embedded `DEV_PUBKEY`.
+//! - [`sign`] — Ed25519 sign/verify plus the embedded `INDEX_PUBKEY`.
 //! - [`net`] — the `voli update` download/verify/atomic-swap flow.
 //! - [`query`] — `search`, `info`, and the install-miss `did_you_mean`.
 //!
@@ -27,7 +27,7 @@ pub use query::{
     SearchHit, Suggestion, did_you_mean, did_you_mean_ref, info, info_ref, manifest_at,
     manifest_at_ref, newest_satisfying, resolved_alias, search,
 };
-pub use sign::{DEV_PUBKEY, sign, verify};
+pub use sign::{INDEX_PUBKEY, sign, verify};
 
 /// Errors from the index client.
 #[derive(Debug, thiserror::Error)]

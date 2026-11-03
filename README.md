@@ -11,19 +11,23 @@
 **Windows** — one line in PowerShell (no admin):
 
 ```powershell
-iwr -useb volibear.dev/install | iex
+iwr -useb https://github.com/Topurrra/voli/releases/latest/download/install.ps1 | iex
 ```
 
 **Linux / macOS** — one line in your shell (no sudo):
 
 ```sh
-curl -fsSL volibear.dev/install.sh | sh
+curl -fsSL https://github.com/Topurrra/voli/releases/latest/download/install.sh | sh
 ```
 
+`volibear.dev/install` and `volibear.dev/install.sh` are short aliases of the
+same scripts; the GitHub URL above is the canonical one.
+
 The installer downloads the latest release, verifies its SHA-256, and runs
-`voli setup` (user-level PATH, no admin). It does nothing else - read it first
-if you like: [`install.ps1`](install.ps1) (Windows), [`install.sh`](install.sh)
-(Linux/macOS).
+`voli setup` (user-level PATH, no admin). When `gh` is available it also
+verifies the release's build-provenance attestation. It does nothing else -
+read it first if you like: [`install.ps1`](install.ps1) (Windows),
+[`install.sh`](install.sh) (Linux/macOS).
 
 > **Status: v0.13.2, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.

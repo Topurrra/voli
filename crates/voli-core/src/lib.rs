@@ -15,6 +15,7 @@ pub mod index;
 pub mod install;
 pub mod manifest;
 pub mod paths;
+pub mod release;
 pub mod remote;
 pub mod selfinstall;
 pub mod shim_icon;

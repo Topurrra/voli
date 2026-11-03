@@ -6,6 +6,8 @@
 #      picks the matching release tarball.
 #   2. Downloads the tarball and its .sha256 from GitHub releases.
 #   3. Verifies the SHA-256 hash. Mismatch => abort, delete download.
+#      When `gh` is available it also verifies the release's build-provenance
+#      attestation, and says clearly when it could not.
 #   4. Extracts to <root>/bootstrap-tmp (<root> is $VOLI_ROOT, or
 #      $XDG_DATA_HOME/voli (~/.local/share/voli) on Linux,
 #      ~/Library/Application\ Support/voli on macOS).
@@ -22,8 +24,8 @@
 #   reversible with `voli self-delete`. Read it top to bottom.
 #
 # Usage:
-#   curl -fsSL https://volibear.dev/install.sh | sh
 #   curl -fsSL https://github.com/Topurrra/voli/releases/latest/download/install.sh | sh
+#   curl -fsSL https://volibear.dev/install.sh | sh   (short alias of the same script)
 #
 # Dev/testing:
 #   ./install.sh /path/to/voli-x86_64-linux.tar.gz
@@ -107,6 +109,17 @@ else
   [ "$EXPECTED" = "$ACTUAL" ] || fail "SHA-256 mismatch: expected $EXPECTED, got $ACTUAL"
   rm -f "$TARBALL.sha256"
   ok 'Hash OK.'
+
+  # Provenance, best-effort: every release asset carries a build-provenance
+  # attestation (release.yml). `gh` can verify it against the asset digest;
+  # without gh (or unauthenticated), say clearly that only the hash was
+  # checked — never claim a check that did not run.
+  if command -v gh >/dev/null 2>&1 \
+     && gh attestation verify "$TARBALL" --repo Topurrra/voli >/dev/null 2>&1; then
+    ok 'Provenance attestation verified (gh attestation verify).'
+  else
+    warn 'Only the SHA-256 hash was checked: no provenance attestation verified (gh missing/unauthenticated, or verification failed).'
+  fi
 fi
 
 # ---- extract ----------------------------------------------------------------

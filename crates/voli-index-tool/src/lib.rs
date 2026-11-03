@@ -1028,11 +1028,73 @@ fn is_http_not_found(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Sign release assets with a hex-encoded Ed25519 secret key file, writing a
+/// `<asset>.sig` (hex-encoded 64-byte signature over the raw asset bytes)
+/// next to each input. Used by voli's release workflow so `voli self-update`
+/// can authenticate what it downloads (supply-chain review item 1).
+///
+/// Returns the matching public key (hex) so CI can log which key signed.
+pub fn sign_assets(key_path: &Path, assets: &[PathBuf]) -> Result<String> {
+    if assets.is_empty() {
+        bail!("no assets to sign");
+    }
+    let hex_str = std::fs::read_to_string(key_path)
+        .with_context(|| format!("reading key {}", key_path.display()))?;
+    let secret = voli_core::index::sign::secret_key_from_hex(&hex_str)?;
+    let pubkey = voli_core::index::sign::public_key_hex(&secret);
+    for asset in assets {
+        let bytes =
+            std::fs::read(asset).with_context(|| format!("reading asset {}", asset.display()))?;
+        let sig = voli_core::index::sign::sign(&bytes, &secret);
+        // `<asset>.sig` — the exact name `voli self-update` looks for.
+        let out = PathBuf::from(format!("{}.sig", asset.to_string_lossy()));
+        std::fs::write(&out, hex::encode(sig))
+            .with_context(|| format!("writing {}", out.display()))?;
+        println!("signed {} -> {}", asset.display(), out.display());
+    }
+    Ok(pubkey)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    /// `sign_assets` writes `<asset>.sig` that verifies against the returned
+    /// public key, over the raw asset bytes (supply-chain review item 1: the
+    /// `.sig` file self-update pins its trust to).
+    #[test]
+    fn sign_assets_writes_verifiable_sig_files() {
+        let dir = TempDir::new().unwrap();
+        let asset = dir.path().join("voli-x86_64-linux.tar.gz");
+        let bytes = b"tarball bytes";
+        fs::write(&asset, bytes).unwrap();
+        let key = dir.path().join("key.hex");
+        fs::write(&key, hex::encode([5u8; 32])).unwrap();
+
+        let pubkey = sign_assets(&key, &[asset.clone()]).unwrap();
+        let sig_path = dir.path().join("voli-x86_64-linux.tar.gz.sig");
+        assert_eq!(sig_path, {
+            let mut p = asset.clone();
+            p.set_extension("gz.sig");
+            p
+        });
+        let sig = fs::read_to_string(&sig_path).unwrap();
+        let sig_bytes = hex::decode(sig.trim()).unwrap();
+        assert_eq!(pubkey, voli_core::index::sign::public_key_hex(&[5u8; 32]));
+        assert!(voli_core::index::sign::verify(bytes, &sig_bytes, &pubkey).is_ok());
+        // A tampered asset must NOT verify against the same signature.
+        assert!(voli_core::index::sign::verify(b"tampered", &sig_bytes, &pubkey).is_err());
+    }
+
+    #[test]
+    fn sign_assets_refuses_empty_asset_list() {
+        let dir = TempDir::new().unwrap();
+        let key = dir.path().join("key.hex");
+        fs::write(&key, hex::encode([5u8; 32])).unwrap();
+        assert!(sign_assets(&key, &[]).is_err());
+    }
 
     fn manifest_toml(name: &str, version: &str, bin: &str) -> String {
         format!(

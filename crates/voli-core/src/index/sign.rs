@@ -2,7 +2,11 @@
 //!
 //! The client verifies the downloaded snapshot against an embedded public key
 //! and refuses an unsigned or invalid index. Signing lives here too as a
-//! test/CI helper — the real registry key is offline and never in this binary.
+//! test/CI helper — the production index key is held by the voli-registry CI
+//! as the `VOLI_INDEX_SIGNING_KEY` Actions secret, so it is an *online* key:
+//! anyone who can land a commit on voli-registry@main gets it applied to the
+//! index (which is why main is protected and manifests are review-gated).
+//! This binary only ever holds the public half.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
@@ -10,7 +14,7 @@ use super::IndexError;
 
 /// Public half of the production index-signing key (rotated 2026-07-24 per
 /// Voli.md §10.1; the retired dev key remains only as a test fixture value).
-pub const DEV_PUBKEY: &str = "9fa724f7004638687ef8332d1bff3d15fd7792745b051f91cce0adefd303a2fa";
+pub const INDEX_PUBKEY: &str = "9fa724f7004638687ef8332d1bff3d15fd7792745b051f91cce0adefd303a2fa";
 
 /// Env override for the verification pubkey (hex). **Debug builds only** — see
 /// [`active_pubkey_hex`].
@@ -35,7 +39,7 @@ pub fn verify(bytes: &[u8], sig: &[u8], pubkey_hex: &str) -> Result<(), IndexErr
 
 /// The verification key to use.
 ///
-/// A **release** build always uses the embedded [`DEV_PUBKEY`]. The
+/// A **release** build always uses the embedded [`INDEX_PUBKEY`]. The
 /// `$VOLI_INDEX_PUBKEY` override is honoured in debug builds only: voli writes
 /// persistent user environment variables on a package's behalf, so in a shipped
 /// binary an installed package could otherwise repoint the trust root for every
@@ -45,14 +49,14 @@ pub fn active_pubkey_hex() -> String {
     if cfg!(debug_assertions) {
         resolve_pubkey_hex(std::env::var(PUBKEY_ENV).ok())
     } else {
-        DEV_PUBKEY.to_string()
+        INDEX_PUBKEY.to_string()
     }
 }
 
 fn resolve_pubkey_hex(env_val: Option<String>) -> String {
     match env_val {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => DEV_PUBKEY.to_string(),
+        _ => INDEX_PUBKEY.to_string(),
     }
 }
 
@@ -88,7 +92,7 @@ mod tests {
     use super::*;
 
     /// The dev secret in `registry-dev/dev-signing-key.hex` must derive exactly
-    /// the embedded [`DEV_PUBKEY`], guarding against drift. The key file is
+    /// the embedded [`INDEX_PUBKEY`], guarding against drift. The key file is
     /// gitignored (never in CI clones), so read at runtime and skip if absent —
     /// this check only means something on a machine that holds the key anyway.
     #[test]
@@ -102,7 +106,7 @@ mod tests {
             return;
         };
         let secret = secret_key_from_hex(&hex_str).expect("valid dev secret");
-        assert_eq!(public_key_hex(&secret), DEV_PUBKEY);
+        assert_eq!(public_key_hex(&secret), INDEX_PUBKEY);
     }
 
     #[test]
@@ -135,8 +139,8 @@ mod tests {
     #[test]
     fn env_override_wins_when_set() {
         assert_eq!(resolve_pubkey_hex(Some("abcd".into())), "abcd");
-        assert_eq!(resolve_pubkey_hex(Some("  ".into())), DEV_PUBKEY);
-        assert_eq!(resolve_pubkey_hex(None), DEV_PUBKEY);
+        assert_eq!(resolve_pubkey_hex(Some("  ".into())), INDEX_PUBKEY);
+        assert_eq!(resolve_pubkey_hex(None), INDEX_PUBKEY);
     }
 
     /// A shipped (release) binary must never let an environment variable move
@@ -154,7 +158,7 @@ mod tests {
             assert_eq!(active, planted);
         } else {
             assert_eq!(
-                active, DEV_PUBKEY,
+                active, INDEX_PUBKEY,
                 "release builds must ignore the override"
             );
         }

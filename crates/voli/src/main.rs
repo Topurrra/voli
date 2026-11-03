@@ -1304,8 +1304,6 @@ pub(crate) fn print_remote_error(action: &str, name: &str, error: &RemoteError) 
 fn cmd_self_update() -> i32 {
     use std::cmp::Ordering;
 
-    use sha2::{Digest, Sha256};
-
     let current = env!("CARGO_PKG_VERSION");
     println!("voli {current}: checking for updates...");
 
@@ -1358,8 +1356,10 @@ fn cmd_self_update() -> i32 {
     // `voli-aarch64-linux.tar.gz`, `voli-aarch64-macos.tar.gz`, ...
     let asset_name = self_update_asset();
     let sha_name = format!("{asset_name}.sha256");
+    let sig_name = format!("{asset_name}.sig");
     let mut zip_url = None;
     let mut sha_url = None;
+    let mut sig_url = None;
     if let Some(assets) = body["assets"].as_array() {
         for a in assets {
             let name = a["name"].as_str().unwrap_or("");
@@ -1368,11 +1368,27 @@ fn cmd_self_update() -> i32 {
                 zip_url = Some(url.to_string());
             } else if name == sha_name {
                 sha_url = Some(url.to_string());
+            } else if name == sig_name {
+                sig_url = Some(url.to_string());
             }
         }
     }
     let Some(zip_url) = zip_url else {
         eprintln!("error: release {tag} has no {asset_name} asset");
+        return EXIT_ERROR;
+    };
+    // Fail closed: no hash asset, no update. A same-origin hash is only a
+    // corruption check, but a missing one means the release is malformed and
+    // must never be trusted with replacing this binary.
+    let Some(sha_url) = sha_url else {
+        eprintln!("error: release {tag} has no {sha_name} asset; refusing to update (fail closed)");
+        return EXIT_ERROR;
+    };
+    // Fail closed: no signature asset, no update. The `.sig` Ed25519 signature
+    // is the only thing that ties the asset to the release key pinned in this
+    // binary; without it anyone who can touch the release could swap it.
+    let Some(sig_url) = sig_url else {
+        eprintln!("error: release {tag} has no {sig_name} asset; refusing to update (fail closed)");
         return EXIT_ERROR;
     };
 
@@ -1411,43 +1427,43 @@ fn cmd_self_update() -> i32 {
     }
     println!("{} downloaded voli {latest}", success_mark());
 
-    // 4. Verify sha256 if a checksums asset exists.
-    if let Some(sha_url) = sha_url {
-        let verifying = stage_spinner("verifying sha256".to_string());
-        let sha_resp = match ureq::get(&sha_url)
+    // 4. Verify sha256 + Ed25519 signature. Both are mandatory: the hash
+    // proves the download was not corrupted, the signature (checked against
+    // the key pinned in voli-core) proves the release was built by CI and not
+    // swapped on the wire. Either one missing or failing aborts the update.
+    let verifying = stage_spinner("verifying sha256 + signature".to_string());
+    let fetch_text = |url: &str, what: &str| -> Option<String> {
+        match ureq::get(url)
             .set("User-Agent", concat!("voli/", env!("CARGO_PKG_VERSION")))
             .call()
         {
-            Ok(response) => response,
+            Ok(resp) => match resp.into_string() {
+                Ok(text) => Some(text),
+                Err(e) => {
+                    eprintln!("error: reading {what}: {e}");
+                    None
+                }
+            },
             Err(e) => {
-                verifying.finish_and_clear();
-                eprintln!("error: checksum download failed: {e}");
-                return EXIT_ERROR;
+                eprintln!("error: {what} download failed: {e}");
+                None
             }
-        };
-        let expected = match sha_resp.into_string() {
-            Ok(value) => value,
-            Err(e) => {
-                verifying.finish_and_clear();
-                eprintln!("error: reading checksum: {e}");
-                return EXIT_ERROR;
-            }
-        };
-        let expected = expected
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let actual = hex::encode(Sha256::digest(&zip_bytes));
-        verifying.finish_and_clear();
-        if actual != expected {
-            eprintln!("error: sha256 mismatch: expected {expected}, got {actual}");
-            return EXIT_ERROR;
         }
-        println!("{} sha256 verified", success_mark());
-    } else {
-        eprintln!("warning: no .sha256 asset found; skipping hash verification");
+    };
+    let (Some(sha_text), Some(sig_text)) = (
+        fetch_text(&sha_url, "checksum"),
+        fetch_text(&sig_url, "signature"),
+    ) else {
+        verifying.finish_and_clear();
+        return EXIT_ERROR;
+    };
+    if let Err(e) = voli_core::release::verify_release_asset(&zip_bytes, &sha_text, &sig_text) {
+        verifying.finish_and_clear();
+        eprintln!("error: refusing update from {tag}: {e}");
+        return EXIT_ERROR;
     }
+    verifying.finish_and_clear();
+    println!("{} sha256 + signature verified", success_mark());
 
     // 5. Extract to temp and swap binaries.
     let td = match tempfile::tempdir() {

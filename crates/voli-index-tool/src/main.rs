@@ -60,6 +60,17 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Sign release assets with an Ed25519 key: writes `<asset>.sig` next to
+    /// each file, verified by `voli self-update` against the key embedded in
+    /// voli-core (`RELEASE_PUBKEY`).
+    SignAssets {
+        /// Hex-encoded 32-byte Ed25519 secret key file.
+        #[arg(long)]
+        key: PathBuf,
+        /// Asset files to sign.
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
     /// Scaffold a manifest from a GitHub release asset URL.
     New {
         /// Direct download URL of the archive asset.
@@ -170,11 +181,19 @@ fn run() -> anyhow::Result<ExitCode> {
             let pubkey = hex::encode(signing.verifying_key().to_bytes());
             std::fs::write(&out, hex::encode(secret))?;
             println!(
-                "secret key written to {}   <- GitHub secret VOLI_INDEX_SIGNING_KEY; never commit",
+                "secret key written to {}   <- GitHub secret (index: VOLI_INDEX_SIGNING_KEY / release: VOLI_RELEASE_SIGNING_KEY); never commit",
                 out.display()
             );
             println!("public key: {pubkey}");
-            println!("  -> embed as DEV_PUBKEY replacement in crates/voli-core/src/index/sign.rs");
+            println!("  -> index: embed as INDEX_PUBKEY in crates/voli-core/src/index/sign.rs");
+            println!(
+                "  -> release assets: embed as RELEASE_PUBKEY in crates/voli-core/src/release.rs"
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::SignAssets { key, files } => {
+            let pubkey = voli_index_tool::sign_assets(&key, &files)?;
+            println!("signed {} asset(s) with pubkey {pubkey}", files.len());
             Ok(ExitCode::SUCCESS)
         }
         Command::New { url, name, out } => {

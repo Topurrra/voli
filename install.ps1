@@ -15,8 +15,8 @@
 #   that is the whole thing.
 #
 # Usage:
-#   iwr -useb https://volibear.dev/install | iex
 #   iwr -useb https://github.com/Topurrra/voli/releases/latest/download/install.ps1 | iex
+#   iwr -useb https://volibear.dev/install | iex   (short alias of the same script)
 #
 # Dev/testing:
 #   .\install.ps1 -ZipPath C:\path\to\voli-x64.zip
@@ -125,6 +125,23 @@ try {
         Write-Info 'Verifying SHA-256 ...'
         Assert-Hash -ZipFile $zip -ShaFile $shaFile
         Write-Ok 'Hash OK.'
+
+        # Provenance, best-effort: every release asset carries a
+        # build-provenance attestation (release.yml). `gh` can verify it
+        # against the asset digest; without gh (or unauthenticated), say
+        # clearly that only the hash was checked — never claim a check that
+        # did not run.
+        $attested = $false
+        if (Get-Command gh -ErrorAction SilentlyContinue) {
+            gh attestation verify $zip --repo Topurrra/voli
+            if ($LASTEXITCODE -eq 0) {
+                $attested = $true
+                Write-Ok 'Provenance attestation verified (gh attestation verify).'
+            }
+        }
+        if (-not $attested) {
+            Write-Warn2 'Only the SHA-256 hash was checked: no provenance attestation verified (gh missing/unauthenticated, or verification failed).'
+        }
     }
 
     # ---- Extract ----
