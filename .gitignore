@@ -41,3 +41,6 @@ voli-memory-prompt*.md
 # design redesign mockups: local review only, never served or shipped
 redesign/
 .opencode/
+
+# owner checklist: local only, never shipped (contains account-layout notes)
+/SECURITY-OWNER-STEPS.md
