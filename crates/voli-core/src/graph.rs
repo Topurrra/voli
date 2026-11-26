@@ -930,7 +930,25 @@ pub fn build(root: &Path) -> Graph {
                         if first.is_uppercase() {
                             Vec::new()
                         } else {
-                            methods_by_short.get(&c.name).cloned().unwrap_or_default()
+                            let mut t = methods_by_short.get(&c.name).cloned().unwrap_or_default();
+                            // `sign::verify()`: a lowercase path qualifier
+                            // can also be a module, so a free fn of that
+                            // name in `sign.rs` / `sign/mod.rs` is a target.
+                            if q.contains("::") || !q.contains('.') {
+                                let module = short_ty(q);
+                                if let Some(fns) = by_short.get(&c.name) {
+                                    t.extend(
+                                        fns.iter()
+                                            .filter(|id| {
+                                                node_file
+                                                    .get(*id)
+                                                    .is_some_and(|f| file_is_module(f, &module))
+                                            })
+                                            .cloned(),
+                                    );
+                                }
+                            }
+                            t
                         }
                     }),
                 None => by_short.get(&c.name).cloned().unwrap_or_default(),
@@ -1312,6 +1330,21 @@ fn short_ty(s: &str) -> String {
         .to_string()
 }
 
+/// Whether the file at `rel` defines module `module`: `a/sign.rs` and
+/// `a/sign/mod.rs` both define `sign` (any extension, so `sign.py` too).
+fn file_is_module(rel: &str, module: &str) -> bool {
+    let p = Path::new(rel);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if stem == "mod" || stem == "__init__" || stem == "index" {
+        return p
+            .parent()
+            .and_then(|d| d.file_name())
+            .and_then(|s| s.to_str())
+            .is_some_and(|d| d == module);
+    }
+    stem == module
+}
+
 /// Resolve a markdown link target to an indexed file id, if any.
 fn resolve_doc_target(
     from_rel: &str,
@@ -1389,6 +1422,15 @@ fn current_commit(root: &Path) -> String {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Manifest {
     files: HashMap<String, (u64, u64)>,
+    /// Which extractor built the graph. A different one (a voli upgrade that
+    /// changes extraction) invalidates the cache even if no file changed.
+    #[serde(default)]
+    builder: String,
+}
+
+/// Bump the suffix whenever extraction output changes within one release.
+fn builder_id() -> String {
+    format!("voli {} / extract 2", env!("CARGO_PKG_VERSION"))
 }
 
 fn file_sig(p: &Path) -> Option<(u64, u64)> {
@@ -1412,6 +1454,9 @@ pub fn needs_rebuild(root: &Path) -> bool {
         Ok(m) => m,
         Err(_) => return true,
     };
+    if man.builder != builder_id() {
+        return true;
+    }
     let files = collect_files(root);
     if files.len() != man.files.len() {
         return true;
@@ -1431,7 +1476,10 @@ pub fn needs_rebuild(root: &Path) -> bool {
 
 pub fn write_manifest(root: &Path) {
     let files = collect_files(root);
-    let mut m = Manifest::default();
+    let mut m = Manifest {
+        builder: builder_id(),
+        ..Manifest::default()
+    };
     for p in &files {
         if let Some(sig) = file_sig(p) {
             m.files.insert(rel_path(root, p), sig);
@@ -2030,6 +2078,76 @@ mod tests {
                 .any(|n| n.kind == NodeKind::Crate && n.label == "demo")
         );
         assert!(g.edges.iter().any(|e| e.relation == "calls"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `v.get(0)` is a method call on a value: it must not be bound to an
+    /// unrelated free function that happens to be called `get`, and a
+    /// module-qualified call (`sign::verify()`) must reach the free function
+    /// in `sign.rs`.
+    #[test]
+    fn method_calls_skip_free_fns_and_module_calls_resolve() {
+        let root = fixture_root("calls");
+        std::fs::write(
+            root.join("src/main.rs"),
+            "mod env;\nmod sign;\n\
+             pub fn lookup(v: Vec<u8>) -> Option<u8> { v.get(0).copied() }\n\
+             pub fn update() { sign::verify(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/env.rs"),
+            "pub fn get(name: &str) -> Option<String> { None }\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/sign.rs"), "pub fn verify() {}\n").unwrap();
+        let g = build(&root);
+        let id = |label: &str, file: &str| {
+            g.nodes
+                .iter()
+                .find(|n| n.label == label && n.file.ends_with(file))
+                .unwrap_or_else(|| panic!("no node {label} in {file}"))
+                .id
+                .clone()
+        };
+        let calls = |from: &str, to: &str| {
+            g.edges
+                .iter()
+                .any(|e| e.relation == "calls" && e.from == from && e.to == to)
+        };
+        let (lookup, get) = (id("lookup", "main.rs"), id("get", "env.rs"));
+        assert!(
+            !calls(&lookup, &get),
+            "a method call `v.get(0)` was bound to the free fn env::get"
+        );
+        let (update, verify) = (id("update", "main.rs"), id("verify", "sign.rs"));
+        assert!(
+            calls(&update, &verify),
+            "`sign::verify()` did not resolve to the free fn in sign.rs"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The incremental cache only compared file mtimes and sizes, so after a
+    /// voli upgrade that changes extraction (like the method-call fix above),
+    /// `voli graph build` said "graph is fresh" and kept serving the old,
+    /// wrong graph until a source file happened to change.
+    #[test]
+    fn a_graph_from_another_builder_is_rebuilt() {
+        let root = fixture_root("builder");
+        let g = build(&root);
+        save(&root, &g).unwrap();
+        assert!(!needs_rebuild(&root), "a just-saved graph must be fresh");
+        // Rewrite the manifest the way an older voli wrote it: no builder.
+        let mp = manifest_path(&root);
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mp).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("builder");
+        std::fs::write(&mp, v.to_string()).unwrap();
+        assert!(
+            needs_rebuild(&root),
+            "a graph from an older builder was kept"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -224,7 +224,13 @@ fn main() {
     set_taskbar_progress(TaskbarProgress::Clear);
 
     // Nudge (message only, no action) when running from outside <root>\bin.
-    if !matches!(cli.command, Command::Setup) {
+    // Only for a person at a terminal: a JN app, an MCP client or a script
+    // runs a bundled voli.exe with piped output, and would otherwise get
+    // this in its captured stderr on every single call.
+    if !matches!(cli.command, Command::Setup)
+        && !cli.json
+        && std::io::IsTerminal::is_terminal(&std::io::stderr())
+    {
         maybe_offer_setup();
     }
 
@@ -1202,11 +1208,21 @@ pub(crate) fn print_index_error(action: &str, error: &voli_core::index::IndexErr
             "",
             "run `voli update`, then try again",
         ),
-        IndexError::Http { source, .. } => print_problem(
-            &format!("couldn't {action} because the package index is unreachable"),
-            &source.to_string(),
-            "check your internet connection, then run `voli update`",
-        ),
+        IndexError::Http { source, url } => match source.as_ref() {
+            // Reachable, but the server refused: a wrong index_url or a
+            // registry outage, not the user's connection.
+            ureq::Error::Status(code, _) => print_problem(
+                &format!("couldn't {action}: the index server answered HTTP {code}"),
+                url,
+                "check `voli config get index_url`; if it is right, the registry may be down, \
+                 so retry later",
+            ),
+            _ => print_problem(
+                &format!("couldn't {action} because the package index is unreachable"),
+                &source.to_string(),
+                "check your internet connection, then run `voli update`",
+            ),
+        },
         IndexError::BadSignature => print_problem(
             "the downloaded package index could not be trusted",
             "its security signature is invalid",
@@ -1250,6 +1266,18 @@ pub(crate) fn print_remote_error(action: &str, name: &str, error: &RemoteError) 
             eprintln!("error: package '{name}' was not found");
             cmd_index::print_suggestions(suggestions);
             eprintln!("  fix: check the name or run `voli search {name}`");
+        }
+        RemoteError::VersionNotFound {
+            name: pkg,
+            version,
+            available,
+        } => {
+            eprintln!("error: {pkg} has no version {version} in the index");
+            eprintln!("  available: {}", available.join(", "));
+            eprintln!(
+                "  fix: install one of those, or `voli install {pkg}` for the newest ({})",
+                available.first().map(String::as_str).unwrap_or("?")
+            );
         }
         RemoteError::NoIndex => print_problem(
             "the package index is missing",

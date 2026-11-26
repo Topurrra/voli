@@ -1156,6 +1156,9 @@ fn print_json(
             "message": e.to_string(),
             "suggestions": suggestions,
         });
+        if let RemoteError::VersionNotFound { available, .. } = e {
+            obj["error"]["available"] = serde_json::json!(available);
+        }
     }
     println!("{}", serde_json::to_string_pretty(&obj).unwrap());
 }

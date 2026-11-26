@@ -109,6 +109,68 @@ fn search_finds_by_name_description_and_bin() {
     assert!(index::search(tmp.path(), "app").unwrap().is_empty());
 }
 
+/// `voli search ripgrep` listed `rga` ("ripgrep-all: ripgrep, but also …")
+/// above `ripgrep` itself, because BM25 rewards a description that repeats
+/// the word. The package whose name IS the query comes first, then names that
+/// start with it, then the rest in FTS order.
+#[test]
+fn search_puts_the_exact_name_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = index::index_db_path(tmp.path());
+    let ms = vec![
+        manifest(
+            "rga",
+            "0.10.9",
+            "ripgrep-all: ripgrep, but also search in PDFs and ripgrep archives",
+            "rga.exe",
+        ),
+        manifest(
+            "ripgrep",
+            "15.2.0",
+            "Recursively searches directories for a regex pattern",
+            "rg.exe",
+        ),
+        manifest(
+            "ripgrep-tools",
+            "1.0.0",
+            "Helpers for ripgrep ripgrep ripgrep",
+            "rgt.exe",
+        ),
+    ];
+    index::build(&ms, &db).unwrap();
+    let names: Vec<String> = index::search(tmp.path(), "ripgrep")
+        .unwrap()
+        .into_iter()
+        .map(|h| h.name)
+        .collect();
+    assert_eq!(names[0], "ripgrep", "got {names:?}");
+    assert_eq!(names[1], "ripgrep-tools", "got {names:?}");
+    assert_eq!(names.len(), 3, "got {names:?}");
+}
+
+/// The substring fallback used `LIKE '%<query>%'` unescaped, so `voli search _`
+/// matched every package in the catalog. `_` and `%` are literal characters.
+#[test]
+fn substring_fallback_treats_like_wildcards_literally() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = index::index_db_path(tmp.path());
+    let mut ms = fixtures();
+    ms.push(manifest(
+        "snakes",
+        "1.0.0",
+        "Converts names to snake_case",
+        "sc.exe",
+    ));
+    index::build(&ms, &db).unwrap();
+    let names: Vec<String> = index::search(tmp.path(), "_")
+        .unwrap()
+        .into_iter()
+        .map(|h| h.name)
+        .collect();
+    assert_eq!(names, vec!["snakes".to_string()]);
+    assert!(index::search(tmp.path(), "%").unwrap().is_empty());
+}
+
 #[test]
 fn info_returns_latest_manifest() {
     let tmp = tempfile::tempdir().unwrap();
@@ -609,6 +671,22 @@ fn update_offline_reports_local_copy() {
             ..
         }
     ));
+}
+
+/// A server that answers 404 is reachable: the index URL is wrong or the
+/// registry is gone. Calling that "offline, using local copy" (exit 0) hides
+/// a broken `index_url` forever while the local index silently ages.
+#[test]
+fn update_http_error_is_not_offline() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_bytes, index_json, snap, sig) = make_publishable(1);
+    let srv = FixtureServer::start(index_json, snap, sig);
+    // Every path under /missing/ is a 404 on a live server.
+    let err = update(tmp.path(), &format!("{}/missing", srv.base)).unwrap_err();
+    assert!(
+        matches!(&err, index::IndexError::Http { .. }),
+        "expected an HTTP error, got {err:?}"
+    );
 }
 
 // ---- aliases --------------------------------------------------------------

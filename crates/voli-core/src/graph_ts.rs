@@ -229,7 +229,9 @@ const RUST_DEFS: &[&str] = &[
 const RUST_CALLS: &[&str] = &[
     "(call_expression function: (identifier) @cn) @c",
     "(call_expression function: (scoped_identifier path: (_) @cq name: (identifier) @cn)) @c",
-    "(call_expression function: (field_expression field: (field_identifier) @cn)) @c",
+    // The receiver is the qualifier: `v.get(0)` is a method call, so it must
+    // resolve against methods, never against a free fn that is also `get`.
+    "(call_expression function: (field_expression value: (_) @cq field: (field_identifier) @cn)) @c",
 ];
 const RUST_IMPORTS: &[&str] = &["(use_declaration argument: (_) @i) @imp"];
 

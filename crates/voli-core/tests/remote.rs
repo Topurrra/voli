@@ -645,6 +645,41 @@ fn typo_returns_did_you_mean() {
     }
 }
 
+/// `install ripgrep@9.9.9` names a real package at a version the index does
+/// not have. Reporting "package 'ripgrep' not found" (and suggesting
+/// `ripgrep`) is wrong: say which version is missing and what is available.
+#[test]
+fn missing_version_names_the_version_and_what_exists() {
+    ensure_stub();
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path();
+    let z = pkg_zip("ripgrep", "1.0.0", "rg.exe");
+    let m = Manifest::from_toml_str(&manifest_toml(
+        "ripgrep",
+        "1.0.0",
+        "https://127.0.0.1:9/rg.zip",
+        &sha256_hex(&z),
+        "rg.exe",
+        &[],
+    ))
+    .unwrap();
+    build_index(root, &[m]);
+
+    let err = install_remote("ripgrep", Some("9.9.9"), root, &mut |_| {}).unwrap_err();
+    match err {
+        RemoteError::VersionNotFound {
+            name,
+            version,
+            available,
+        } => {
+            assert_eq!(name, "ripgrep");
+            assert_eq!(version, "9.9.9");
+            assert_eq!(available, vec!["1.0.0".to_string()]);
+        }
+        other => panic!("expected VersionNotFound, got {other:?}"),
+    }
+}
+
 #[test]
 fn second_install_skips_cached_download() {
     ensure_stub();

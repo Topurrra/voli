@@ -89,6 +89,14 @@ enum Command {
         /// Max packages to bump per run (downloads are the cost).
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Start the alphabetical walk at this offset (wraps around). With a
+        /// limit, a fixed start only ever reaches the first letters.
+        #[arg(long, default_value_t = 0, conflicts_with = "rotate_by_day")]
+        rotate: u64,
+        /// Pick the start offset from today's UTC date, so consecutive daily
+        /// runs cover the whole catalog.
+        #[arg(long)]
+        rotate_by_day: bool,
     },
     /// Generate Voli's checked-in global agent target table from agents.ts.
     SyncAgentTargets {
@@ -212,8 +220,22 @@ fn run() -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Bump { dir, limit } => {
-            let summary = voli_index_tool::bump(&dir, limit)?;
+        Command::Bump {
+            dir,
+            limit,
+            rotate,
+            rotate_by_day,
+        } => {
+            let rotate = if rotate_by_day {
+                let day = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() / 86_400)
+                    .unwrap_or(0);
+                voli_index_tool::rotation_seed(day)
+            } else {
+                rotate
+            };
+            let summary = voli_index_tool::bump(&dir, limit, rotate)?;
             println!("\n{}", summary);
             Ok(ExitCode::SUCCESS)
         }
