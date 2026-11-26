@@ -224,7 +224,13 @@ fn main() {
     set_taskbar_progress(TaskbarProgress::Clear);
 
     // Nudge (message only, no action) when running from outside <root>\bin.
-    if !matches!(cli.command, Command::Setup) {
+    // Only for a person at a terminal: a JN app, an MCP client or a script
+    // runs a bundled voli.exe with piped output, and would otherwise get
+    // this in its captured stderr on every single call.
+    if !matches!(cli.command, Command::Setup)
+        && !cli.json
+        && std::io::IsTerminal::is_terminal(&std::io::stderr())
+    {
         maybe_offer_setup();
     }
 
