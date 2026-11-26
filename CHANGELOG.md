@@ -3,6 +3,62 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
+## v0.14.0
+
+### Security
+
+- **Signed release assets; `self-update` fails closed.** Every release
+  asset now carries a detached Ed25519 signature, verified against a
+  release key pinned in the binary. `self-update` aborts if the `.sha256`
+  or `.sig` is missing or does not match. Before, it skipped the hash
+  check. Releases also carry a build-provenance attestation, which
+  `install.ps1` and `install.sh` check with `gh attestation verify` when
+  `gh` is available.
+- **Shims that shadow system commands need consent.** A package whose shim
+  would be named like a reserved command (`sudo`, `ssh`, `git`, `curl`,
+  `gh`, `code`, ...), shadow a command already on PATH, or take a shim
+  another package owns now stops before anything is written. Only
+  `voli install --allow-shadow` approves reserved names non-interactively,
+  and `--yes` does not. `voli doctor` lists installed shims that shadow a
+  command on PATH.
+
+### Added
+
+- **`voli graph`**: a native code-knowledge graph built from tree-sitter
+  ASTs for 20+ languages. Subcommands: `build`, `status`, `query`, `path`,
+  `explain`, `gods`, `wiki`, `export`, `hook` and `merge`. It produces an
+  offline HTML/SVG/wiki under `.voli-graph/` and stable `graph:<id>` tags
+  for `voli memory note`, and `voli memory read` appends the project map.
+- `voli-index-tool bump --rotate N` / `--rotate-by-day`: a `--limit`ed
+  run starts at a different package each time, so it reaches the whole
+  catalog. Before, it never got past packages starting with "f".
+- `voli-index-tool sign-assets` signs release assets.
+
+### Fixed
+
+- `install pkg@<version>` names the missing version and lists the
+  versions that exist, instead of saying the package was not found;
+  `--json` adds `error.available`.
+- `search` lists the exact name first and treats `%` and `_` literally
+  (`search _` matched everything).
+- `update` reports an HTTP error from the index server as an error with
+  its status code, instead of "offline" with exit code 0.
+- `fetch` no longer reports a bare domain as redirected.
+- The "run `voli setup`" note no longer appears in piped or `--json`
+  output.
+- `graph`: Rust method calls are no longer bound to unrelated free
+  functions with the same name, and `module::fn()` calls resolve. A graph
+  cached by an older voli is rebuilt instead of reused.
+- Clippy and rustfmt clean on current stable Rust (1.100) on all three
+  platforms.
+
+### Faster
+
+- `search` with many hits: one query per table instead of two per hit
+  (`search a`: 121 ms to 33 ms).
+- `update` downloads the index signature alongside the snapshot (full
+  update: 1.73 s to 1.42 s).
+
 ## v0.13.2
 
 ### Fixed
