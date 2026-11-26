@@ -1422,6 +1422,15 @@ fn current_commit(root: &Path) -> String {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Manifest {
     files: HashMap<String, (u64, u64)>,
+    /// Which extractor built the graph. A different one (a voli upgrade that
+    /// changes extraction) invalidates the cache even if no file changed.
+    #[serde(default)]
+    builder: String,
+}
+
+/// Bump the suffix whenever extraction output changes within one release.
+fn builder_id() -> String {
+    format!("voli {} / extract 2", env!("CARGO_PKG_VERSION"))
 }
 
 fn file_sig(p: &Path) -> Option<(u64, u64)> {
@@ -1445,6 +1454,9 @@ pub fn needs_rebuild(root: &Path) -> bool {
         Ok(m) => m,
         Err(_) => return true,
     };
+    if man.builder != builder_id() {
+        return true;
+    }
     let files = collect_files(root);
     if files.len() != man.files.len() {
         return true;
@@ -1464,7 +1476,10 @@ pub fn needs_rebuild(root: &Path) -> bool {
 
 pub fn write_manifest(root: &Path) {
     let files = collect_files(root);
-    let mut m = Manifest::default();
+    let mut m = Manifest {
+        builder: builder_id(),
+        ..Manifest::default()
+    };
     for p in &files {
         if let Some(sig) = file_sig(p) {
             m.files.insert(rel_path(root, p), sig);
@@ -2109,6 +2124,29 @@ mod tests {
         assert!(
             calls(&update, &verify),
             "`sign::verify()` did not resolve to the free fn in sign.rs"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The incremental cache only compared file mtimes and sizes, so after a
+    /// voli upgrade that changes extraction (like the method-call fix above),
+    /// `voli graph build` said "graph is fresh" and kept serving the old,
+    /// wrong graph until a source file happened to change.
+    #[test]
+    fn a_graph_from_another_builder_is_rebuilt() {
+        let root = fixture_root("builder");
+        let g = build(&root);
+        save(&root, &g).unwrap();
+        assert!(!needs_rebuild(&root), "a just-saved graph must be fresh");
+        // Rewrite the manifest the way an older voli wrote it: no builder.
+        let mp = manifest_path(&root);
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mp).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("builder");
+        std::fs::write(&mp, v.to_string()).unwrap();
+        assert!(
+            needs_rebuild(&root),
+            "a graph from an older builder was kept"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
