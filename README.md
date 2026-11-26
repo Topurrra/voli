@@ -29,7 +29,7 @@ verifies the release's build-provenance attestation. It does nothing else -
 read it first if you like: [`install.ps1`](install.ps1) (Windows),
 [`install.sh`](install.sh) (Linux/macOS).
 
-> **Status: v0.14.0, still pre-1.0.** The core workflow is released and working,
+> **Status: v0.15.0, still pre-1.0.** The core workflow is released and working,
 > but commands and the manifest schema may still change before v1.
 
 ## Guarantees (never violated)

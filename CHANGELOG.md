@@ -3,7 +3,7 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
-## Unreleased
+## v0.15.0
 
 ### Added
 
