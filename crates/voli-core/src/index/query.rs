@@ -3,6 +3,8 @@
 //! All read the downloaded `index.sqlite` — instant and offline. A missing
 //! index surfaces as [`IndexError::NoIndex`] ("run `voli update` first").
 
+use std::collections::HashMap;
+
 use rusqlite::{Connection, OptionalExtension};
 
 use super::{IndexError, latest_version, open_index};
@@ -32,26 +34,119 @@ pub struct Suggestion {
 }
 
 /// Search the index: FTS5 match first, substring fallback if it finds nothing.
-/// Results are ranked (best first for FTS; name-ordered for the fallback).
+/// The package whose name is the query comes first, then names that start
+/// with it, then the rest (FTS rank for FTS hits; name order for the fallback).
 pub fn search(root: &std::path::Path, query: &str) -> Result<Vec<SearchHit>, IndexError> {
     let conn = open_index(root)?;
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
     let mut names = fts_names(&conn, query)?;
     if names.is_empty() {
         names = substring_names(&conn, query)?;
     }
-    let mut hits = Vec::with_capacity(names.len());
-    for package in names {
-        if let Some(version) = latest_version(&conn, package.kind, &package.name)? {
-            let description = description_of(&conn, package.kind, &package.name, &version)?;
-            hits.push(SearchHit {
-                kind: package.kind,
-                name: package.name,
+    rank_by_name(&mut names, query);
+    // One query per table for every hit's newest version and description,
+    // rather than two per hit: a broad query (`voli search a`) has thousands.
+    let mut latest = latest_rows(&conn, &names)?;
+    Ok(names
+        .into_iter()
+        .filter_map(|p| {
+            let (version, description) = latest.remove(&(p.kind.as_str(), p.name.clone()))?;
+            Some(SearchHit {
+                kind: p.kind,
+                name: p.name,
                 version,
                 description,
-            });
+            })
+        })
+        .collect())
+}
+
+/// Stable re-rank: exact name, then name prefix, then everything else.
+fn rank_by_name(names: &mut [PackageRef], query: &str) {
+    let q = query.trim().to_lowercase();
+    names.sort_by_key(|p| {
+        let n = p.name.to_lowercase();
+        if n == q {
+            0
+        } else if n.starts_with(&q) {
+            1
+        } else {
+            2
+        }
+    });
+}
+
+/// `(kind, name)` -> (newest version, its description).
+type LatestRows = HashMap<(&'static str, String), (String, Option<String>)>;
+
+/// Newest version and its description for each package in `names`, keyed by
+/// `(kind, name)`. Two statements in total, whatever the number of names.
+fn latest_rows(conn: &Connection, names: &[PackageRef]) -> Result<LatestRows, IndexError> {
+    let mut out = LatestRows::new();
+    let mut keep =
+        |key: (&'static str, String), version: String, desc: Option<String>| match out.get(&key) {
+            Some((v, _)) if super::cmp_version(&version, v) != std::cmp::Ordering::Greater => {}
+            _ => {
+                out.insert(key, (version, desc));
+            }
+        };
+    let apps: Vec<&str> = names
+        .iter()
+        .filter(|p| p.kind == Kind::App)
+        .map(|p| p.name.as_str())
+        .collect();
+    if !apps.is_empty() {
+        let mut stmt = conn.prepare(
+            "SELECT p.name, p.version, p.description
+             FROM json_each(?1) j CROSS JOIN packages p ON p.name = j.value",
+        )?;
+        let rows = stmt.query_map([serde_json::to_string(&apps)?], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (name, version, desc) = row?;
+            keep((Kind::App.as_str(), name), version, desc);
         }
     }
-    Ok(hits)
+    // agent_packages is keyed (kind, name, …). CROSS JOIN pins json_each as
+    // the outer loop: left to itself the planner walks every row of the kind
+    // and rescans the name list for each (45 ms vs 1 ms for `search a`).
+    for kind in [Kind::Mcp, Kind::Skill] {
+        let agent_names: Vec<&str> = names
+            .iter()
+            .filter(|p| p.kind == kind)
+            .map(|p| p.name.as_str())
+            .collect();
+        if agent_names.is_empty() || !table_exists(conn, "agent_packages")? {
+            continue;
+        }
+        let mut stmt = conn.prepare(
+            "SELECT a.name, a.version, a.description
+             FROM json_each(?1) j CROSS JOIN agent_packages a
+               ON a.kind = ?2 AND a.name = j.value",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![serde_json::to_string(&agent_names)?, kind.as_str()],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )?;
+        for row in rows {
+            let (name, version, desc) = row?;
+            keep((kind.as_str(), name), version, desc);
+        }
+    }
+    Ok(out)
 }
 
 /// Full manifest of the latest version of `name`, or `None` if not in the index.
@@ -322,10 +417,16 @@ fn fts_names(conn: &Connection, query: &str) -> Result<Vec<PackageRef>, IndexErr
 
 /// Substring fallback over name and description, name-ordered.
 fn substring_names(conn: &Connection, query: &str) -> Result<Vec<PackageRef>, IndexError> {
-    let like = format!("%{}%", query.trim());
+    // `%` and `_` in the query are literal text, not LIKE wildcards.
+    let escaped = query
+        .trim()
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let like = format!("%{escaped}%");
     let mut stmt = conn.prepare(
         "SELECT DISTINCT name FROM packages
-         WHERE name LIKE ?1 OR IFNULL(description, '') LIKE ?1
+         WHERE name LIKE ?1 ESCAPE '\\' OR IFNULL(description, '') LIKE ?1 ESCAPE '\\'
          ORDER BY name ASC",
     )?;
     let mut names = stmt
@@ -339,7 +440,7 @@ fn substring_names(conn: &Connection, query: &str) -> Result<Vec<PackageRef>, In
     if table_exists(conn, "agent_packages")? {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT kind, name FROM agent_packages
-             WHERE name LIKE ?1 OR IFNULL(description, '') LIKE ?1
+             WHERE name LIKE ?1 ESCAPE '\\' OR IFNULL(description, '') LIKE ?1 ESCAPE '\\'
              ORDER BY name ASC, kind ASC",
         )?;
         names.extend(

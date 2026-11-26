@@ -109,6 +109,68 @@ fn search_finds_by_name_description_and_bin() {
     assert!(index::search(tmp.path(), "app").unwrap().is_empty());
 }
 
+/// `voli search ripgrep` listed `rga` ("ripgrep-all: ripgrep, but also …")
+/// above `ripgrep` itself, because BM25 rewards a description that repeats
+/// the word. The package whose name IS the query comes first, then names that
+/// start with it, then the rest in FTS order.
+#[test]
+fn search_puts_the_exact_name_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = index::index_db_path(tmp.path());
+    let ms = vec![
+        manifest(
+            "rga",
+            "0.10.9",
+            "ripgrep-all: ripgrep, but also search in PDFs and ripgrep archives",
+            "rga.exe",
+        ),
+        manifest(
+            "ripgrep",
+            "15.2.0",
+            "Recursively searches directories for a regex pattern",
+            "rg.exe",
+        ),
+        manifest(
+            "ripgrep-tools",
+            "1.0.0",
+            "Helpers for ripgrep ripgrep ripgrep",
+            "rgt.exe",
+        ),
+    ];
+    index::build(&ms, &db).unwrap();
+    let names: Vec<String> = index::search(tmp.path(), "ripgrep")
+        .unwrap()
+        .into_iter()
+        .map(|h| h.name)
+        .collect();
+    assert_eq!(names[0], "ripgrep", "got {names:?}");
+    assert_eq!(names[1], "ripgrep-tools", "got {names:?}");
+    assert_eq!(names.len(), 3, "got {names:?}");
+}
+
+/// The substring fallback used `LIKE '%<query>%'` unescaped, so `voli search _`
+/// matched every package in the catalog. `_` and `%` are literal characters.
+#[test]
+fn substring_fallback_treats_like_wildcards_literally() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = index::index_db_path(tmp.path());
+    let mut ms = fixtures();
+    ms.push(manifest(
+        "snakes",
+        "1.0.0",
+        "Converts names to snake_case",
+        "sc.exe",
+    ));
+    index::build(&ms, &db).unwrap();
+    let names: Vec<String> = index::search(tmp.path(), "_")
+        .unwrap()
+        .into_iter()
+        .map(|h| h.name)
+        .collect();
+    assert_eq!(names, vec!["snakes".to_string()]);
+    assert!(index::search(tmp.path(), "%").unwrap().is_empty());
+}
+
 #[test]
 fn info_returns_latest_manifest() {
     let tmp = tempfile::tempdir().unwrap();
