@@ -1251,6 +1251,18 @@ pub(crate) fn print_remote_error(action: &str, name: &str, error: &RemoteError) 
             cmd_index::print_suggestions(suggestions);
             eprintln!("  fix: check the name or run `voli search {name}`");
         }
+        RemoteError::VersionNotFound {
+            name: pkg,
+            version,
+            available,
+        } => {
+            eprintln!("error: {pkg} has no version {version} in the index");
+            eprintln!("  available: {}", available.join(", "));
+            eprintln!(
+                "  fix: install one of those, or `voli install {pkg}` for the newest ({})",
+                available.first().map(String::as_str).unwrap_or("?")
+            );
+        }
         RemoteError::NoIndex => print_problem(
             "the package index is missing",
             "",

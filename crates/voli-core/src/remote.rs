@@ -127,6 +127,14 @@ pub enum RemoteError {
         name: String,
         suggestions: Vec<Suggestion>,
     },
+    /// The package exists, but not at the requested version.
+    #[error("package '{name}' has no version {version} in the index")]
+    VersionNotFound {
+        name: String,
+        version: String,
+        /// Indexed versions, newest first.
+        available: Vec<String>,
+    },
     #[error("package '{package}' depends on '{dep}', which is not in the index")]
     UnknownDep { package: String, dep: String },
     #[error("no indexed version of '{dep}' satisfies the required '{constraint}'")]
@@ -655,6 +663,20 @@ fn visit(
         Ok(None) => {
             // A missing top-level package (no parent) is a typo — offer
             // suggestions; a missing dependency is a broken index manifest.
+            // A real package at a version the index lacks is not a typo:
+            // name the version and list what exists instead.
+            if parent.is_none()
+                && let Some(v) = version
+            {
+                let available = index::versions(root, name).unwrap_or_default();
+                if !available.is_empty() {
+                    return Err(RemoteError::VersionNotFound {
+                        name: name.to_string(),
+                        version: v.to_string(),
+                        available,
+                    });
+                }
+            }
             return Err(match parent {
                 None => RemoteError::NotFound {
                     name: name.to_string(),

@@ -179,7 +179,7 @@ pub fn manifest_at_ref(
 }
 
 /// All indexed versions of an app `name` (following an alias), newest first.
-fn versions(root: &std::path::Path, name: &str) -> Result<Vec<String>, IndexError> {
+pub fn versions(root: &std::path::Path, name: &str) -> Result<Vec<String>, IndexError> {
     let conn = open_index(root)?;
     let name = resolve(
         &conn,
