@@ -51,6 +51,38 @@ pub fn run_update(root: &Path, json: bool) -> i32 {
     }
 }
 
+/// `voli update --progress` with no packages: the index refresh as one
+/// `{"event":"index",...}` line (or an `error` event); `done` follows from main.
+pub fn run_update_events(root: &Path) -> i32 {
+    match index::update(root, &index_url(root)) {
+        Ok(outcome) => {
+            let (status, code) = match &outcome {
+                UpdateOutcome::UpToDate { .. } => ("up_to_date", EXIT_OK),
+                UpdateOutcome::Updated { .. } => ("updated", EXIT_OK),
+                UpdateOutcome::Offline {
+                    local_epoch: Some(_),
+                    ..
+                } => ("offline", EXIT_OK),
+                UpdateOutcome::Offline {
+                    local_epoch: None, ..
+                } => ("offline", EXIT_ERROR),
+            };
+            println!(
+                "{}",
+                serde_json::json!({ "event": "index", "status": status })
+            );
+            code
+        }
+        Err(e) => {
+            crate::progress::error(
+                "index",
+                &crate::index_problem("update the package index", &e),
+            );
+            EXIT_ERROR
+        }
+    }
+}
+
 fn print_update(outcome: &UpdateOutcome, json: bool) {
     if json {
         let v = match outcome {

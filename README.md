@@ -62,11 +62,12 @@ Global options:
 | `voli memory hook --global\|--project-shared\|--project-local` | Wire the SessionStart hook that loads memory before the agent decides anything. `--remove` takes it out. |
 | `voli web <bang> <query>` | Open a search shortcut in your browser. Voli builds the URL and fetches nothing. |
 | `voli fetch <url>` | Fetch a page as text, Markdown, or JSON, with provenance - see [Web search and fetch](#web-search-and-fetch). |
-| `voli update` | Refresh the local signed package index. |
+| `voli update [pkg ...]` | Refresh the local signed package index. With package names, upgrade those packages. |
 | `voli upgrade [pkg ...]` | Upgrade named packages. Use `--all` to upgrade everything except pinned packages. |
 | `voli list` | List installed packages and versions. |
 | `voli search <query>` | Search the local index by package name, description, or binary. |
-| `voli info <pkg>` | Show package metadata and available binaries. |
+| `voli info <pkg>` | Show package metadata and available binaries. `--summary` takes several packages and gives a short record for each. |
+| `voli provides <cmd> ...` | Which packages provide a command, offline: the package named like it first, then packages that install a shim with that name. |
 | `voli pin <pkg>` | Exclude a package from `upgrade --all`. |
 | `voli unpin <pkg>` | Remove a package pin. |
 | `voli env <pkg>` | Show environment variables recorded for a package. |
@@ -76,9 +77,14 @@ Global options:
 | `voli config set <key> <value>` | Set `root` or `index_url`. |
 | `voli doctor` | Check PATH, environment drift, shims, state, and installation health. |
 | `voli which <bin>` | Resolve a shim to its real executable. |
+| `voli where` | Print Voli's folders: root, shims, apps, and cache. |
+| `voli path <pkg> <file>` | Print the path of a file inside an installed package. |
+| `voli version` | Print Voli's version; with `--json`, also the machine-interface schema and features. |
 | `voli self-update` | Download and install the latest Voli release. |
 | `voli self-delete` | Delete Voli, installed packages, cache, state, shims, and PATH entries. |
 | `voli help [command]` | Show general help or help for one command. |
+
+**For apps that drive Voli.** With `--json`, `version`, `where`, `path`, `provides`, `info --summary`, `which` and `delete` print one JSON document carrying `"schema": 1` (a failure is `{"schema":1,"error":...}` with exit code 1). `install`, `update` and `delete` also take `--progress`, which prints one JSON event per line: `start`, `download` (at most about 10 a second), `verify`, `extract`, `installed` or `deleted`, `error`, and a final `done` with `ok`. Within a schema, fields are only ever added. Feature-test with `voli version --json` rather than by version number.
 
 Common examples:
 

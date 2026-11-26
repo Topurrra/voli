@@ -511,6 +511,111 @@ fn package_ref_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRef> {
     Ok(PackageRef { kind, name })
 }
 
+/// A package that provides a command, for [`providers`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Provider {
+    pub name: String,
+    /// Newest version in the index.
+    pub version: String,
+    pub description: Option<String>,
+    /// Shim names the package installs, in manifest order.
+    pub bins: Vec<String>,
+}
+
+/// Which app packages provide each command in `commands`, best first.
+///
+/// Offline (local index only). A package qualifies when its name is the
+/// command or one of its shims is (case-insensitive, `.exe` ignored), and it
+/// has a source for this OS. Order: the package named exactly like the command
+/// first, then packages with a shim of that name, each group by name. The
+/// result has one entry per input command, in input order.
+pub fn providers(
+    root: &std::path::Path,
+    commands: &[String],
+) -> Result<Vec<(String, Vec<Provider>)>, IndexError> {
+    let conn = open_index(root)?;
+    // The FTS row holds shim names and bin file stems; a cheap prefilter, then
+    // the manifest decides (a stem is not necessarily a command you can run).
+    let rows: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT name, bin_names FROM packages_fts")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let host_os = crate::manifest::Platform::host().os;
+    let mut manifests: HashMap<String, Option<Manifest>> = HashMap::new();
+    let mut out = Vec::with_capacity(commands.len());
+    for command in commands {
+        let wanted = normalize_command(command);
+        let mut by_name = Vec::new();
+        let mut by_bin = Vec::new();
+        for (name, bin_names) in &rows {
+            let named = name.eq_ignore_ascii_case(&wanted);
+            let maybe_bin = bin_names
+                .split_whitespace()
+                .any(|b| normalize_command(b) == wanted);
+            if !named && !maybe_bin {
+                continue;
+            }
+            let manifest = match manifests.get(name) {
+                Some(m) => m.clone(),
+                None => {
+                    let m = latest_app_manifest(&conn, name)?;
+                    manifests.insert(name.clone(), m.clone());
+                    m
+                }
+            };
+            let Some(m) = manifest else { continue };
+            if !has_source_for_os(&m, host_os) {
+                continue;
+            }
+            let bins: Vec<String> = m.bin.iter().map(|b| b.shim_name()).collect();
+            let provider = Provider {
+                name: m.name.clone(),
+                version: m.version.clone(),
+                description: m.description.clone(),
+                bins: bins.clone(),
+            };
+            if named {
+                by_name.push(provider);
+            } else if bins.iter().any(|b| normalize_command(b) == wanted) {
+                by_bin.push(provider);
+            }
+        }
+        by_name.sort_by(|a, b| a.name.cmp(&b.name));
+        by_bin.sort_by(|a, b| a.name.cmp(&b.name));
+        by_name.extend(by_bin);
+        out.push((command.clone(), by_name));
+    }
+    Ok(out)
+}
+
+/// Lowercase, without a trailing `.exe`: how a command name is compared.
+fn normalize_command(command: &str) -> String {
+    let lower = command.trim().to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+/// True when the manifest can install on `os` (either architecture: install
+/// falls back across architectures within one OS, never across OSes).
+fn has_source_for_os(m: &Manifest, os: crate::manifest::Os) -> bool {
+    use crate::manifest::{Arch, Platform};
+    [Arch::X64, Arch::Arm64]
+        .into_iter()
+        .any(|arch| m.source.for_platform(Platform { os, arch }).is_some())
+}
+
+fn latest_app_manifest(conn: &Connection, name: &str) -> Result<Option<Manifest>, IndexError> {
+    let Some(version) = latest_version(conn, Kind::App, name)? else {
+        return Ok(None);
+    };
+    let toml_text: String = conn.query_row(
+        "SELECT manifest_toml FROM packages WHERE name = ?1 AND version = ?2 LIMIT 1",
+        rusqlite::params![name, version],
+        |r| r.get(0),
+    )?;
+    Ok(Some(Manifest::from_toml_str(&toml_text)?))
+}
+
 fn table_exists(conn: &Connection, table: &str) -> Result<bool, IndexError> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1)",
