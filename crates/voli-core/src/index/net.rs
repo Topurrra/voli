@@ -117,7 +117,10 @@ pub fn update_with_pubkey(
     //    bother downloading the snapshot.
     let json = match get_bytes(&agent, &format!("{base}/index.json"), MAX_JSON_BYTES) {
         Ok(body) => body,
-        Err(IndexError::Http { .. }) => {
+        // Only a transport failure (DNS, refused, timeout) is "offline". A
+        // server that answered with a 4xx/5xx is reachable and wrong, and
+        // must not be reported as success with a silently ageing index.
+        Err(IndexError::Http { source, .. }) if matches!(*source, ureq::Error::Transport(_)) => {
             return Ok(UpdateOutcome::Offline {
                 local_epoch: local.as_ref().map(|m| m.epoch),
                 local_date: local.as_ref().map(|m| fmt_date_utc(m.fetched_at)),

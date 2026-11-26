@@ -1202,11 +1202,21 @@ pub(crate) fn print_index_error(action: &str, error: &voli_core::index::IndexErr
             "",
             "run `voli update`, then try again",
         ),
-        IndexError::Http { source, .. } => print_problem(
-            &format!("couldn't {action} because the package index is unreachable"),
-            &source.to_string(),
-            "check your internet connection, then run `voli update`",
-        ),
+        IndexError::Http { source, url } => match source.as_ref() {
+            // Reachable, but the server refused: a wrong index_url or a
+            // registry outage, not the user's connection.
+            ureq::Error::Status(code, _) => print_problem(
+                &format!("couldn't {action}: the index server answered HTTP {code}"),
+                url,
+                "check `voli config get index_url`; if it is right, the registry may be down, \
+                 so retry later",
+            ),
+            _ => print_problem(
+                &format!("couldn't {action} because the package index is unreachable"),
+                &source.to_string(),
+                "check your internet connection, then run `voli update`",
+            ),
+        },
         IndexError::BadSignature => print_problem(
             "the downloaded package index could not be trusted",
             "its security signature is invalid",

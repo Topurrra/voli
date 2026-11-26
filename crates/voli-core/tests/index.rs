@@ -673,6 +673,22 @@ fn update_offline_reports_local_copy() {
     ));
 }
 
+/// A server that answers 404 is reachable: the index URL is wrong or the
+/// registry is gone. Calling that "offline, using local copy" (exit 0) hides
+/// a broken `index_url` forever while the local index silently ages.
+#[test]
+fn update_http_error_is_not_offline() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_bytes, index_json, snap, sig) = make_publishable(1);
+    let srv = FixtureServer::start(index_json, snap, sig);
+    // Every path under /missing/ is a 404 on a live server.
+    let err = update(tmp.path(), &format!("{}/missing", srv.base)).unwrap_err();
+    assert!(
+        matches!(&err, index::IndexError::Http { .. }),
+        "expected an HTTP error, got {err:?}"
+    );
+}
+
 // ---- aliases --------------------------------------------------------------
 
 /// A manifest carrying former names, used for the rename tests below.
