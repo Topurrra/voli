@@ -149,11 +149,25 @@ pub fn update_with_pubkey(
     // 3. Snapshot: download compressed, then inflate under a hard cap. The cap
     //    is enforced *during* inflation, so a zstd bomb can never allocate more
     //    than the declared size before we notice.
-    let compressed = get_bytes(
-        &agent,
-        &format!("{base}/index.sqlite.zst"),
-        MAX_SNAPSHOT_BYTES,
-    )?;
+    //    The 64-byte signature is fetched alongside it: each request is a
+    //    GitHub redirect plus a CDN round trip, so doing them one after the
+    //    other added ~0.5 s to every real update. It is only *used* in step 5,
+    //    after the snapshot has been size- and hash-checked.
+    let (compressed, sig) = std::thread::scope(|s| {
+        let sig = s.spawn(|| get_bytes(&agent, &format!("{base}/index.sig"), MAX_SIG_BYTES));
+        let compressed = get_bytes(
+            &agent,
+            &format!("{base}/index.sqlite.zst"),
+            MAX_SNAPSHOT_BYTES,
+        );
+        let sig = sig.join().unwrap_or_else(|_| {
+            Err(IndexError::Decompress(
+                "signature fetch panicked".to_string(),
+            ))
+        });
+        (compressed, sig)
+    });
+    let compressed = compressed?;
     let mut db_bytes = Vec::new();
     zstd::Decoder::new(&compressed[..])
         .map_err(|e| IndexError::Decompress(e.to_string()))?
@@ -179,7 +193,7 @@ pub fn update_with_pubkey(
 
     // 5. Signature over the decompressed bytes. Everything past this point is
     //    authentic — but authentic does not mean *current*.
-    let sig = get_bytes(&agent, &format!("{base}/index.sig"), MAX_SIG_BYTES)?;
+    let sig = sig?;
     sign::verify(&db_bytes, &sig, pubkey_hex)?;
 
     // 6. Stage the verified snapshot, then read the epoch the registry signed
