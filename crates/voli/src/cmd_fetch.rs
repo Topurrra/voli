@@ -103,8 +103,18 @@ pub struct Page {
 }
 
 impl Page {
+    /// Whether the server sent us somewhere else. An origin-only request
+    /// (`https://host`) coming back as `https://host/` is the same resource:
+    /// the HTTP stack adds the root slash, no server redirected anything.
     pub fn redirected(&self) -> bool {
-        self.requested_url != self.final_url
+        if self.requested_url == self.final_url {
+            return false;
+        }
+        let origin_only = self
+            .requested_url
+            .split_once("://")
+            .is_some_and(|(_, rest)| !rest.contains(['/', '?', '#']));
+        !(origin_only && self.final_url == format!("{}/", self.requested_url))
     }
 }
 
@@ -1764,6 +1774,28 @@ mod tests {
         assert!(page.final_url.ends_with("/landing"), "{}", page.final_url);
         assert!(page.requested_url.ends_with("/start"));
         assert!(page.text.unwrap().contains("please log in"));
+    }
+
+    /// `example.com` is requested as `https://example.com` and the HTTP stack
+    /// reports `https://example.com/`. That is the same resource, not a
+    /// redirect: flagging it trains readers to ignore the redirect warning
+    /// that exists to expose a bounce to a login page.
+    #[test]
+    fn the_root_slash_is_not_a_redirect() {
+        let page = |requested: &str, final_url: &str| Page {
+            requested_url: requested.to_string(),
+            final_url: final_url.to_string(),
+            fetched_at: String::new(),
+            sha256: String::new(),
+            bytes: 0,
+            content_type: String::new(),
+            title: None,
+            text: None,
+        };
+        assert!(!page("https://example.com", "https://example.com/").redirected());
+        assert!(!page("https://example.com/a", "https://example.com/a").redirected());
+        assert!(page("https://example.com/a", "https://example.com/a/").redirected());
+        assert!(page("https://example.com", "https://www.example.com/").redirected());
     }
 
     #[test]
