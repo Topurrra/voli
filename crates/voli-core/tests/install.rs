@@ -240,26 +240,24 @@ fn system_7z_available() -> bool {
     let names: &[&str] = &["7z.exe"];
     #[cfg(not(windows))]
     let names: &[&str] = &["7zz", "7z"];
-    if std::env::var_os("PATH")
+    let on_path = std::env::var_os("PATH")
         .map(|path| {
             std::env::split_paths(&path).any(|dir| names.iter().any(|n| dir.join(n).is_file()))
         })
-        .unwrap_or(false)
-    {
-        return true;
-    }
+        .unwrap_or(false);
     #[cfg(windows)]
     {
-        [
-            r"C:\Program Files\7-Zip\7z.exe",
-            r"C:\Program Files (x86)\7-Zip\7z.exe",
-        ]
-        .iter()
-        .any(|path| Path::new(path).is_file())
+        on_path
+            || [
+                r"C:\Program Files\7-Zip\7z.exe",
+                r"C:\Program Files (x86)\7-Zip\7z.exe",
+            ]
+            .iter()
+            .any(|path| Path::new(path).is_file())
     }
     #[cfg(not(windows))]
     {
-        false
+        on_path
     }
 }
 
