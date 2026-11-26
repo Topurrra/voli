@@ -459,9 +459,30 @@ struct ResolvedUpdate {
     arm64_url: Option<String>,
 }
 
+/// Indices `0..len` starting at `rotate % len` and wrapping around: every
+/// package once, from a start that moves between runs.
+pub fn bump_order(len: usize, rotate: u64) -> impl Iterator<Item = usize> {
+    let start = if len == 0 {
+        0
+    } else {
+        (rotate % len as u64) as usize
+    };
+    (0..len).map(move |k| (start + k) % len)
+}
+
+/// A rotation seed for day number `day` (days since the Unix epoch) that
+/// spreads consecutive days over the whole catalog instead of stepping by one.
+pub fn rotation_seed(day: u64) -> u64 {
+    day.wrapping_mul(2_654_435_761) // Knuth's multiplicative hash
+}
+
 /// Check supported release endpoints for newer versions of packages with
 /// `[autoupdate]` and emit updated manifests. Returns a human-readable summary.
-pub fn bump(dir: &Path, limit: usize) -> Result<String> {
+///
+/// `rotate` picks where the alphabetical walk starts (see [`bump_order`]).
+/// With a `limit`, a fixed start of 0 only ever reaches the first letters of
+/// the catalog; pass a value that changes per run.
+pub fn bump(dir: &Path, limit: usize, rotate: u64) -> Result<String> {
     let (manifests, errors) = analyze(dir)?;
     if !errors.is_empty() {
         bail!("{} manifest error(s); fix before bumping", errors.len());
@@ -492,7 +513,9 @@ pub fn bump(dir: &Path, limit: usize) -> Result<String> {
     let mut results: Vec<(String, BumpResult)> = Vec::new();
     let mut bumped_count = 0;
 
-    for (name, m) in &latest {
+    let ordered: Vec<(&String, &Manifest)> = latest.iter().collect();
+    for i in bump_order(ordered.len(), rotate) {
+        let (name, m) = ordered[i];
         if bumped_count >= limit {
             results.push((name.clone(), BumpResult::Skipped("limit reached".into())));
             continue;
@@ -1060,6 +1083,24 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    /// `bump --limit 20` stops after 20 bumps. Walking from "a" every day,
+    /// the a-f packages alone used the whole budget, so g-z were never
+    /// checked (ripgrep stayed on 15.2.0 after 16.0.0 shipped). A rotating
+    /// start still visits every package exactly once per run.
+    #[test]
+    fn bump_order_rotates_and_covers_every_package() {
+        assert_eq!(bump_order(5, 0).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
+        assert_eq!(bump_order(5, 3).collect::<Vec<_>>(), vec![3, 4, 0, 1, 2]);
+        assert_eq!(bump_order(5, 13).collect::<Vec<_>>(), vec![3, 4, 0, 1, 2]);
+        assert_eq!(bump_order(0, 7).count(), 0);
+        // Day-to-day seeds spread the start over the catalog.
+        let starts: std::collections::HashSet<usize> = (0..30u64)
+            .map(|day| bump_order(2743, rotation_seed(day)).next().unwrap())
+            .collect();
+        assert!(starts.len() > 25, "starts cluster: {starts:?}");
+        assert!(starts.iter().any(|&s| s > 2743 / 2), "never reaches g-z");
+    }
 
     /// `sign_assets` writes `<asset>.sig` that verifies against the returned
     /// public key, over the raw asset bytes (supply-chain review item 1: the
