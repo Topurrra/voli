@@ -24,8 +24,8 @@ pub mod sign;
 pub use build::{build, read_epoch, stamp_epoch};
 pub use net::{MAX_EPOCH, UpdateOutcome, update, update_with_pubkey};
 pub use query::{
-    SearchHit, Suggestion, did_you_mean, did_you_mean_ref, info, info_ref, manifest_at,
-    manifest_at_ref, newest_satisfying, resolved_alias, search, versions,
+    Provider, SearchHit, Suggestion, did_you_mean, did_you_mean_ref, info, info_ref, manifest_at,
+    manifest_at_ref, newest_satisfying, providers, resolved_alias, search, versions,
 };
 pub use sign::{INDEX_PUBKEY, sign, verify};
 

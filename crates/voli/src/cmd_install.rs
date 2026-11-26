@@ -56,6 +56,10 @@ pub fn run(packages: &[String], archive: Option<&Path>, options: Options<'_>) ->
     // apply env without prompting (spec §8, §9).
     let auto = yes || json || !std::io::stdin().is_terminal();
     if let Some(manifest) = local_manifest(packages) {
+        if crate::progress::enabled() {
+            eprintln!("error: --progress is only available for registry packages");
+            return EXIT_ERROR;
+        }
         if parallel {
             eprintln!("error: --parallel is only available for registry app packages");
             return EXIT_ERROR;
@@ -101,11 +105,24 @@ pub fn run(packages: &[String], archive: Option<&Path>, options: Options<'_>) ->
 /// - **name resolves elsewhere on PATH**: interactive prompt (default yes,
 ///   shadowing a tool is often the point of installing); auto-approved under
 ///   `--yes`/`--json` like the env consent.
-pub fn shim_consent(auto: bool, allow_shadow: bool) -> impl FnMut(&ShimConflict) -> bool {
+pub fn shim_consent(
+    auto: bool,
+    allow_shadow: bool,
+    json: bool,
+) -> impl FnMut(&ShimConflict) -> bool {
     move |c: &ShimConflict| {
-        println!("shim conflict: {}", c.describe());
+        // With --json/--progress stdout is the machine channel: notes go to
+        // stderr there. (Prompts only happen interactively, never with --json.)
+        let note = |line: String| {
+            if json {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
+        };
+        note(format!("shim conflict: {}", c.describe()));
         if allow_shadow {
-            println!("  approved via --allow-shadow");
+            note("  approved via --allow-shadow".to_string());
             return true;
         }
         if c.reserved || c.held_by.is_some() {
@@ -123,7 +140,7 @@ pub fn shim_consent(auto: bool, allow_shadow: bool) -> impl FnMut(&ShimConflict)
             print!("Install anyway? [y/N] ");
         } else {
             if auto {
-                println!("  approved non-interactively (--yes)");
+                note("  approved non-interactively (--yes)".to_string());
                 return true;
             }
             print!("Install anyway? [Y/n] ");
@@ -146,15 +163,28 @@ pub fn shim_consent(auto: bool, allow_shadow: bool) -> impl FnMut(&ShimConflict)
 /// Build the per-package env consent closure (spec §8). Prints the requested
 /// vars, then applies without prompting when `auto`, skips entirely when
 /// `no_env`, and otherwise asks `Apply? [Y/n]` (default yes).
-fn env_consent(auto: bool, no_env: bool) -> impl FnMut(&str, &[(String, String)]) -> bool {
+fn env_consent(
+    auto: bool,
+    no_env: bool,
+    json: bool,
+) -> impl FnMut(&str, &[(String, String)]) -> bool {
     move |name: &str, resolved: &[(String, String)]| {
+        let note = |line: String| {
+            if json {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
+        };
         if no_env {
-            println!("{name} requested environment variables — skipped (--no-env)");
+            note(format!(
+                "{name} requested environment variables — skipped (--no-env)"
+            ));
             return false;
         }
-        println!("{name} wants to set environment variables:");
+        note(format!("{name} wants to set environment variables:"));
         for (k, v) in resolved {
-            println!("  {k} = {v}");
+            note(format!("  {k} = {v}"));
         }
         if auto {
             return true;
@@ -284,8 +314,8 @@ fn install_local_path(
         eprintln!("error: --for, --project, and --global are only valid for skill packages");
         return EXIT_ERROR;
     }
-    let mut consent = env_consent(auto, no_env);
-    let mut shims = shim_consent(auto, allow_shadow);
+    let mut consent = env_consent(auto, no_env, json);
+    let mut shims = shim_consent(auto, allow_shadow, json);
     match install_manifest(
         &parsed,
         archive,
@@ -471,6 +501,14 @@ fn install_network(
             Ok(package) => package,
             Err(error) => {
                 eprintln!("error: invalid package '{spec}': {error}");
+                crate::progress::error(
+                    spec,
+                    &crate::Problem::new(
+                        format!("invalid package '{spec}'"),
+                        error.to_string(),
+                        "check the name",
+                    ),
+                );
                 return EXIT_ERROR;
             }
         };
@@ -504,6 +542,10 @@ fn install_network(
     }
     if parallel && kind != Kind::App {
         eprintln!("error: --parallel is only available for app packages");
+        return EXIT_ERROR;
+    }
+    if crate::progress::enabled() && kind != Kind::App {
+        eprintln!("error: --progress is only available for app packages");
         return EXIT_ERROR;
     }
     let home = if kind == Kind::Skill {
@@ -570,6 +612,10 @@ fn install_network(
             }
             crate::set_taskbar_progress(crate::TaskbarProgress::Error);
             crate::print_remote_error("download", "requested packages", &error);
+            crate::progress::error(
+                "",
+                &crate::remote_problem("download", "requested packages", &error),
+            );
             return EXIT_ERROR;
         }
     }
@@ -590,13 +636,13 @@ fn install_network(
         });
         if package.kind == Kind::App {
             let result = {
-                let mut consent = env_consent(auto, no_env);
+                let mut consent = env_consent(auto, no_env, json);
                 let mut visible_consent = |name: &str, resolved: &[(String, String)]| {
                     reporter
                         .borrow_mut()
                         .during_prompt(|| consent(name, resolved))
                 };
-                let mut shims = shim_consent(auto, allow_shadow);
+                let mut shims = shim_consent(auto, allow_shadow, json);
                 let mut visible_shims = |conflict: &ShimConflict| {
                     reporter.borrow_mut().during_prompt(|| shims(conflict))
                 };
@@ -607,7 +653,10 @@ fn install_network(
                     &subkey,
                     &mut visible_consent,
                     &mut visible_shims,
-                    &mut |step| reporter.borrow_mut().step(step),
+                    &mut |step| {
+                        crate::progress::step(&step);
+                        reporter.borrow_mut().step(step)
+                    },
                 )
             };
             let mut reporter = reporter.into_inner();
@@ -688,7 +737,12 @@ fn install_network(
         }
     }
 
-    if json {
+    if crate::progress::enabled() {
+        if let Some((name, error)) = &failure {
+            crate::print_remote_error("install", name, error);
+            crate::progress::error(name, &crate::remote_problem("install", name, error));
+        }
+    } else if json {
         print_json(&agg, &installed_skills, &skipped_skills, failure.as_ref());
     } else if let Some((name, error)) = &failure {
         crate::print_remote_error("install", name, error);

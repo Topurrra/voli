@@ -3,6 +3,34 @@
 Notable changes per release. Versions are pre-1.0: commands and the manifest
 schema may still change.
 
+## Unreleased
+
+### Added
+
+- **A machine interface for apps that drive voli** (schema 1, one JSON
+  document per `--json` call):
+  - `voli provides <cmd>...`: which packages provide a command, offline.
+    The exact package name comes first, then packages with a shim of that
+    name. Only packages that can install on this OS are listed.
+  - `voli info <pkg>... --summary`: name, version, description, homepage,
+    license, bins and installed version for each package, plus `missing`.
+    Plain `info --json` is still the raw manifest.
+  - `voli version --json` (version, schema, features), `voli where --json`
+    (root, shims, apps, cache) and `voli path <pkg> <file> --json`.
+  - `--json` for `which` and `delete`.
+  - `--progress` for `install`, `update` and `delete`: one JSON event per
+    line (`start`, `download`, `verify`, `extract`, `installed`/`deleted`,
+    `error`, `done`).
+- `voli update <pkg>...` upgrades those packages; `voli update` alone still
+  refreshes the index.
+
+### Fixed
+
+- Shim-conflict and env-consent notes no longer go to stdout under `--json`,
+  where they corrupted the JSON document.
+- `delete` of a package that is not installed says so, instead of "retry the
+  command".
+
 ## v0.14.0
 
 ### Security

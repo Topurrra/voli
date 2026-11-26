@@ -2251,6 +2251,7 @@ dependencies = [
  "sha2 0.10.9",
  "stela",
  "tempfile",
+ "tiny_http",
  "ureq",
  "voli-core",
  "windows-sys 0.59.0",

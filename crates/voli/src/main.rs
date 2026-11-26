@@ -5,8 +5,10 @@ mod cmd_graph;
 mod cmd_index;
 mod cmd_install;
 mod cmd_memory;
+mod cmd_query;
 mod cmd_web;
 mod mcp;
+mod progress;
 mod skill_cli;
 
 use std::io::{IsTerminal, Read, Write};
@@ -76,6 +78,11 @@ enum Command {
         /// that shadows a system tool must be an explicit choice.
         #[arg(long)]
         allow_shadow: bool,
+        /// One JSON event per line on stdout (start, download, verify,
+        /// extract, installed/deleted, error, done) for apps that show their
+        /// own progress. Implies `--json`.
+        #[arg(long)]
+        progress: bool,
     },
     /// Delete one or more packages.
     #[command(alias = "uninstall")]
@@ -94,15 +101,33 @@ enum Command {
         /// Delete a global skill.
         #[arg(long)]
         global: bool,
+        /// One JSON event per line on stdout (start, download, verify,
+        /// extract, installed/deleted, error, done) for apps that show their
+        /// own progress. Implies `--json`.
+        #[arg(long)]
+        progress: bool,
     },
-    /// Refresh the local package index.
-    Update,
+    /// Refresh the local package index; with package names, upgrade those.
+    Update {
+        /// Packages to upgrade (same as `voli upgrade <pkg>...`).
+        packages: Vec<String>,
+        /// One JSON event per line on stdout (start, download, verify,
+        /// extract, installed/deleted, error, done) for apps that show their
+        /// own progress. Implies `--json`.
+        #[arg(long)]
+        progress: bool,
+    },
     /// Upgrade installed packages.
     Upgrade {
         packages: Vec<String>,
         /// Upgrade everything (except pinned packages).
         #[arg(long)]
         all: bool,
+        /// One JSON event per line on stdout (start, download, verify,
+        /// extract, installed/deleted, error, done) for apps that show their
+        /// own progress. Implies `--json`.
+        #[arg(long)]
+        progress: bool,
     },
     /// List installed packages with versions.
     List,
@@ -111,10 +136,32 @@ enum Command {
         #[arg(required = true)]
         query: String,
     },
-    /// Show details for a package.
+    /// Show details for a package (several with `--summary`).
     Info {
         #[arg(required = true)]
+        packages: Vec<String>,
+        /// Name, version, description, homepage, license, bins and installed
+        /// version for each package, plus the names not found. Without it,
+        /// `--json` is the full manifest of one package.
+        #[arg(long)]
+        summary: bool,
+    },
+    /// Which packages provide a command (offline, from the local index).
+    Provides {
+        #[arg(required = true)]
+        commands: Vec<String>,
+    },
+    /// Print voli's version (with `--json`: schema and features too).
+    Version,
+    /// Print voli's folders: root, shims, apps, cache.
+    Where,
+    /// Print the path of a file inside an installed package.
+    Path {
+        #[arg(required = true)]
         package: String,
+        /// Relative to the package folder, e.g. `rg.exe` or `bin/tool.exe`.
+        #[arg(required = true)]
+        file: String,
     },
     /// Pin a package (exclude from `upgrade --all`).
     Pin {
@@ -234,6 +281,19 @@ fn main() {
         maybe_offer_setup();
     }
 
+    // `--progress` streams one JSON event per line and implies `--json`.
+    let progress = match &cli.command {
+        Command::Install { progress, .. }
+        | Command::Delete { progress, .. }
+        | Command::Update { progress, .. }
+        | Command::Upgrade { progress, .. } => *progress,
+        _ => false,
+    };
+    if progress {
+        progress::enable(&root());
+    }
+    let json = cli.json || progress;
+
     let code = match &cli.command {
         Command::Install {
             packages,
@@ -244,12 +304,13 @@ fn main() {
             global,
             parallel,
             allow_shadow,
+            progress: _,
         } => cmd_install::run(
             packages,
             archive.as_deref(),
             cmd_install::Options {
                 root: &root(),
-                json: cli.json,
+                json,
                 yes: cli.yes,
                 no_env: *no_env,
                 for_agents: for_agent,
@@ -265,17 +326,18 @@ fn main() {
             for_agent,
             project,
             global,
+            progress: _,
         } => cmd_delete(
             packages,
             *purge,
             for_agent,
             *project,
             *global,
-            cli.yes || cli.json,
-            cli.json,
+            cli.yes || json,
+            json,
         ),
         Command::List => cmd_list(cli.json),
-        Command::Upgrade { packages, all } => cmd_upgrade(packages, *all, cli.json, cli.yes),
+        Command::Upgrade { packages, all, .. } => cmd_upgrade(packages, *all, json, cli.yes),
         Command::Pin { package } => cmd_pin(package, true),
         Command::Unpin { package } => cmd_pin(package, false),
         Command::Env { package } => cmd_env(package, cli.json),
@@ -286,10 +348,27 @@ fn main() {
         Command::Setup => cmd_setup(),
         Command::Config { action } => cmd_config(action, cli.json),
         Command::Doctor => cmd_doctor(cli.json),
-        Command::Which { bin } => cmd_which(bin),
-        Command::Update => cmd_index::run_update(&root(), cli.json),
-        Command::Search { query } => cmd_index::run_search(&root(), query, cli.json),
-        Command::Info { package } => cmd_index::run_info(&root(), package, cli.json),
+        Command::Which { bin } => cmd_query::run_which(&root(), bin, json),
+        Command::Update { packages, .. } if !packages.is_empty() => {
+            cmd_upgrade(packages, false, json, cli.yes)
+        }
+        Command::Update { .. } if progress => cmd_index::run_update_events(&root()),
+        Command::Update { .. } => cmd_index::run_update(&root(), json),
+        Command::Search { query } => cmd_index::run_search(&root(), query, json),
+        Command::Info { packages, summary } if *summary => {
+            cmd_query::run_info_summary(&root(), packages, json)
+        }
+        Command::Info { packages, .. } => match packages.as_slice() {
+            [package] => cmd_index::run_info(&root(), package, json),
+            _ => {
+                eprintln!("error: `voli info` takes one package; use --summary for several");
+                EXIT_ERROR
+            }
+        },
+        Command::Provides { commands } => cmd_query::run_provides(&root(), commands, json),
+        Command::Version => cmd_query::run_version(json),
+        Command::Where => cmd_query::run_where(&root(), json),
+        Command::Path { package, file } => cmd_query::run_path(&root(), package, file, json),
         Command::SelfUpdate => cmd_self_update(),
         Command::SelfDelete => cmd_self_delete(cli.yes),
         Command::Web { bang, query, url } => cmd_web::run(bang.as_deref(), query, *url, cli.json),
@@ -301,6 +380,7 @@ fn main() {
         Command::Memory { action, global } => cmd_memory::run(action, *global),
         Command::Graph { action } => cmd_graph::run(action, cli.json),
     };
+    progress::finish(code == 0);
     std::process::exit(code);
 }
 
@@ -377,6 +457,10 @@ fn cmd_delete(
         eprintln!("error: --purge is only valid for app packages");
         return EXIT_ERROR;
     }
+    if kind == Kind::Skill && progress::enabled() {
+        eprintln!("error: --progress is only available for app packages");
+        return EXIT_ERROR;
+    }
     let home = if kind == Kind::Skill {
         let Some(home) = user_home() else {
             return EXIT_ERROR;
@@ -420,6 +504,8 @@ fn cmd_delete(
     };
 
     let mut code = 0;
+    let mut deleted = Vec::new();
+    let mut failed = Vec::new();
     for package in parsed {
         if package.kind == Kind::Skill {
             let selection = selection.as_ref().expect("skill selection resolved");
@@ -457,21 +543,58 @@ fn cmd_delete(
             }
             continue;
         }
+        // Read before deleting: the ledger that knows the shims goes with it.
+        let bins = progress::installed_bins(&root, &package.name);
+        let installed = State::open(&Paths::at(&root).state_db())
+            .ok()
+            .and_then(|s| s.installed_version(&package.name).ok().flatten());
+        if let Some(version) = &installed {
+            progress::start(&package.name, version);
+        }
         let activity = pulse_bar(format!("deleting {}", package.name));
         let result = uninstall(&package.name, &root, purge);
         activity.finish_and_clear();
         match result {
             Ok(r) => {
-                println!("deleted {} {}", r.name, r.version);
-                if r.kept_persist {
-                    println!("  kept persist data (use --purge to remove it)");
+                if !json {
+                    println!("deleted {} {}", r.name, r.version);
+                    if r.kept_persist {
+                        println!("  kept persist data (use --purge to remove it)");
+                    }
                 }
+                progress::deleted(&r.name, &r.version, &bins);
+                deleted.push(serde_json::json!({
+                    "name": r.name,
+                    "version": r.version,
+                    "bins": bins,
+                    "kept_persist": r.kept_persist,
+                }));
             }
             Err(e) => {
-                print_remote_error("delete", &package.name, &RemoteError::Install(e));
+                let error = RemoteError::Install(e);
+                print_remote_error("delete", &package.name, &error);
+                let p = remote_problem("delete", &package.name, &error);
+                progress::error(&package.name, &p);
+                failed.push(serde_json::json!({
+                    "name": package.name,
+                    "error": p.summary,
+                    "hint": p.fix,
+                }));
                 code = EXIT_ERROR;
             }
         }
+    }
+    if json && kind == Kind::App && !progress::enabled() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": cmd_query::SCHEMA,
+                "ok": code == 0,
+                "deleted": deleted,
+                "failed": failed,
+            }))
+            .unwrap_or_default()
+        );
     }
     code
 }
@@ -612,8 +735,9 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool, yes: bool) -> i32 {
 
         let mut reporter = cmd_install::Reporter::new(json, position + 1, targets.len());
         let auto = yes || json || !std::io::stdin().is_terminal();
-        let mut shim_consent = cmd_install::shim_consent(auto, false);
+        let mut shim_consent = cmd_install::shim_consent(auto, false, json);
         let result = upgrade(name, &root, &mut shim_consent, &mut |step| {
+            progress::step(&step);
             reporter.step(step)
         });
         reporter.finish_bar();
@@ -623,6 +747,12 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool, yes: bool) -> i32 {
                 if !json {
                     println!("{name} is up to date ({version})");
                 }
+                progress::installed(
+                    name,
+                    &version,
+                    &progress::installed_bins(&root, name),
+                    serde_json::json!({ "already": true }),
+                );
                 results.push(
                     serde_json::json!({ "name": name, "status": "up_to_date", "version": version }),
                 );
@@ -635,6 +765,12 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool, yes: bool) -> i32 {
                     println!("{name} ({version}) was renamed to {to} and is no longer updated");
                     println!("  switch with: voli install {to} && voli delete {name}");
                 }
+                progress::installed(
+                    name,
+                    &version,
+                    &progress::installed_bins(&root, name),
+                    serde_json::json!({ "already": true, "renamed_to": to }),
+                );
                 results.push(serde_json::json!({
                     "name": name,
                     "status": "renamed",
@@ -655,6 +791,12 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool, yes: bool) -> i32 {
                         r.to_version
                     );
                 }
+                progress::installed(
+                    &r.name,
+                    &r.to_version,
+                    &progress::installed_bins(&root, &r.name),
+                    serde_json::json!({ "from": r.from_version }),
+                );
                 results.push(serde_json::json!({
                     "name": r.name,
                     "status": "upgraded",
@@ -667,13 +809,16 @@ fn cmd_upgrade(packages: &[String], all: bool, json: bool, yes: bool) -> i32 {
                 if !json {
                     print_remote_error("upgrade", name, &e);
                 }
+                progress::error(name, &remote_problem("upgrade", name, &e));
                 results.push(serde_json::json!({ "name": name, "status": "error", "message": e.to_string() }));
                 code = EXIT_ERROR;
             }
         }
     }
 
-    if json {
+    if progress::enabled() {
+        // The events already said it all; `done` follows from main.
+    } else if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -1191,6 +1336,33 @@ fn pulse_bar(message: String) -> ProgressBar {
     pb
 }
 
+/// A user-facing error: what failed, optional detail, and what to do next.
+/// One source of these texts for the human output and the `--progress` and
+/// `--json` error records, so the two never drift apart.
+pub(crate) struct Problem {
+    pub summary: String,
+    pub detail: String,
+    pub fix: String,
+}
+
+impl Problem {
+    pub(crate) fn new(
+        summary: impl Into<String>,
+        detail: impl Into<String>,
+        fix: impl Into<String>,
+    ) -> Self {
+        Problem {
+            summary: summary.into(),
+            detail: detail.into(),
+            fix: fix.into(),
+        }
+    }
+
+    fn print(&self) {
+        print_problem(&self.summary, &self.detail, &self.fix);
+    }
+}
+
 pub(crate) fn print_problem(summary: &str, detail: &str, fix: &str) {
     eprintln!("error: {summary}");
     if !detail.is_empty() {
@@ -1199,11 +1371,11 @@ pub(crate) fn print_problem(summary: &str, detail: &str, fix: &str) {
     eprintln!("  fix: {fix}");
 }
 
-pub(crate) fn print_index_error(action: &str, error: &voli_core::index::IndexError) {
+pub(crate) fn index_problem(action: &str, error: &voli_core::index::IndexError) -> Problem {
     use voli_core::index::IndexError;
 
     match error {
-        IndexError::NoIndex => print_problem(
+        IndexError::NoIndex => Problem::new(
             "the package index is missing",
             "",
             "run `voli update`, then try again",
@@ -1211,99 +1383,108 @@ pub(crate) fn print_index_error(action: &str, error: &voli_core::index::IndexErr
         IndexError::Http { source, url } => match source.as_ref() {
             // Reachable, but the server refused: a wrong index_url or a
             // registry outage, not the user's connection.
-            ureq::Error::Status(code, _) => print_problem(
-                &format!("couldn't {action}: the index server answered HTTP {code}"),
-                url,
+            ureq::Error::Status(code, _) => Problem::new(
+                format!("couldn't {action}: the index server answered HTTP {code}"),
+                url.as_str(),
                 "check `voli config get index_url`; if it is right, the registry may be down, \
                  so retry later",
             ),
-            _ => print_problem(
-                &format!("couldn't {action} because the package index is unreachable"),
-                &source.to_string(),
+            _ => Problem::new(
+                format!("couldn't {action} because the package index is unreachable"),
+                source.to_string(),
                 "check your internet connection, then run `voli update`",
             ),
         },
-        IndexError::BadSignature => print_problem(
+        IndexError::BadSignature => Problem::new(
             "the downloaded package index could not be trusted",
             "its security signature is invalid",
             "retry `voli update`; if it happens again, do not install packages and report it",
         ),
         IndexError::Sha256Mismatch { .. }
         | IndexError::SizeMismatch { .. }
-        | IndexError::Decompress(_) => print_problem(
+        | IndexError::Decompress(_) => Problem::new(
             "the downloaded package index is damaged",
-            &error.to_string(),
+            error.to_string(),
             "run `voli update` again; if it repeats, report the problem",
         ),
         // Retrying cannot fix this one: the published index has to be rebuilt
         // before any client can accept it. Saying "try again" would send people
         // in a loop against a server that will keep serving the same snapshot.
-        IndexError::UnsignedEpoch => print_problem(
+        IndexError::UnsignedEpoch => Problem::new(
             "the published package index is older than this version of voli",
-            &error.to_string(),
+            error.to_string(),
             "your installed packages are unaffected; the registry needs to \
              republish its index. Retrying will not help — check \
              https://github.com/Topurrra/voli/issues for status",
         ),
-        IndexError::BadEpoch(_) => print_problem(
+        IndexError::BadEpoch(_) => Problem::new(
             "the package index reported an implausible version number",
-            &error.to_string(),
+            error.to_string(),
             "this can mean the index was tampered with in transit; your local \
              index was left untouched. Retry on a trusted network, and report \
              it if it repeats",
         ),
-        _ => print_problem(
-            &format!("couldn't {action}"),
-            &error.to_string(),
+        _ => Problem::new(
+            format!("couldn't {action}"),
+            error.to_string(),
             "run `voli update` and try again; use `voli doctor` if it continues",
         ),
     }
 }
 
-pub(crate) fn print_remote_error(action: &str, name: &str, error: &RemoteError) {
+pub(crate) fn print_index_error(action: &str, error: &voli_core::index::IndexError) {
+    index_problem(action, error).print();
+}
+
+pub(crate) fn remote_problem(action: &str, name: &str, error: &RemoteError) -> Problem {
     match error {
-        RemoteError::NotFound { suggestions, .. } => {
-            eprintln!("error: package '{name}' was not found");
-            cmd_index::print_suggestions(suggestions);
-            eprintln!("  fix: check the name or run `voli search {name}`");
-        }
+        RemoteError::NotFound { .. } => Problem::new(
+            format!("package '{name}' was not found"),
+            "",
+            format!("check the name or run `voli search {name}`"),
+        ),
         RemoteError::VersionNotFound {
             name: pkg,
             version,
             available,
-        } => {
-            eprintln!("error: {pkg} has no version {version} in the index");
-            eprintln!("  available: {}", available.join(", "));
-            eprintln!(
-                "  fix: install one of those, or `voli install {pkg}` for the newest ({})",
+        } => Problem::new(
+            format!("{pkg} has no version {version} in the index"),
+            format!("available: {}", available.join(", ")),
+            format!(
+                "install one of those, or `voli install {pkg}` for the newest ({})",
                 available.first().map(String::as_str).unwrap_or("?")
-            );
-        }
-        RemoteError::NoIndex => print_problem(
+            ),
+        ),
+        RemoteError::NoIndex => Problem::new(
             "the package index is missing",
             "",
             "run `voli update`, then try again",
         ),
-        RemoteError::Index(error) => print_index_error("read the package index", error),
-        RemoteError::Fetch(FetchError::Http { source, .. }) => print_problem(
-            &format!("couldn't {action} '{name}' because its download server is unreachable"),
-            &source.to_string(),
+        RemoteError::Index(error) => index_problem("read the package index", error),
+        RemoteError::Fetch(FetchError::Http { source, .. }) => Problem::new(
+            format!("couldn't {action} '{name}' because its download server is unreachable"),
+            source.to_string(),
             "check your internet connection and try again",
         ),
         RemoteError::Fetch(FetchError::HashMismatch { .. })
-        | RemoteError::Install(InstallError::HashMismatch { .. }) => print_problem(
-            &format!("couldn't {action} '{name}' because the download failed its security check"),
+        | RemoteError::Install(InstallError::HashMismatch { .. }) => Problem::new(
+            format!("couldn't {action} '{name}' because the download failed its security check"),
             "",
             "run `voli cleanup --cache-days 0`, then retry; report it if the error repeats",
         ),
         RemoteError::Fetch(FetchError::Io(error))
-        | RemoteError::Install(InstallError::Io(error)) => print_problem(
-            &format!("couldn't {action} '{name}' because Voli could not access its files"),
-            &error.to_string(),
+        | RemoteError::Install(InstallError::Io(error)) => Problem::new(
+            format!("couldn't {action} '{name}' because Voli could not access its files"),
+            error.to_string(),
             "check free disk space and access to the Voli folder, then try again",
         ),
-        RemoteError::Install(InstallError::SevenZipNotFound) => print_problem(
-            &format!("couldn't {action} '{name}' because 7-Zip is required"),
+        RemoteError::Install(InstallError::NotInstalled(_)) => Problem::new(
+            format!("'{name}' is not installed"),
+            "",
+            "run `voli list` to see what is installed",
+        ),
+        RemoteError::Install(InstallError::SevenZipNotFound) => Problem::new(
+            format!("couldn't {action} '{name}' because 7-Zip is required"),
             "",
             "install 7-Zip, make sure `7z` is on PATH, then try again",
         ),
@@ -1312,31 +1493,51 @@ pub(crate) fn print_remote_error(action: &str, name: &str, error: &RemoteError) 
             | InstallError::SevenZ(_)
             | InstallError::UnsupportedArchive(_)
             | InstallError::ExtractDirMissing(_)),
-        ) => print_problem(
-            &format!("couldn't {action} '{name}' because its archive could not be extracted"),
-            &error.to_string(),
+        ) => Problem::new(
+            format!("couldn't {action} '{name}' because its archive could not be extracted"),
+            error.to_string(),
             "run `voli update` and retry; report the package if it still fails",
         ),
-        RemoteError::Install(InstallError::Manifest(error)) => print_problem(
-            &format!("couldn't {action} '{name}' because its package instructions are invalid"),
-            &error.to_string(),
+        RemoteError::Install(InstallError::Manifest(error)) => Problem::new(
+            format!("couldn't {action} '{name}' because its package instructions are invalid"),
+            error.to_string(),
             "run `voli update` and retry; report the package if it still fails",
         ),
-        RemoteError::UnknownDep { .. } => print_problem(
-            &format!("couldn't {action} '{name}' because its dependency information is incomplete"),
-            &error.to_string(),
+        RemoteError::UnknownDep { .. } => Problem::new(
+            format!("couldn't {action} '{name}' because its dependency information is incomplete"),
+            error.to_string(),
             "run `voli update` and retry; report the package if it still fails",
         ),
-        RemoteError::NoArch { .. } | RemoteError::NoUniversalSource(_) => print_problem(
-            &format!("'{name}' is not available for this type of installation"),
-            &error.to_string(),
+        RemoteError::NoArch { .. } | RemoteError::NoUniversalSource(_) => Problem::new(
+            format!("'{name}' is not available for this type of installation"),
+            error.to_string(),
             "run `voli info` for the package and choose a supported source",
         ),
-        _ => print_problem(
-            &format!("couldn't {action} '{name}'"),
-            &error.to_string(),
+        _ => Problem::new(
+            format!("couldn't {action} '{name}'"),
+            error.to_string(),
             "retry the command; run `voli doctor` if the problem continues",
         ),
+    }
+}
+
+pub(crate) fn print_remote_error(action: &str, name: &str, error: &RemoteError) {
+    match error {
+        // These two print extra lines between the error and the fix (the
+        // suggestions, the available versions), so they keep their own layout.
+        RemoteError::NotFound { suggestions, .. } => {
+            let p = remote_problem(action, name, error);
+            eprintln!("error: {}", p.summary);
+            cmd_index::print_suggestions(suggestions);
+            eprintln!("  fix: {}", p.fix);
+        }
+        RemoteError::VersionNotFound { .. } => {
+            let p = remote_problem(action, name, error);
+            eprintln!("error: {}", p.summary);
+            eprintln!("  {}", p.detail);
+            eprintln!("  fix: {}", p.fix);
+        }
+        _ => remote_problem(action, name, error).print(),
     }
 }
 
@@ -2377,32 +2578,6 @@ fn check_package(
                     format!("{}: {key} was removed (voli set '{value}')", pkg.name),
                 ),
             }
-        }
-    }
-}
-
-fn cmd_which(bin: &str) -> i32 {
-    // Tolerate a `.exe` suffix on every platform: manifests name `rg.exe`
-    // even where the installed shim is extensionless.
-    let base = bin.strip_suffix(".exe").unwrap_or(bin);
-    let shim = Paths::at(root()).shims().join(format!("{base}.shim"));
-    match std::fs::read_to_string(&shim) {
-        Ok(body) => {
-            // Line 1 of a .shim is the target path (spec §6).
-            match body.lines().next() {
-                Some(target) if !target.trim().is_empty() => {
-                    println!("{}", target.trim());
-                    0
-                }
-                _ => {
-                    eprintln!("error: shim {} is empty or malformed", shim.display());
-                    EXIT_ERROR
-                }
-            }
-        }
-        Err(_) => {
-            eprintln!("error: no shim for '{bin}' (looked for {})", shim.display());
-            EXIT_ERROR
         }
     }
 }
