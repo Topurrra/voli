@@ -1468,10 +1468,7 @@ pub fn needs_rebuild(root: &Path) -> bool {
             _ => return true,
         }
     }
-    if !graph_path(root).exists() {
-        return true;
-    }
-    false
+    !graph_path(root).exists()
 }
 
 pub fn write_manifest(root: &Path) {
